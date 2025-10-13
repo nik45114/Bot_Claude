@@ -1,0 +1,17 @@
+# Секреты
+config.json
+*.env
+
+# База данных
+*.db
+*.sqlite*
+
+# Python
+__pycache__/
+*.py[cod]
+venv/
+env/
+
+# Системное
+.DS_Store
+*.log
