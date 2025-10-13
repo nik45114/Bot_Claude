@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Club Assistant Bot v4.2 - RAG Edition
-Telegram бот с векторным поиском, RAG и контролируемым обучением
+Club Assistant Bot v4.3 - Production Edition
+Telegram бот с RAG, векторным поиском и полным функционалом
 """
 
 import os
@@ -12,13 +12,14 @@ import json
 import logging
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
+import io
+import base64
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
-    CallbackQueryHandler,
     filters,
     ContextTypes
 )
@@ -44,8 +45,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Версия
-VERSION = "4.2"
+VERSION = "4.3"
 
 
 class AdminManager:
@@ -54,16 +54,16 @@ class AdminManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
     
-    def add_admin(self, user_id: int, username: str, full_name: str, added_by: int, 
-                  can_teach: bool = True, can_import: bool = False, can_manage_admins: bool = False) -> bool:
+    def add_admin(self, user_id: int, username: str = "", full_name: str = "", added_by: int = 0) -> bool:
+        """Добавить админа"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
                 INSERT OR REPLACE INTO admins 
                 (user_id, username, full_name, added_by, can_teach, can_import, can_manage_admins, is_active)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
-            ''', (user_id, username, full_name, added_by, can_teach, can_import, can_manage_admins))
+                VALUES (?, ?, ?, ?, 1, 1, 1, 1)
+            ''', (user_id, username, full_name, added_by))
             conn.commit()
             conn.close()
             return True
@@ -71,31 +71,90 @@ class AdminManager:
             logger.error(f"Ошибка add_admin: {e}")
             return False
     
-    def get_admin(self, user_id: int) -> Optional[dict]:
+    def remove_admin(self, user_id: int) -> bool:
+        """Удалить админа"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute('SELECT * FROM admins WHERE user_id = ? AND is_active = 1', (user_id,))
-            row = cursor.fetchone()
+            cursor.execute('UPDATE admins SET is_active = 0 WHERE user_id = ?', (user_id,))
+            conn.commit()
             conn.close()
-            
-            if row:
-                return {
-                    'user_id': row[0],
-                    'username': row[1],
-                    'full_name': row[2],
-                    'added_by': row[3],
-                    'can_teach': bool(row[4]),
-                    'can_import': bool(row[5]),
-                    'can_manage_admins': bool(row[6]),
-                    'is_active': bool(row[7])
-                }
-            return None
+            return True
         except:
-            return None
+            return False
+    
+    def list_admins(self) -> List[Tuple]:
+        """Список админов"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT user_id, username, full_name FROM admins WHERE is_active = 1')
+            admins = cursor.fetchall()
+            conn.close()
+            return admins
+        except:
+            return []
     
     def is_admin(self, user_id: int) -> bool:
-        return self.get_admin(user_id) is not None
+        """Проверка админа"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT COUNT(*) FROM admins WHERE user_id = ? AND is_active = 1', (user_id,))
+            count = cursor.fetchone()[0]
+            conn.close()
+            return count > 0
+        except:
+            return False
+
+
+class CredentialManager:
+    """Управление учётками (savecreds/getcreds)"""
+    
+    def __init__(self, db_path: str):
+        self.db_path = db_path
+    
+    def save(self, user_id: int, service: str, login: str, password: str) -> bool:
+        """Сохранить учётку"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT OR REPLACE INTO admin_credentials
+                (user_id, service, login, password, created_at)
+                VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ''', (user_id, service, login, password))
+            conn.commit()
+            conn.close()
+            return True
+        except:
+            return False
+    
+    def get(self, user_id: int, service: str = None) -> List[Dict]:
+        """Получить учётки"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            if service:
+                cursor.execute('''
+                    SELECT service, login, password 
+                    FROM admin_credentials 
+                    WHERE user_id = ? AND service = ?
+                ''', (user_id, service))
+            else:
+                cursor.execute('''
+                    SELECT service, login, password 
+                    FROM admin_credentials 
+                    WHERE user_id = ?
+                ''', (user_id,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            return [{'service': r[0], 'login': r[1], 'password': r[2]} for r in rows]
+        except:
+            return []
 
 
 class KnowledgeBase:
@@ -108,119 +167,77 @@ class KnowledgeBase:
     
     def add(self, question: str, answer: str, category: str = 'general',
             tags: str = '', source: str = 'manual', added_by: int = 0) -> int:
-        """Добавление знания с векторизацией"""
+        """Добавление знания"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             cursor.execute('''
                 INSERT INTO knowledge 
-                (question, answer, category, tags, source, added_by, is_current, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, 1, CURRENT_TIMESTAMP)
+                (question, answer, category, tags, source, added_by, is_current)
+                VALUES (?, ?, ?, ?, ?, ?, 1)
             ''', (question, answer, category, tags, source, added_by))
             
             kb_id = cursor.lastrowid
             conn.commit()
             conn.close()
             
-            # Создаём эмбеддинг и добавляем в векторный индекс
+            # Векторизация
             combined = self.embedding_service.combine_qa(question, answer)
             vector = self.embedding_service.embed(combined)
-            
-            self.vector_store.upsert(kb_id, vector, {
-                'category': category,
-                'tags': tags,
-                'question': question[:100]
-            })
-            
+            self.vector_store.upsert(kb_id, vector, {'category': category, 'tags': tags})
             self.vector_store.save()
             
-            logger.info(f"Знание добавлено: kb_id={kb_id}")
+            logger.info(f"Добавлено: kb_id={kb_id}")
             return kb_id
-            
         except Exception as e:
             logger.error(f"Ошибка add: {e}")
             return 0
     
     def get_by_id(self, kb_id: int) -> Optional[Dict]:
-        """Получить знание по ID"""
+        """Получить по ID"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT id, question, answer, category, tags, source
-                FROM knowledge
-                WHERE id = ? AND is_current = 1
-            ''', (kb_id,))
-            
+            cursor.execute('SELECT id, question, answer, category, tags FROM knowledge WHERE id = ? AND is_current = 1', (kb_id,))
             row = cursor.fetchone()
             conn.close()
             
             if row:
-                return {
-                    'id': row[0],
-                    'question': row[1],
-                    'answer': row[2],
-                    'category': row[3],
-                    'tags': row[4],
-                    'source': row[5]
-                }
+                return {'id': row[0], 'question': row[1], 'answer': row[2], 'category': row[3], 'tags': row[4]}
             return None
         except:
             return None
     
     def vector_search(self, query: str, top_k: int = 5, min_score: float = 0.5) -> List[Dict]:
-        """Векторный поиск с получением полных записей"""
+        """Векторный поиск"""
         try:
-            # Создаём эмбеддинг запроса
             query_vector = self.embedding_service.embed(query)
-            
-            # Поиск в векторном индексе
             results = self.vector_store.search(query_vector, top_k=top_k, min_score=min_score)
             
             if not results:
                 return []
             
-            # Получаем полные записи из БД
             kb_ids = [r['kb_id'] for r in results]
-            
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             placeholders = ','.join(['?'] * len(kb_ids))
-            cursor.execute(f'''
-                SELECT id, question, answer, category, tags
-                FROM knowledge
-                WHERE id IN ({placeholders}) AND is_current = 1
-            ''', kb_ids)
-            
+            cursor.execute(f'SELECT id, question, answer, category, tags FROM knowledge WHERE id IN ({placeholders}) AND is_current = 1', kb_ids)
             rows = cursor.fetchall()
             conn.close()
             
-            # Создаём словарь id -> запись
-            kb_dict = {row[0]: {
-                'id': row[0],
-                'question': row[1],
-                'answer': row[2],
-                'category': row[3],
-                'tags': row[4]
-            } for row in rows}
+            kb_dict = {row[0]: {'id': row[0], 'question': row[1], 'answer': row[2], 'category': row[3], 'tags': row[4]} for row in rows}
             
-            # Объединяем с score из векторного поиска
-            enriched_results = []
+            enriched = []
             for r in results:
-                kb_id = r['kb_id']
-                if kb_id in kb_dict:
-                    kb_record = kb_dict[kb_id]
-                    kb_record['score'] = r['score']
-                    enriched_results.append(kb_record)
+                if r['kb_id'] in kb_dict:
+                    rec = kb_dict[r['kb_id']]
+                    rec['score'] = r['score']
+                    enriched.append(rec)
             
-            # Сортируем по score
-            enriched_results.sort(key=lambda x: x['score'], reverse=True)
-            
-            return enriched_results
-            
+            enriched.sort(key=lambda x: x['score'], reverse=True)
+            return enriched
         except Exception as e:
             logger.error(f"Ошибка vector_search: {e}")
             return []
@@ -239,199 +256,155 @@ class KnowledgeBase:
 
 
 class RAGAnswerer:
-    """RAG (Retrieval-Augmented Generation) ответчик"""
+    """RAG ответчик"""
     
     def __init__(self, knowledge_base: KnowledgeBase, gpt_model: str = 'gpt-4o-mini'):
         self.kb = knowledge_base
         self.gpt_model = gpt_model
     
-    def build_context(self, search_results: List[Dict], max_results: int = 3) -> str:
-        """Построение контекста из результатов поиска"""
-        if not search_results:
-            return ""
+    def answer_question(self, question: str, use_fallback_gpt: bool = True) -> Tuple[str, float, List[Dict]]:
+        """Ответ с RAG + fallback на GPT"""
+        # 1. Векторный поиск
+        search_results = self.kb.vector_search(question, top_k=5, min_score=0.5)
         
-        context_parts = []
+        # 2. Если нашли хорошие результаты - используем RAG
+        if search_results and search_results[0]['score'] >= 0.65:
+            context = self._build_context(search_results[:3])
+            confidence = search_results[0]['score']
+            answer = self._generate_rag_answer(question, context, search_results)
+            return answer, confidence, search_results
         
-        for i, result in enumerate(search_results[:max_results], 1):
-            kb_id = result['id']
-            question = result['question']
-            answer = result['answer']
-            score = result.get('score', 0)
-            
-            # Ограничиваем длину ответа для контекста
-            if len(answer) > 500:
-                answer = answer[:500] + "..."
-            
-            context_parts.append(f"[{kb_id}] (релевантность: {score:.2f})\nВопрос: {question}\nОтвет: {answer}")
+        # 3. Если ничего не нашли И разрешён fallback - используем чистый GPT
+        if use_fallback_gpt:
+            try:
+                response = openai.ChatCompletion.create(
+                    model=self.gpt_model,
+                    messages=[
+                        {"role": "system", "content": "Ты - помощник компьютерного клуба. Отвечай кратко и по делу."},
+                        {"role": "user", "content": question}
+                    ],
+                    temperature=0.7,
+                    max_tokens=300
+                )
+                answer = response['choices'][0]['message']['content'].strip()
+                return answer, 0.3, []
+            except Exception as e:
+                logger.error(f"GPT fallback error: {e}")
+                return "Не нашёл информации. Попробуй переформулировать.", 0.0, []
         
-        return "\n\n".join(context_parts)
+        # 4. Без fallback - честно говорим что не знаем
+        return "Не нашёл информации по этому вопросу. Попробуй переформулировать или уточнить.", 0.0, []
     
-    def calculate_confidence(self, search_results: List[Dict]) -> float:
-        """Расчёт уверенности ответа"""
-        if not search_results:
-            return 0.0
-        
-        # Уверенность на основе топового score
-        top_score = search_results[0].get('score', 0)
-        
-        # Бонус если несколько результатов похожи
-        if len(search_results) >= 2:
-            second_score = search_results[1].get('score', 0)
-            if second_score > 0.7:
-                top_score = min(top_score + 0.1, 1.0)
-        
-        return top_score
+    def _build_context(self, results: List[Dict]) -> str:
+        """Построение контекста"""
+        parts = []
+        for r in results:
+            answer = r['answer'][:500] + ("..." if len(r['answer']) > 500 else "")
+            parts.append(f"[{r['id']}] {r['question']}\n{answer}")
+        return "\n\n".join(parts)
     
-    def generate_answer(self, question: str, context: str, confidence: float) -> str:
-        """Генерация ответа с помощью GPT + контекст"""
+    def _generate_rag_answer(self, question: str, context: str, results: List[Dict]) -> str:
+        """Генерация RAG ответа"""
         try:
-            # Промпт для RAG
-            system_prompt = """Ты - ассистент компьютерного клуба.
+            prompt = f"""Ты - ассистент компьютерного клуба. Ответь на вопрос используя контекст.
 
-ВАЖНО:
-1. Отвечай ТОЛЬКО на основе предоставленного контекста
-2. Если в контексте нет ответа - скажи "Не нашёл информации"
-3. Всегда указывай источники в формате [ID]
-4. Будь кратким (2-4 предложения)
-5. Если нужна инструкция - давай пошаговую
+Вопрос: {question}
 
-Формат ответа:
-[Твой ответ]
-
-Источники: [ID1], [ID2]"""
-
-            user_prompt = f"""Вопрос: {question}
-
-Контекст из базы знаний:
+Контекст:
 {context}
 
-Ответь на вопрос используя контекст."""
+Ответь кратко (2-4 предложения). В конце укажи источники."""
 
             response = openai.ChatCompletion.create(
                 model=self.gpt_model,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                temperature=0.3,  # Низкая креативность для точности
-                max_tokens=500
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=400
             )
             
             answer = response['choices'][0]['message']['content'].strip()
             
-            # Добавляем предупреждение если низкая уверенность
-            if confidence < 0.7:
-                answer += "\n\n⚠️ Ответ требует проверки (низкая уверенность)"
+            # Добавляем источники если их нет
+            if '[' not in answer:
+                sources = ', '.join([f"[{r['id']}]" for r in results[:3]])
+                answer += f"\n\nИсточники: {sources}"
             
             return answer
-            
         except Exception as e:
-            logger.error(f"Ошибка generate_answer: {e}")
-            return f"Ошибка генерации ответа: {str(e)}"
-    
-    def answer_question(self, question: str, min_confidence: float = 0.5) -> Tuple[str, float, List[Dict]]:
-        """Полный цикл RAG: поиск + генерация + оценка"""
-        # 1. Векторный поиск
-        search_results = self.kb.vector_search(question, top_k=5, min_score=min_confidence)
-        
-        # 2. Если ничего не нашли
-        if not search_results:
-            return "Не нашёл информации по этому вопросу. Попробуй переформулировать или уточнить.", 0.0, []
-        
-        # 3. Строим контекст
-        context = self.build_context(search_results, max_results=3)
-        
-        # 4. Оцениваем уверенность
-        confidence = self.calculate_confidence(search_results)
-        
-        # 5. Генерируем ответ
-        answer = self.generate_answer(question, context, confidence)
-        
-        return answer, confidence, search_results
+            logger.error(f"RAG generation error: {e}")
+            # Fallback на первый результат
+            return f"{results[0]['answer'][:300]}\n\nИсточник: [{results[0]['id']}]"
 
 
 class ClubAssistantBot:
-    """Главный класс бота v4.2"""
+    """Главный класс бота v4.3"""
     
     def __init__(self, config: dict):
         self.config = config
         
-        # Инициализация v4.0 компонентов
-        logger.info("🚀 Инициализация v4.0 компонентов...")
+        logger.info("🚀 Инициализация v4.3...")
         
         self.embedding_service = EmbeddingService(config['openai_api_key'])
         self.vector_store = VectorStore()
         self.vector_store.load()
         
         self.admin_manager = AdminManager(DB_PATH)
+        self.creds_manager = CredentialManager(DB_PATH)
         self.kb = KnowledgeBase(DB_PATH, self.embedding_service, self.vector_store)
         self.draft_queue = DraftQueue(DB_PATH)
         self.rag = RAGAnswerer(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
         
-        # API ключ
         openai.api_key = config['openai_api_key']
         
-        # Конфиг RAG
         self.confidence_threshold = config.get('draft_queue', {}).get('confidence_threshold', 0.7)
-        self.auto_approve_threshold = config.get('draft_queue', {}).get('auto_approve_threshold', 0.9)
         
-        logger.info(f"✅ Бот v{VERSION} инициализирован")
-        logger.info(f"   Векторов в индексе: {self.vector_store.stats()['total_vectors']}")
-        logger.info(f"   Записей в KB: {self.kb.count()}")
+        logger.info(f"✅ Бот v{VERSION} готов!")
+        logger.info(f"   Векторов: {self.vector_store.stats()['total_vectors']}")
+        logger.info(f"   Записей: {self.kb.count()}")
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /start"""
+        """Старт"""
         user = update.effective_user
         is_admin = self.admin_manager.is_admin(user.id)
         
-        welcome = f"""👋 Привет, {user.first_name}!
+        text = f"""👋 Привет, {user.first_name}!
 
-Я ассистент клуба v{VERSION} с RAG-архитектурой.
+Я ассистент клуба v{VERSION}.
 
-💬 Просто задай вопрос - я найду ответ в базе знаний и приведу источники.
+💬 Просто задай вопрос - я отвечу!
 
-Команды:
-/help - помощь
-/stats - статистика"""
+Команды: /help"""
 
         if is_admin:
-            welcome += "\n\n🔧 Админ-команды:\n/review - очередь на ревью\n/vectorstats - статистика индекса"
+            text += "\n\n🔧 Админ: /admin"
         
-        await update.message.reply_text(welcome)
+        await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /help"""
-        user_id = update.effective_user.id
-        is_admin = self.admin_manager.is_admin(user_id)
+        """Помощь"""
+        is_admin = self.admin_manager.is_admin(update.effective_user.id)
         
-        help_text = f"""📖 Помощь - Club Assistant v{VERSION}
+        text = f"""📖 Помощь v{VERSION}
 
-🤖 Как работает:
-Я использую RAG (Retrieval-Augmented Generation):
-1. Векторный поиск по базе знаний
-2. Формирую контекст из релевантных записей
-3. GPT генерирует ответ с указанием источников [ID]
+💬 Просто спрашивай - я отвечу!
 
-💬 Просто спрашивай:
-• Как обновить биос?
-• Где находится клуб?
-• Что такое CLS?
-
-📊 Команды:
+Команды:
 /start - приветствие
-/stats - статистика базы
+/stats - статистика
 /help - эта справка"""
 
         if is_admin:
-            help_text += """
+            text += """\n\n🔧 Админ-команды:
+/admin - админ-панель
+/learn <текст> - добавить знание
+/import - импорт (формат: вопрос|ответ)
+/addadmin <user_id> - добавить админа
+/admins - список админов
+/review - черновики (одобрение)
+/savecreds <сервис> <логин> <пароль>
+/getcreds [сервис]"""
 
-🔧 Админ-команды:
-/review - просмотр черновиков на одобрение
-/vectorstats - статистика векторного индекса
-/learn <вопрос> | <ответ> - добавить знание
-/reindex - переиндексация (если нужно)"""
-
-        await update.message.reply_text(help_text)
+        await update.message.reply_text(text)
     
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Статистика"""
@@ -439,7 +412,7 @@ class ClubAssistantBot:
         vector_stats = self.vector_store.stats()
         draft_stats = self.draft_queue.stats()
         
-        stats_text = f"""📊 Статистика v{VERSION}
+        text = f"""📊 Статистика v{VERSION}
 
 📚 База знаний:
 • Записей: {kb_count}
@@ -447,217 +420,356 @@ class ClubAssistantBot:
 
 📝 Черновики:
 • Ожидают: {draft_stats.get('pending', 0)}
-• Одобрено: {draft_stats.get('approved', 0)}
-• Отклонено: {draft_stats.get('rejected', 0)}"""
+• Одобрено: {draft_stats.get('approved', 0)}"""
 
-        if draft_stats.get('pending', 0) > 0:
-            avg_conf = draft_stats.get('avg_confidence', 0)
-            stats_text += f"\n• Средняя уверенность: {avg_conf:.2f}"
-        
-        await update.message.reply_text(stats_text)
+        await update.message.reply_text(text)
     
-    async def cmd_vectorstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Статистика векторного индекса (админ)"""
+    async def cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Админ-панель"""
         if not self.admin_manager.is_admin(update.effective_user.id):
             await update.message.reply_text("❌ Только для админов")
             return
         
-        stats = self.vector_store.stats()
+        text = """🔧 Админ-панель v4.3
+
+/learn <текст> - добавить знание
+  Пример: /learn Клуб находится на ул. Ленина 123
+
+/import - импорт базы
+  Формат файла: вопрос|ответ (по строке)
+  
+/review - одобрение черновиков (474 шт)
+
+/addadmin <id> - добавить админа
+/admins - список админов
+
+/savecreds <сервис> <логин> <пароль>
+/getcreds [сервис]
+
+/vectorstats - статистика индекса
+/reindex - переиндексация"""
+
+        await update.message.reply_text(text)
+    
+    async def cmd_learn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обучение - свободная форма"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Только для админов")
+            return
         
-        stats_text = f"""🔍 Векторный индекс
+        text = update.message.text.replace('/learn', '').strip()
+        
+        if not text or len(text) < 10:
+            await update.message.reply_text("Напиши информацию после /learn\n\nПример:\n/learn Клуб находится на ул. Ленина 123, работает с 10 до 22")
+            return
+        
+        try:
+            # Генерируем вопрос через GPT
+            response = openai.ChatCompletion.create(
+                model='gpt-4o-mini',
+                messages=[{
+                    "role": "user",
+                    "content": f"Из этого текста сформулируй короткий вопрос (3-7 слов):\n\n{text}"
+                }],
+                temperature=0.5,
+                max_tokens=50
+            )
+            question = response['choices'][0]['message']['content'].strip()
+            
+            # Добавляем
+            kb_id = self.kb.add(question, text, source='learn', added_by=update.effective_user.id)
+            
+            await update.message.reply_text(f"✅ Добавлено [ID: {kb_id}]\n\n❓ {question}\n💬 {text[:100]}...")
+            
+        except Exception as e:
+            logger.error(f"Learn error: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    async def cmd_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Импорт"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Только для админов")
+            return
+        
+        await update.message.reply_text("""📥 Импорт базы знаний
 
-Размерность: {stats['dimension']}D
-Всего векторов: {stats['total_vectors']}
-Метаданных: {stats['metadata_count']}
+Формат файла (текст):
+```
+вопрос1|ответ1
+вопрос2|ответ2
+вопрос3|ответ3
+```
 
-База знаний: {self.kb.count()} записей"""
-
-        await update.message.reply_text(stats_text)
+Отправь файл .txt с таким содержимым.""")
+    
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка файлов импорта"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        doc = update.message.document
+        
+        if not doc.file_name.endswith('.txt'):
+            await update.message.reply_text("Только .txt файлы!")
+            return
+        
+        await update.message.reply_text("⏳ Обрабатываю...")
+        
+        try:
+            file = await context.bot.get_file(doc.file_id)
+            content = await file.download_as_bytearray()
+            text = content.decode('utf-8')
+            
+            imported = 0
+            errors = 0
+            
+            for line in text.split('\n'):
+                line = line.strip()
+                if not line or '|' not in line:
+                    continue
+                
+                try:
+                    parts = line.split('|', 1)
+                    question = parts[0].strip()
+                    answer = parts[1].strip()
+                    
+                    if question and answer:
+                        self.kb.add(question, answer, source='import', added_by=update.effective_user.id)
+                        imported += 1
+                except:
+                    errors += 1
+            
+            await update.message.reply_text(f"✅ Импортировано: {imported}\n⚠️ Ошибок: {errors}")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Просмотр черновиков (админ)"""
+        """Ревью черновиков (без кнопок)"""
         if not self.admin_manager.is_admin(update.effective_user.id):
             await update.message.reply_text("❌ Только для админов")
             return
         
-        # Получаем черновики
-        drafts = self.draft_queue.get_pending(limit=1)
+        drafts = self.draft_queue.get_pending(limit=5)
         
         if not drafts:
-            await update.message.reply_text("✅ Нет черновиков на ревью!")
+            await update.message.reply_text("✅ Нет черновиков!")
             return
         
-        draft = drafts[0]
+        text = f"📝 Черновиков: {len(drafts)}\n\n"
         
-        # Формируем сообщение
-        review_text = f"""📝 Черновик #{draft['id']}
-Уверенность: {draft['confidence']:.2f}
-
-❓ Вопрос:
-{draft['question']}
-
-💬 Ответ:
-{draft['answer'][:500]}{"..." if len(draft['answer']) > 500 else ""}
-
-📂 Категория: {draft['category']}
-🏷 Теги: {draft['tags']}
-📌 Источник: {draft['source']}"""
-
-        # Кнопки
-        keyboard = [
-            [
-                InlineKeyboardButton("✅ Одобрить", callback_data=f"approve_{draft['id']}"),
-                InlineKeyboardButton("✏️ Править", callback_data=f"edit_{draft['id']}")
-            ],
-            [
-                InlineKeyboardButton("🗑 Удалить", callback_data=f"reject_{draft['id']}"),
-                InlineKeyboardButton("⏭ Пропустить", callback_data="review_next")
-            ]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        for d in drafts:
+            text += f"#{d['id']} (conf: {d['confidence']:.2f})\n"
+            text += f"❓ {d['question'][:100]}\n"
+            text += f"💬 {d['answer'][:150]}...\n\n"
         
-        await update.message.reply_text(review_text, reply_markup=reply_markup)
+        text += "Для одобрения: /approve <id>\nДля удаления: /reject <id>"
+        
+        await update.message.reply_text(text)
     
-    async def handle_review_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка кнопок ревью"""
-        query = update.callback_query
-        await query.answer()
-        
-        user_id = update.effective_user.id
-        
-        if not self.admin_manager.is_admin(user_id):
-            await query.edit_message_text("❌ Только для админов")
+    async def cmd_approve(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Одобрить черновик"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
             return
         
-        data = query.data
-        
-        if data.startswith("approve_"):
-            draft_id = int(data.split("_")[1])
-            
-            # Получаем черновик
+        try:
+            draft_id = int(context.args[0])
             draft = self.draft_queue.get_draft(draft_id)
+            
             if not draft:
-                await query.edit_message_text("❌ Черновик не найден")
+                await update.message.reply_text("❌ Не найден")
                 return
             
-            # Добавляем в базу
-            kb_id = self.kb.add(
-                question=draft['question'],
-                answer=draft['answer'],
-                category=draft['category'],
-                tags=draft['tags'],
-                source='approved_draft',
-                added_by=user_id
-            )
+            kb_id = self.kb.add(draft['question'], draft['answer'], draft['category'], draft['tags'], 'approved_draft', update.effective_user.id)
+            self.draft_queue.approve(draft_id, update.effective_user.id)
             
-            # Одобряем черновик
-            self.draft_queue.approve(draft_id, user_id)
+            await update.message.reply_text(f"✅ Одобрено! [ID: {kb_id}]")
+        except:
+            await update.message.reply_text("Использование: /approve <id>")
+    
+    async def cmd_reject(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отклонить черновик"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        try:
+            draft_id = int(context.args[0])
+            self.draft_queue.reject(draft_id, update.effective_user.id)
+            await update.message.reply_text("🗑 Отклонено")
+        except:
+            await update.message.reply_text("Использование: /reject <id>")
+    
+    async def cmd_addadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Добавить админа"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        try:
+            new_admin_id = int(context.args[0])
+            self.admin_manager.add_admin(new_admin_id, added_by=update.effective_user.id)
+            await update.message.reply_text(f"✅ Админ добавлен: {new_admin_id}")
+        except:
+            await update.message.reply_text("Использование: /addadmin <user_id>")
+    
+    async def cmd_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Список админов"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        admins = self.admin_manager.list_admins()
+        
+        if not admins:
+            await update.message.reply_text("Нет админов")
+            return
+        
+        text = "👥 Админы:\n\n"
+        for user_id, username, full_name in admins:
+            text += f"• {user_id}"
+            if username:
+                text += f" (@{username})"
+            if full_name:
+                text += f" - {full_name}"
+            text += "\n"
+        
+        await update.message.reply_text(text)
+    
+    async def cmd_savecreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Сохранить учётку"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        try:
+            service = context.args[0]
+            login = context.args[1]
+            password = context.args[2]
             
-            await query.edit_message_text(f"✅ Одобрено! Добавлено в базу [ID: {kb_id}]")
+            self.creds_manager.save(update.effective_user.id, service, login, password)
+            await update.message.reply_text(f"✅ Сохранено: {service}")
+            
+            # Удаляем сообщение с паролем
+            await update.message.delete()
+        except:
+            await update.message.reply_text("Использование: /savecreds <сервис> <логин> <пароль>")
+    
+    async def cmd_getcreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Получить учётки"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
         
-        elif data.startswith("reject_"):
-            draft_id = int(data.split("_")[1])
-            self.draft_queue.reject(draft_id, user_id)
-            await query.edit_message_text("🗑 Отклонено")
+        service = context.args[0] if context.args else None
+        creds = self.creds_manager.get(update.effective_user.id, service)
         
-        elif data == "review_next":
-            # Показываем следующий
-            await query.edit_message_text("⏭ Пропущено")
-            # Эмулируем /review
-            drafts = self.draft_queue.get_pending(limit=1)
-            if drafts:
-                # Отправляем новое сообщение (не можем edit с кнопками)
-                pass
+        if not creds:
+            await update.message.reply_text("Нет сохранённых учёток")
+            return
+        
+        text = "🔑 Учётки:\n\n"
+        for c in creds:
+            text += f"🔹 {c['service']}\n"
+            text += f"Login: {c['login']}\n"
+            text += f"Pass: {c['password']}\n\n"
+        
+        # Отправляем в приват
+        await context.bot.send_message(chat_id=update.effective_user.id, text=text)
+        
+        if update.message.chat.type != 'private':
+            await update.message.reply_text("✅ Отправил в личку")
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка вопросов пользователя"""
+        """Обработка вопросов"""
         user = update.effective_user
         question = update.message.text.strip()
         
-        if not question or len(question) < 3:
-            await update.message.reply_text("Задай вопрос подлиннее 🙂")
+        if len(question) < 3:
             return
         
-        # Показываем typing...
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
-        logger.info(f"Вопрос от {user.username}: {question}")
+        logger.info(f"Q: {user.username}: {question}")
         
         # RAG ответ
-        answer, confidence, search_results = self.rag.answer_question(question, min_confidence=0.5)
+        answer, confidence, results = self.rag.answer_question(question, use_fallback_gpt=True)
         
-        logger.info(f"Confidence: {confidence:.2f}, Results: {len(search_results)}")
+        logger.info(f"A: conf={confidence:.2f}, results={len(results)}")
         
-        # Если низкая уверенность - добавляем в drafts
-        if 0 < confidence < self.confidence_threshold and search_results:
-            # Создаём черновик для будущего улучшения
-            self.draft_queue.add_draft(
-                question=question,
-                answer=answer,
-                confidence=confidence,
-                source='low_confidence_query',
-                added_by=user.id
-            )
-            logger.info(f"Добавлен в drafts (conf={confidence:.2f})")
+        # Если низкая уверенность - в черновики
+        if 0.3 < confidence < self.confidence_threshold:
+            self.draft_queue.add_draft(question, answer, confidence=confidence, source='low_conf', added_by=user.id)
         
-        # Отправляем ответ
         await update.message.reply_text(answer)
     
-    async def cmd_learn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Ручное добавление знания (админ)"""
-        if not self.admin_manager.is_admin(update.effective_user.id):
-            await update.message.reply_text("❌ Только для админов")
-            return
+    async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка фото (GPT-4 Vision)"""
+        user = update.effective_user
+        caption = update.message.caption or ""
         
-        # Парсим /learn вопрос | ответ
-        text = update.message.text
-        if '|' not in text:
-            await update.message.reply_text("Формат: /learn вопрос | ответ")
-            return
+        await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
         
-        parts = text.split('|', 1)
-        question = parts[0].replace('/learn', '').strip()
-        answer = parts[1].strip()
-        
-        if not question or not answer:
-            await update.message.reply_text("❌ Вопрос и ответ не могут быть пустыми")
-            return
-        
-        # Добавляем в базу
-        kb_id = self.kb.add(
-            question=question,
-            answer=answer,
-            source='manual',
-            added_by=update.effective_user.id
-        )
-        
-        await update.message.reply_text(f"✅ Добавлено в базу [ID: {kb_id}]")
+        try:
+            # Получаем фото
+            photo = update.message.photo[-1]
+            file = await context.bot.get_file(photo.file_id)
+            photo_bytes = await file.download_as_bytearray()
+            
+            # Base64
+            photo_b64 = base64.b64encode(photo_bytes).decode('utf-8')
+            
+            # GPT-4 Vision
+            response = openai.ChatCompletion.create(
+                model="gpt-4o",  # или gpt-4-turbo если есть доступ
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": caption or "Что на этом изображении?"},
+                            {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{photo_b64}"}}
+                        ]
+                    }
+                ],
+                max_tokens=500
+            )
+            
+            answer = response['choices'][0]['message']['content']
+            await update.message.reply_text(answer)
+            
+        except Exception as e:
+            logger.error(f"Photo error: {e}")
+            await update.message.reply_text(f"Не могу обработать фото: {e}")
     
     def run(self):
-        """Запуск бота"""
-        application = Application.builder().token(self.config['telegram_token']).build()
+        """Запуск"""
+        app = Application.builder().token(self.config['telegram_token']).build()
         
         # Команды
-        application.add_handler(CommandHandler("start", self.cmd_start))
-        application.add_handler(CommandHandler("help", self.cmd_help))
-        application.add_handler(CommandHandler("stats", self.cmd_stats))
-        application.add_handler(CommandHandler("vectorstats", self.cmd_vectorstats))
-        application.add_handler(CommandHandler("review", self.cmd_review))
-        application.add_handler(CommandHandler("learn", self.cmd_learn))
+        app.add_handler(CommandHandler("start", self.cmd_start))
+        app.add_handler(CommandHandler("help", self.cmd_help))
+        app.add_handler(CommandHandler("stats", self.cmd_stats))
+        app.add_handler(CommandHandler("admin", self.cmd_admin))
+        app.add_handler(CommandHandler("learn", self.cmd_learn))
+        app.add_handler(CommandHandler("import", self.cmd_import))
+        app.add_handler(CommandHandler("review", self.cmd_review))
+        app.add_handler(CommandHandler("approve", self.cmd_approve))
+        app.add_handler(CommandHandler("reject", self.cmd_reject))
+        app.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
+        app.add_handler(CommandHandler("admins", self.cmd_admins))
+        app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
+        app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         
-        # Callback для кнопок
-        application.add_handler(CallbackQueryHandler(self.handle_review_callback))
+        # Документы
+        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         
-        # Сообщения
-        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        # Фото
+        app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         
-        # Запуск
+        # Текст
+        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        
         logger.info(f"🤖 Бот v{VERSION} запущен!")
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        app.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def load_config():
-    """Загрузка конфигурации"""
+    """Загрузка конфига"""
     if not os.path.exists(CONFIG_PATH):
         print(f"❌ Не найден {CONFIG_PATH}")
         sys.exit(1)
@@ -667,61 +779,36 @@ def load_config():
 
 
 def init_database():
-    """Инициализация базы данных"""
+    """Инициализация БД"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
-    # Таблица admins
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS admins (
-            user_id INTEGER PRIMARY KEY,
-            username TEXT,
-            full_name TEXT,
-            added_by INTEGER,
-            can_teach BOOLEAN DEFAULT 1,
-            can_import BOOLEAN DEFAULT 0,
-            can_manage_admins BOOLEAN DEFAULT 0,
-            is_active BOOLEAN DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    # Таблицы
+    cursor.execute('''CREATE TABLE IF NOT EXISTS admins (
+        user_id INTEGER PRIMARY KEY, username TEXT, full_name TEXT, added_by INTEGER,
+        can_teach BOOLEAN DEFAULT 1, can_import BOOLEAN DEFAULT 1, 
+        can_manage_admins BOOLEAN DEFAULT 1, is_active BOOLEAN DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    # Таблица knowledge
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS knowledge (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            question TEXT NOT NULL,
-            answer TEXT NOT NULL,
-            category TEXT DEFAULT 'general',
-            tags TEXT DEFAULT '',
-            source TEXT DEFAULT '',
-            added_by INTEGER DEFAULT 0,
-            version INTEGER DEFAULT 1,
-            is_current BOOLEAN DEFAULT 1,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS knowledge (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT NOT NULL, answer TEXT NOT NULL,
+        category TEXT DEFAULT 'general', tags TEXT DEFAULT '', source TEXT DEFAULT '',
+        added_by INTEGER DEFAULT 0, version INTEGER DEFAULT 1, is_current BOOLEAN DEFAULT 1,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
-    # Таблица knowledge_drafts (v4.0)
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS knowledge_drafts (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            question TEXT NOT NULL,
-            answer TEXT NOT NULL,
-            category TEXT DEFAULT 'general',
-            tags TEXT DEFAULT '',
-            source TEXT DEFAULT '',
-            confidence REAL DEFAULT 0.5,
-            added_by INTEGER,
-            reviewed_by INTEGER,
-            status TEXT DEFAULT 'pending',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            reviewed_at TIMESTAMP
-        )
-    ''')
+    cursor.execute('''CREATE TABLE IF NOT EXISTS knowledge_drafts (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT NOT NULL, answer TEXT NOT NULL,
+        category TEXT DEFAULT 'general', tags TEXT DEFAULT '', source TEXT DEFAULT '',
+        confidence REAL DEFAULT 0.5, added_by INTEGER, reviewed_by INTEGER,
+        status TEXT DEFAULT 'pending', created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        reviewed_at TIMESTAMP)''')
     
-    # Индексы
+    cursor.execute('''CREATE TABLE IF NOT EXISTS admin_credentials (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+        service TEXT NOT NULL, login TEXT, password TEXT,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(user_id, service))''')
+    
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_knowledge_current ON knowledge(is_current)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_draft_status ON knowledge_drafts(status)')
     
@@ -730,33 +817,14 @@ def init_database():
 
 
 def main():
-    """Главная функция"""
     print("=" * 60)
     print(f"   Club Assistant Bot v{VERSION}")
-    print("   RAG Edition with Vector Search")
+    print("   Production Edition")
     print("=" * 60)
-    print()
     
-    # Инициализация БД
-    logger.info("Инициализация базы данных...")
     init_database()
-    
-    # Загрузка конфига
-    logger.info("Загрузка конфигурации...")
     config = load_config()
     
-    # Проверка модулей v4.0
-    try:
-        from embeddings import EmbeddingService
-        from vector_store import VectorStore
-        from draft_queue import DraftQueue
-        logger.info("✅ Модули v4.0 найдены")
-    except ImportError:
-        logger.error("❌ Модули v4.0 не найдены!")
-        logger.error("Установите: embeddings.py, vector_store.py, draft_queue.py")
-        sys.exit(1)
-    
-    # Запуск бота
     bot = ClubAssistantBot(config)
     bot.run()
 
@@ -765,10 +833,10 @@ if __name__ == '__main__':
     try:
         main()
     except KeyboardInterrupt:
-        logger.info("\n👋 Бот остановлен")
+        logger.info("\n👋 Остановлен")
         sys.exit(0)
     except Exception as e:
-        logger.error(f"❌ Критическая ошибка: {e}")
+        logger.error(f"❌ Ошибка: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
