@@ -618,34 +618,101 @@ class Bot:
             "Привет! Я Club Assistant.\n\n"
             "Задавай любые вопросы о клубе!\n\n"
             "Команды:\n"
-            "/start - справка\n"
+            "/help - подробная справка\n"
             "/stats - статистика\n"
         )
         
         if self.is_admin(update.effective_user.id):
-            text += "\nАдминистратор:\n"
+            text += "\nДля админов:\n"
+            text += "/help - полный список команд"
+        
+        await update.message.reply_text(text)
+    
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Подробная справка по командам"""
+        user_id = update.effective_user.id
+        is_admin = self.is_admin(user_id)
+        
+        if not is_admin:
+            # Обычный пользователь
+            text = (
+                "📖 Справка Club Assistant\n\n"
+                "Просто напиши мне любой вопрос о клубе, и я отвечу!\n\n"
+                "Основные команды:\n"
+                "/help - эта справка\n"
+                "/stats - статистика базы знаний\n\n"
+                "Примеры вопросов:\n"
+                "• Где находится клуб?\n"
+                "• Какой график работы?\n"
+                "• Сколько стоит абонемент?\n"
+                "• Есть ли парковка?"
+            )
+            await update.message.reply_text(text)
+            return
+        
+        # Администратор
+        can_teach = self.can_teach(user_id)
+        can_import = self.can_import(user_id)
+        can_manage = self.can_manage_admins(user_id)
+        
+        text = "📖 Справка для администраторов\n\n"
+        
+        # Основные команды
+        text += "🔷 Основные:\n"
+        text += "/help - эта справка\n"
+        text += "/stats - статистика базы\n"
+        text += "/health - проверка здоровья бота\n"
+        text += "/quota - использование OpenAI API\n\n"
+        
+        # Обучение
+        if can_teach:
+            text += "🔷 Обучение бота:\n"
+            text += "/learn текст - умное обучение\n"
+            text += "  Пример: /learn Клуб на ул. Ленина 123\n\n"
+            text += "/history вопрос - история изменений\n"
+            text += "  Пример: /history Где клуб?\n\n"
+            text += "/forget слово - удалить записи\n"
+            text += "  Пример: /forget старый_адрес\n\n"
+        
+        # Импорт
+        if can_import:
+            text += "🔷 Массовый импорт:\n"
+            text += "/import - режим импорта\n"
+            text += "  Затем отправьте CSV или JSONL файл\n\n"
+        
+        # Личные данные
+        text += "🔷 Личные данные:\n"
+        text += "/savecreds сервис логин пароль [заметки]\n"
+        text += "  Пример: /savecreds panel admin pass123\n\n"
+        text += "/getcreds [сервис] - показать данные\n"
+        text += "  Пример: /getcreds или /getcreds panel\n\n"
+        
+        # Управление
+        if can_manage:
+            text += "🔷 Управление администраторами:\n"
+            text += "/addadmin @user Имя [права]\n"
+            text += "  Права: teach, import, manage\n"
+            text += "  Пример: /addadmin @ivan Иван teach,import\n\n"
+            text += "/listadmins - список админов\n"
+            text += "/rmadmin ID - удалить админа\n\n"
             
-            if self.can_teach(update.effective_user.id):
-                text += "/learn - обучить бота\n"
-            
-            if self.can_import(update.effective_user.id):
-                text += "/import - импорт CSV/JSONL\n"
-            
-            text += "/history вопрос - история\n"
-            text += "/savecreds - сохранить данные\n"
-            text += "/getcreds - показать данные\n"
-            text += "/health - проверка бота\n"
-            text += "/quota - использование API\n"
-            text += "/forget - удалить\n"
-            text += "/update - обновить\n"
-            
-            if self.can_manage_admins(update.effective_user.id):
-                text += "\nУправление:\n"
-                text += "/addadmin - добавить админа\n"
-                text += "/listadmins - список админов\n"
-                text += "/rmadmin - удалить админа\n"
-                text += "/model - сменить модель GPT\n"
-                text += "/resetstats - сброс счётчиков\n"
+            text += "🔷 Настройки GPT:\n"
+            text += "/model - показать модели\n"
+            text += "/model название - сменить модель\n"
+            text += "  Пример: /model gpt-4o\n\n"
+            text += "/resetstats - сброс счётчиков API\n\n"
+        
+        # Обновление
+        text += "🔷 Обновление:\n"
+        text += "/update - обновить с GitHub\n"
+        text += "  Автоматически перезапустит бота\n\n"
+        
+        # Дополнительная информация
+        text += "💡 Полезно знать:\n"
+        text += "• В группах пишите @botname вопрос\n"
+        text += "• Старые ответы сохраняются (legacy)\n"
+        text += "• Каждое изменение записывает автора\n"
+        text += "• Пароли удаляются после /savecreds"
         
         await update.message.reply_text(text)
     
@@ -1320,6 +1387,7 @@ class Bot:
         
         # Основные команды
         app.add_handler(CommandHandler("start", self.cmd_start))
+        app.add_handler(CommandHandler("help", self.cmd_help))
         app.add_handler(CommandHandler("learn", self.cmd_learn))
         app.add_handler(CommandHandler("forget", self.cmd_forget))
         app.add_handler(CommandHandler("stats", self.cmd_stats))
