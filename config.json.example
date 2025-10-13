@@ -1,0 +1,6 @@
+{
+  "telegram_token": "1234567890:ABCdefGHI_YOUR_TOKEN_HERE",
+  "openai_api_key": "sk-proj-YOUR_KEY_HERE",
+  "admin_ids": [123456789],
+  "github_repo": "https://github.com/YOUR_USERNAME/club-bot.git"
+}
