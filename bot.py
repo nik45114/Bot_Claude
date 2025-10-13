@@ -403,8 +403,16 @@ class KnowledgeBase:
 class GPTClient:
     """OpenAI GPT клиент"""
     
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
         openai.api_key = api_key
+        self.model = model
+        self.request_count = 0
+        self.token_count = 0
+    
+    def set_model(self, model: str):
+        """Смена модели"""
+        self.model = model
+        logger.info(f"Модель изменена на: {model}")
     
     async def ask(self, question: str, context: str = None) -> str:
         try:
@@ -432,11 +440,16 @@ class GPTClient:
             messages.append({"role": "user", "content": question})
             
             response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
+                model=self.model,
                 messages=messages,
                 max_tokens=300,
                 temperature=0.7
             )
+            
+            # Подсчёт использования
+            self.request_count += 1
+            if hasattr(response, 'usage'):
+                self.token_count += response.usage.total_tokens
             
             return response.choices[0].message.content.strip()
         except Exception as e:
@@ -444,39 +457,63 @@ class GPTClient:
             return f"Извините, ошибка GPT: {str(e)}"
     
     async def check_quota(self) -> dict:
-        """Проверка лимитов OpenAI (работает частично с v0.28)"""
+        """Проверка использования API"""
         try:
-            # В OpenAI API v0.28 нет прямого метода для проверки квоты
-            # Но можем сделать тестовый запрос и посмотреть headers
-            
+            # Делаем тестовый запрос для проверки доступности
             response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
+                model=self.model,
                 messages=[{"role": "user", "content": "test"}],
                 max_tokens=5
             )
             
-            # Информация о модели и использовании из ответа
+            # Локальная статистика
             info = {
-                'model': response.model,
-                'usage': {
-                    'requests': 'N/A (API v0.28 не предоставляет)',
-                    'tokens': 'N/A'
+                'model': self.model,
+                'local_stats': {
+                    'requests': self.request_count,
+                    'tokens': self.token_count
                 },
-                'limits': {
-                    'requests': 'Зависит от плана',
-                    'tokens': 'Зависит от плана'
-                },
-                'remaining': {
-                    'requests': 'Проверьте на platform.openai.com',
-                    'tokens': 'Проверьте на platform.openai.com'
-                }
+                'api_response': 'OK',
+                'note': 'Для точных лимитов проверьте: https://platform.openai.com/usage'
             }
             
             return info
             
+        except openai.error.RateLimitError as e:
+            return {
+                'model': self.model,
+                'error': 'Rate limit exceeded',
+                'message': str(e),
+                'action': 'Превышен лимит запросов. Подождите или проверьте баланс.'
+            }
+        except openai.error.AuthenticationError:
+            return {
+                'model': self.model,
+                'error': 'Authentication failed',
+                'action': 'Проверьте API ключ в config.json'
+            }
+        except openai.error.APIError as e:
+            return {
+                'model': self.model,
+                'error': 'API Error',
+                'message': str(e)
+            }
         except Exception as e:
             logger.error(f"Ошибка check_quota: {e}")
-            return None
+            return {
+                'model': self.model,
+                'error': str(e)
+            }
+    
+    def get_available_models(self) -> list:
+        """Список доступных моделей"""
+        return [
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+            "gpt-4",
+            "gpt-3.5-turbo"
+        ]
     
     async def smart_learn(self, text: str) -> dict:
         """Умное извлечение знаний из текста"""
@@ -519,7 +556,11 @@ class Bot:
         self.config = self.load_config()
         self.kb = KnowledgeBase(DB_PATH)
         self.admin_mgr = AdminManager(DB_PATH)
-        self.gpt = GPTClient(self.config['openai_api_key'])
+        
+        # Инициализируем GPT с моделью из конфига
+        gpt_model = self.config.get('gpt_model', 'gpt-4o-mini')
+        self.gpt = GPTClient(self.config['openai_api_key'], model=gpt_model)
+        
         self.admin_ids = self.config['admin_ids']
         
         # Инициализируем супер-админа
@@ -590,11 +631,11 @@ class Bot:
             if self.can_import(update.effective_user.id):
                 text += "/import - импорт CSV/JSONL\n"
             
-            text += "/history вопрос - история изменений\n"
+            text += "/history вопрос - история\n"
             text += "/savecreds - сохранить данные\n"
             text += "/getcreds - показать данные\n"
             text += "/health - проверка бота\n"
-            text += "/quota - лимиты OpenAI\n"
+            text += "/quota - использование API\n"
             text += "/forget - удалить\n"
             text += "/update - обновить\n"
             
@@ -603,6 +644,8 @@ class Bot:
                 text += "/addadmin - добавить админа\n"
                 text += "/listadmins - список админов\n"
                 text += "/rmadmin - удалить админа\n"
+                text += "/model - сменить модель GPT\n"
+                text += "/resetstats - сброс счётчиков\n"
         
         await update.message.reply_text(text)
     
@@ -1018,56 +1061,123 @@ class Bot:
         await update.message.reply_text(text)
     
     async def cmd_quota(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Проверка лимитов OpenAI API"""
+        """Проверка использования OpenAI API"""
         if not self.is_admin(update.effective_user.id):
             await update.message.reply_text("Только для администраторов")
             return
         
-        await update.message.reply_text("Проверяю лимиты OpenAI...")
+        await update.message.reply_text("Проверяю API...")
         
         try:
-            # Получаем информацию о лимитах
             quota_info = await self.gpt.check_quota()
             
-            if quota_info:
-                text = "Лимиты OpenAI API:\n\n"
-                text += f"Модель: {quota_info.get('model', 'gpt-4o-mini')}\n\n"
+            if quota_info and 'error' not in quota_info:
+                text = "Использование OpenAI API:\n\n"
+                text += f"Модель: {quota_info['model']}\n\n"
                 
-                if 'usage' in quota_info:
-                    usage = quota_info['usage']
-                    text += f"Использовано запросов: {usage.get('requests', 'N/A')}\n"
-                    text += f"Использовано токенов: {usage.get('tokens', 'N/A')}\n\n"
+                if 'local_stats' in quota_info:
+                    stats = quota_info['local_stats']
+                    text += f"С момента запуска бота:\n"
+                    text += f"• Запросов: {stats['requests']}\n"
+                    text += f"• Токенов: {stats['tokens']}\n\n"
                 
-                if 'limits' in quota_info:
-                    limits = quota_info['limits']
-                    text += f"Лимит запросов: {limits.get('requests', 'N/A')}\n"
-                    text += f"Лимит токенов: {limits.get('tokens', 'N/A')}\n\n"
+                text += f"Статус API: {quota_info.get('api_response', 'OK')}\n\n"
+                text += f"{quota_info.get('note', '')}\n\n"
+                text += "Полная статистика:\nhttps://platform.openai.com/usage"
                 
-                if 'remaining' in quota_info:
-                    remaining = quota_info['remaining']
-                    text += f"Осталось запросов: {remaining.get('requests', 'N/A')}\n"
-                    text += f"Осталось токенов: {remaining.get('tokens', 'N/A')}\n"
+                await update.message.reply_text(text)
+            
+            elif quota_info and 'error' in quota_info:
+                text = f"Ошибка API:\n\n"
+                text += f"Тип: {quota_info['error']}\n"
                 
-                # Проверяем баланс через API (если доступно)
-                balance = quota_info.get('balance')
-                if balance:
-                    text += f"\nБаланс: ${balance:.2f}"
+                if 'message' in quota_info:
+                    text += f"Сообщение: {quota_info['message']}\n\n"
+                
+                if 'action' in quota_info:
+                    text += f"Действие: {quota_info['action']}"
                 
                 await update.message.reply_text(text)
             else:
                 await update.message.reply_text(
-                    "Не удалось получить информацию о лимитах\n\n"
-                    "OpenAI API v0.28 не предоставляет детальную информацию о квотах.\n"
-                    "Проверьте баланс на: https://platform.openai.com/usage"
+                    "Не удалось получить информацию\n\n"
+                    "Проверьте статистику:\n"
+                    "https://platform.openai.com/usage"
                 )
         
         except Exception as e:
-            logger.error(f"Ошибка проверки квоты: {e}")
+            logger.error(f"Ошибка quota: {e}")
+            await update.message.reply_text(f"Ошибка: {e}")
+    
+    async def cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать текущую модель или сменить"""
+        if not self.can_manage_admins(update.effective_user.id):
+            await update.message.reply_text("Только главный администратор")
+            return
+        
+        args = update.message.text.split()
+        
+        # Без аргументов - показываем текущую модель
+        if len(args) == 1:
+            text = f"Текущая модель: {self.gpt.model}\n\n"
+            text += "Доступные модели:\n"
+            for model in self.gpt.get_available_models():
+                mark = "→" if model == self.gpt.model else "  "
+                text += f"{mark} {model}\n"
+            text += f"\nДля смены: /model название"
+            
+            await update.message.reply_text(text)
+            return
+        
+        # С аргументом - меняем модель
+        new_model = args[1]
+        available = self.gpt.get_available_models()
+        
+        if new_model not in available:
             await update.message.reply_text(
-                f"Ошибка при проверке лимитов\n\n"
-                f"Проверьте баланс вручную:\n"
-                f"https://platform.openai.com/usage"
+                f"Неизвестная модель: {new_model}\n\n"
+                f"Доступные:\n" + "\n".join(f"• {m}" for m in available)
             )
+            return
+        
+        # Меняем модель
+        old_model = self.gpt.model
+        self.gpt.set_model(new_model)
+        
+        # Сохраняем в config
+        self.config['gpt_model'] = new_model
+        try:
+            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+        except Exception as e:
+            logger.error(f"Ошибка сохранения config: {e}")
+        
+        await update.message.reply_text(
+            f"Модель изменена\n\n"
+            f"Было: {old_model}\n"
+            f"Стало: {new_model}\n\n"
+            f"Изменение сохранено в config.json"
+        )
+    
+    async def cmd_resetstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Сброс счётчиков использования"""
+        if not self.can_manage_admins(update.effective_user.id):
+            await update.message.reply_text("Только главный администратор")
+            return
+        
+        old_requests = self.gpt.request_count
+        old_tokens = self.gpt.token_count
+        
+        self.gpt.request_count = 0
+        self.gpt.token_count = 0
+        
+        await update.message.reply_text(
+            f"Счётчики сброшены\n\n"
+            f"Было:\n"
+            f"• Запросов: {old_requests}\n"
+            f"• Токенов: {old_tokens}\n\n"
+            f"Теперь: 0 / 0"
+        )
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик загруженных файлов"""
@@ -1204,7 +1314,7 @@ class Bot:
     
     def run(self):
         """Запуск бота"""
-        logger.info("Запуск Club Assistant Bot v2.3...")
+        logger.info("Запуск Club Assistant Bot v2.4...")
         
         app = Application.builder().token(self.config['telegram_token']).build()
         
@@ -1230,6 +1340,8 @@ class Bot:
         app.add_handler(CommandHandler("history", self.cmd_history))
         app.add_handler(CommandHandler("health", self.cmd_health))
         app.add_handler(CommandHandler("quota", self.cmd_quota))
+        app.add_handler(CommandHandler("model", self.cmd_model))
+        app.add_handler(CommandHandler("resetstats", self.cmd_resetstats))
         
         # Файлы (для импорта)
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
