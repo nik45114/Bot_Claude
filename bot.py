@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Club Assistant Bot v2.1
-Telegram бот с AI и автообучением
+Club Assistant Bot v3.0
+Умное обучение, авто-теги, дедупликация
 """
 
 import os
@@ -10,14 +10,16 @@ import sys
 import sqlite3
 import json
 import logging
+import re
 from datetime import datetime
 from difflib import SequenceMatcher
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
     ContextTypes
 )
@@ -39,6 +41,7 @@ class AdminManager:
     
     def __init__(self, db_path: str):
         self.db_path = db_path
+        self.pending_admins = {}  # Временное хранилище для подтверждений
     
     def add_admin(self, user_id: int, username: str, full_name: str, added_by: int, 
                   can_teach: bool = True, can_import: bool = False, can_manage_admins: bool = False) -> bool:
@@ -147,7 +150,7 @@ class AdminManager:
 
 
 class KnowledgeBase:
-    """База знаний SQLite"""
+    """База знаний с умным поиском и дедупликацией"""
     
     def __init__(self, db_path: str):
         self.db_path = db_path
@@ -157,7 +160,7 @@ class KnowledgeBase:
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
-        # Таблица знаний с версионированием
+        # Таблица знаний
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS knowledge (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -175,8 +178,9 @@ class KnowledgeBase:
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_question ON knowledge(question)')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_current ON knowledge(is_current)')
+        cursor.execute('CREATE INDEX IF NOT EXISTS idx_tags ON knowledge(tags)')
         
-        # Таблица администраторов с расширенными правами
+        # Таблица администраторов
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS admins (
                 user_id INTEGER PRIMARY KEY,
@@ -191,7 +195,7 @@ class KnowledgeBase:
             )
         ''')
         
-        # Таблица личных данных админов (зашифрованная в будущем)
+        # Таблица личных данных админов
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS admin_credentials (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -206,7 +210,7 @@ class KnowledgeBase:
             )
         ''')
         
-        # Таблица проверок здоровья бота
+        # Таблица проверок здоровья
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS health_checks (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -221,22 +225,23 @@ class KnowledgeBase:
         conn.close()
         logger.info("База данных готова")
     
-    def add(self, question: str, answer: str, category: str = 'general', added_by: int = None) -> bool:
-        """Добавляет знание с версионированием - старое уходит в legacy"""
+    def add(self, question: str, answer: str, category: str = 'general', 
+            tags: str = '', source: str = '', added_by: int = None) -> bool:
+        """Добавляет вопрос-ответ в базу"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
             # Проверяем есть ли уже такой вопрос
             cursor.execute(
-                'SELECT id, version FROM knowledge WHERE question = ? AND is_current = 1',
+                'SELECT id, version FROM knowledge WHERE LOWER(question) = LOWER(?) AND is_current = 1',
                 (question,)
             )
             existing = cursor.fetchone()
             
             if existing:
                 old_id, old_version = existing
-                # Делаем старую запись legacy (неактуальной)
+                # Делаем старую запись legacy
                 cursor.execute(
                     'UPDATE knowledge SET is_current = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
                     (old_id,)
@@ -246,22 +251,190 @@ class KnowledgeBase:
                 new_version = 1
             
             # Добавляем новую версию
-            cursor.execute(
-                '''INSERT INTO knowledge 
-                   (question, answer, category, added_by, version, is_current) 
-                   VALUES (?, ?, ?, ?, ?, 1)''',
-                (question, answer, category, added_by, new_version)
-            )
+            cursor.execute('''
+                INSERT INTO knowledge 
+                (question, answer, category, tags, source, added_by, version, is_current)
+                VALUES (?, ?, ?, ?, ?, ?, ?, 1)
+            ''', (question, answer, category, tags, source, added_by, new_version))
             
             conn.commit()
             conn.close()
+            
+            logger.info(f"Добавлено: {question[:50]}... [категория: {category}, теги: {tags}]")
             return True
         except Exception as e:
             logger.error(f"Ошибка add: {e}")
             return False
     
+    async def smart_add(self, question: str, answer: str, gpt_client, added_by: int = None) -> dict:
+        """Умное добавление с авто-тегами, категорией и поиском дублей"""
+        try:
+            # 1. Генерируем теги и категорию через GPT
+            analysis = await self._analyze_content(question, answer, gpt_client)
+            
+            # 2. Проверяем дубликаты
+            duplicates = self.find_duplicates(question, answer)
+            
+            if duplicates:
+                logger.info(f"Найдено {len(duplicates)} похожих записей")
+                # Объединяем теги
+                all_tags = set(filter(None, analysis['tags'].split(',')))
+                for dup in duplicates:
+                    if dup.get('tags'):
+                        all_tags.update(filter(None, dup['tags'].split(',')))
+                
+                analysis['tags'] = ','.join(sorted(all_tags))
+                
+                # Помечаем старые как неактуальные
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                for dup in duplicates:
+                    cursor.execute(
+                        'UPDATE knowledge SET is_current = 0 WHERE id = ?',
+                        (dup['id'],)
+                    )
+                conn.commit()
+                conn.close()
+            
+            # 3. Добавляем в базу
+            success = self.add(
+                question=question,
+                answer=answer,
+                category=analysis['category'],
+                tags=analysis['tags'],
+                source='smart_learn',
+                added_by=added_by
+            )
+            
+            return {
+                'success': success,
+                'category': analysis['category'],
+                'tags': analysis['tags'],
+                'duplicates_merged': len(duplicates) if duplicates else 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка smart_add: {e}")
+            return {
+                'success': False,
+                'error': str(e)
+            }
+    
+    async def _analyze_content(self, question: str, answer: str, gpt_client) -> dict:
+        """Анализ контента через GPT для получения тегов и категории"""
+        try:
+            prompt = f"""Проанализируй вопрос и ответ. Верни ТОЛЬКО JSON без лишнего текста:
+
+Вопрос: {question}
+Ответ: {answer}
+
+Формат (СТРОГО JSON):
+{{
+  "category": "одна_категория",
+  "tags": "тег1,тег2,тег3"
+}}
+
+Категории (выбери одну):
+- hardware (железо, ПК, периферия)
+- software (программы, ОС, утилиты)
+- games (игры, Steam, лаунчеры)
+- service (услуги клуба, цены, время)
+- admin (администрирование, управление)
+- billing (оплата, счета, абонементы)
+- schedule (расписание, время работы)
+- general (остальное)
+
+Теги: 3-5 ключевых слов через запятую (на русском, без пробелов после запятых)"""
+
+            response = await gpt_client.ask(prompt)
+            
+            # Парсим JSON
+            try:
+                # Ищем JSON в ответе
+                start = response.find('{')
+                end = response.rfind('}') + 1
+                
+                if start >= 0 and end > start:
+                    json_str = response[start:end]
+                    analysis = json.loads(json_str)
+                    
+                    # Валидация
+                    valid_categories = ['hardware', 'software', 'games', 'service', 'admin', 'billing', 'schedule', 'general']
+                    if analysis.get('category') not in valid_categories:
+                        analysis['category'] = 'general'
+                    
+                    # Очистка тегов
+                    tags = analysis.get('tags', '')
+                    tags = re.sub(r'\s+', '', tags)  # Убираем все пробелы
+                    tags = ','.join(filter(None, tags.split(',')))  # Убираем пустые
+                    analysis['tags'] = tags[:200]  # Максимум 200 символов
+                    
+                    return analysis
+            except:
+                pass
+            
+            # Если не удалось распарсить - дефолт
+            return {
+                'category': 'general',
+                'tags': ''
+            }
+            
+        except Exception as e:
+            logger.error(f"Ошибка _analyze_content: {e}")
+            return {
+                'category': 'general',
+                'tags': ''
+            }
+    
+    def find_duplicates(self, question: str, answer: str = None, threshold: float = 0.80) -> list:
+        """Находит похожие вопросы (потенциальные дубликаты)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT id, question, answer, tags, category
+                FROM knowledge 
+                WHERE is_current = 1
+            ''')
+            records = cursor.fetchall()
+            conn.close()
+            
+            duplicates = []
+            q_lower = question.lower().strip()
+            
+            for id, db_q, db_a, tags, category in records:
+                # Сходство вопросов
+                q_ratio = SequenceMatcher(None, q_lower, db_q.lower()).ratio()
+                
+                # Если есть ответ - учитываем его
+                if answer:
+                    a_lower = answer.lower().strip()
+                    a_ratio = SequenceMatcher(None, a_lower, db_a.lower()).ratio()
+                    similarity = (q_ratio * 0.7 + a_ratio * 0.3)  # Вопрос важнее
+                else:
+                    similarity = q_ratio
+                
+                if similarity >= threshold:
+                    duplicates.append({
+                        'id': id,
+                        'question': db_q,
+                        'answer': db_a,
+                        'tags': tags,
+                        'category': category,
+                        'similarity': round(similarity * 100, 1)
+                    })
+            
+            # Сортируем по схожести
+            duplicates.sort(key=lambda x: x['similarity'], reverse=True)
+            
+            return duplicates
+            
+        except Exception as e:
+            logger.error(f"Ошибка find_duplicates: {e}")
+            return []
+    
     def find(self, question: str, threshold: float = 0.6) -> str:
-        """Ищет актуальный ответ"""
+        """Ищет точный ответ"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -290,13 +463,13 @@ class KnowledgeBase:
             logger.error(f"Ошибка find: {e}")
             return None
     
-    def smart_search(self, question: str) -> list:
-        """Умный поиск по ключевым словам и контексту"""
+    def smart_search(self, question: str, limit: int = 5) -> list:
+        """Умный поиск с продвинутым ранжированием"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT question, answer, category, tags 
+                SELECT id, question, answer, category, tags 
                 FROM knowledge 
                 WHERE is_current = 1
             ''')
@@ -306,72 +479,82 @@ class KnowledgeBase:
             if not records:
                 return []
             
-            # Извлекаем ключевые слова из вопроса
+            # Извлекаем ключевые слова
             q_lower = question.lower().strip()
-            keywords = set(q_lower.split())
+            keywords = set(re.findall(r'\w+', q_lower))
             
-            # Убираем стоп-слова
-            stop_words = {'что', 'как', 'где', 'когда', 'почему', 'какой', 'какая', 'какие', 
-                         'это', 'the', 'is', 'are', 'a', 'an', 'в', 'на', 'с', 'у', '?', 'о'}
+            # Стоп-слова
+            stop_words = {
+                'что', 'как', 'где', 'когда', 'почему', 'какой', 'какая', 'какие', 'какое',
+                'это', 'этот', 'эта', 'эти', 'тот', 'та', 'те',
+                'the', 'is', 'are', 'was', 'were', 'a', 'an', 'в', 'на', 'с', 'у', 'о', 'и', 'или'
+            }
             keywords = keywords - stop_words
             
             results = []
             
-            for db_q, db_a, category, tags in records:
+            for id, db_q, db_a, category, tags in records:
                 score = 0
                 
-                # 1. Точное совпадение вопроса
+                # 1. Точное совпадение
                 if db_q.lower() == q_lower:
-                    score = 100
-                # 2. Вопрос содержится в вопросе из БД
-                elif q_lower in db_q.lower() or db_q.lower() in q_lower:
-                    score = 90
+                    score = 1000
+                # 2. Один содержится в другом
+                elif q_lower in db_q.lower():
+                    score = 500
+                elif db_q.lower() in q_lower:
+                    score = 400
                 else:
-                    # 3. Совпадение по ключевым словам
-                    db_words = set(db_q.lower().split())
-                    db_words.update(db_a.lower().split())
+                    # 3. Ключевые слова в вопросе
+                    db_q_words = set(re.findall(r'\w+', db_q.lower()))
+                    q_matches = len(keywords & db_q_words)
+                    score += q_matches * 50
+                    
+                    # 4. Ключевые слова в ответе (меньший вес)
+                    db_a_words = set(re.findall(r'\w+', db_a.lower()))
+                    a_matches = len(keywords & db_a_words)
+                    score += a_matches * 20
+                    
+                    # 5. Ключевые слова в тегах (больший вес)
                     if tags:
-                        db_words.update(tags.lower().split(','))
+                        tag_words = set(re.findall(r'\w+', tags.lower()))
+                        t_matches = len(keywords & tag_words)
+                        score += t_matches * 70
                     
-                    matches = keywords & db_words
-                    if matches:
-                        score = len(matches) * 10
-                    
-                    # 4. Частичное совпадение строк
+                    # 6. Частичное совпадение строк
                     ratio = SequenceMatcher(None, q_lower, db_q.lower()).ratio()
-                    score += ratio * 30
+                    score += ratio * 100
                 
-                if score > 20:  # Минимальный порог
+                if score > 30:  # Минимальный порог
                     results.append({
+                        'id': id,
                         'question': db_q,
                         'answer': db_a,
                         'category': category,
-                        'score': score
+                        'tags': tags,
+                        'score': round(score, 1)
                     })
             
             # Сортируем по релевантности
             results.sort(key=lambda x: x['score'], reverse=True)
             
-            return results[:5]  # Топ 5 результатов
+            return results[:limit]
             
         except Exception as e:
             logger.error(f"Ошибка smart_search: {e}")
             return []
     
     def find_history(self, question: str) -> list:
-        """Находит всю историю изменений вопроса"""
+        """История изменений вопроса"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
-            # Точное совпадение
             cursor.execute('''
                 SELECT version, answer, created_at, is_current, added_by
                 FROM knowledge 
-                WHERE question = ?
+                WHERE LOWER(question) = LOWER(?)
                 ORDER BY version DESC
             ''', (question,))
-            
             history = cursor.fetchall()
             conn.close()
             return history
@@ -392,80 +575,40 @@ class KnowledgeBase:
             cursor.execute('SELECT COUNT(*) FROM knowledge WHERE is_current = 0')
             legacy = cursor.fetchone()[0]
             
-            # По категориям (только актуальные)
+            # По категориям
             cursor.execute('SELECT category, COUNT(*) FROM knowledge WHERE is_current = 1 GROUP BY category')
             by_cat = dict(cursor.fetchall())
             
+            # С тегами
+            cursor.execute('SELECT COUNT(*) FROM knowledge WHERE is_current = 1 AND tags != ""')
+            with_tags = cursor.fetchone()[0]
+            
             conn.close()
-            return {'total': total, 'legacy': legacy, 'by_category': by_cat}
+            return {
+                'total': total,
+                'legacy': legacy,
+                'by_category': by_cat,
+                'with_tags': with_tags
+            }
         except:
-            return {'total': 0, 'legacy': 0, 'by_category': {}}
+            return {'total': 0, 'legacy': 0, 'by_category': {}, 'with_tags': 0}
     
-    def delete_by_keyword(self, keyword: str) -> int:
+    def delete(self, keyword: str) -> int:
+        """Удаляет записи по ключевому слову"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute(
-                'DELETE FROM knowledge WHERE question LIKE ? OR answer LIKE ?',
-                (f'%{keyword}%', f'%{keyword}%')
-            )
-            count = cursor.rowcount
+            cursor.execute('''
+                DELETE FROM knowledge 
+                WHERE question LIKE ? OR answer LIKE ?
+            ''', (f'%{keyword}%', f'%{keyword}%'))
+            deleted = cursor.rowcount
             conn.commit()
             conn.close()
-            return count
-        except:
+            return deleted
+        except Exception as e:
+            logger.error(f"Ошибка delete: {e}")
             return 0
-    
-    def bulk_import(self, records: list) -> tuple:
-        """
-        Массовый импорт записей
-        records: список словарей с ключами question, answer, category, tags, source
-        Возвращает: (добавлено, обновлено, пропущено)
-        """
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        added = 0
-        updated = 0
-        skipped = 0
-        
-        for record in records:
-            try:
-                question = record.get('question', '').strip()
-                answer = record.get('answer', '').strip()
-                
-                if not question or not answer:
-                    skipped += 1
-                    continue
-                
-                category = record.get('category', 'general')
-                tags = record.get('tags', '')
-                source = record.get('source', '')
-                
-                # Проверяем существует ли запись
-                cursor.execute('SELECT id FROM knowledge WHERE question = ?', (question,))
-                exists = cursor.fetchone()
-                
-                if exists:
-                    updated += 1
-                else:
-                    added += 1
-                
-                # INSERT OR REPLACE
-                cursor.execute('''
-                    INSERT OR REPLACE INTO knowledge 
-                    (question, answer, category, tags, source, updated_at)
-                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-                ''', (question, answer, category, tags, source))
-                
-            except Exception as e:
-                logger.error(f"Ошибка импорта записи: {e}")
-                skipped += 1
-        
-        conn.commit()
-        conn.close()
-        
-        return (added, updated, skipped)
 
 
 class GPTClient:
@@ -499,7 +642,7 @@ class GPTClient:
             if context:
                 messages.append({
                     "role": "system", 
-                    "content": f"БАЗА ЗНАНИЙ:\n{context}\n\nИспользуй эту информацию для ответа. Если вопрос похож на что-то из базы - отвечай на основе базы."
+                    "content": f"БАЗА ЗНАНИЙ:\n{context}\n\nИспользуй эту информацию для ответа."
                 })
             
             messages.append({"role": "user", "content": question})
@@ -511,7 +654,7 @@ class GPTClient:
                 temperature=0.7
             )
             
-            # Подсчёт использования
+            # Подсчёт
             self.request_count += 1
             if hasattr(response, 'usage'):
                 self.token_count += response.usage.total_tokens
@@ -524,94 +667,29 @@ class GPTClient:
     async def check_quota(self) -> dict:
         """Проверка использования API"""
         try:
-            # Делаем тестовый запрос для проверки доступности
             response = openai.ChatCompletion.create(
                 model=self.model,
                 messages=[{"role": "user", "content": "test"}],
                 max_tokens=5
             )
             
-            # Локальная статистика
-            info = {
+            return {
                 'model': self.model,
                 'local_stats': {
                     'requests': self.request_count,
                     'tokens': self.token_count
                 },
-                'api_response': 'OK',
-                'note': 'Для точных лимитов проверьте: https://platform.openai.com/usage'
+                'api_response': 'OK'
             }
-            
-            return info
-            
         except openai.error.RateLimitError as e:
-            return {
-                'model': self.model,
-                'error': 'Rate limit exceeded',
-                'message': str(e),
-                'action': 'Превышен лимит запросов. Подождите или проверьте баланс.'
-            }
+            return {'error': 'Rate limit exceeded', 'message': str(e)}
         except openai.error.AuthenticationError:
-            return {
-                'model': self.model,
-                'error': 'Authentication failed',
-                'action': 'Проверьте API ключ в config.json'
-            }
-        except openai.error.APIError as e:
-            return {
-                'model': self.model,
-                'error': 'API Error',
-                'message': str(e)
-            }
+            return {'error': 'Authentication failed'}
         except Exception as e:
-            logger.error(f"Ошибка check_quota: {e}")
-            return {
-                'model': self.model,
-                'error': str(e)
-            }
+            return {'error': str(e)}
     
     def get_available_models(self) -> list:
-        """Список доступных моделей"""
-        return [
-            "gpt-4o",
-            "gpt-4o-mini",
-            "gpt-4-turbo",
-            "gpt-4",
-            "gpt-3.5-turbo"
-        ]
-    
-    async def smart_learn(self, text: str) -> dict:
-        """Умное извлечение знаний из текста"""
-        try:
-            prompt = f"""Извлеки из текста вопрос и ответ.
-Верни JSON: {{"question": "...", "answer": "...", "category": "..."}}
-
-Текст: {text}
-
-Примеры:
-"Клуб на ул. Ленина 123" → {{"question": "Где клуб?", "answer": "ул. Ленина, 123", "category": "location"}}
-"Работаем с 9 до 21" → {{"question": "График работы?", "answer": "9:00-21:00", "category": "schedule"}}
-"""
-            
-            response = openai.ChatCompletion.create(
-                model="gpt-4o-mini",
-                messages=[{"role": "user", "content": prompt}],
-                max_tokens=200,
-                temperature=0.3
-            )
-            
-            result = response.choices[0].message.content.strip()
-            
-            # Извлекаем JSON
-            import re
-            match = re.search(r'\{[^}]+\}', result)
-            if match:
-                return json.loads(match.group())
-            
-            return None
-        except Exception as e:
-            logger.error(f"smart_learn ошибка: {e}")
-            return None
+        return ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-4", "gpt-3.5-turbo"]
 
 
 class Bot:
@@ -622,13 +700,12 @@ class Bot:
         self.kb = KnowledgeBase(DB_PATH)
         self.admin_mgr = AdminManager(DB_PATH)
         
-        # Инициализируем GPT с моделью из конфига
         gpt_model = self.config.get('gpt_model', 'gpt-4o-mini')
         self.gpt = GPTClient(self.config['openai_api_key'], model=gpt_model)
         
         self.admin_ids = self.config['admin_ids']
         
-        # Инициализируем супер-админа
+        # Инициализируем главного админа
         if self.admin_ids:
             main_admin = self.admin_ids[0]
             self.admin_mgr.add_admin(
@@ -642,19 +719,22 @@ class Bot:
             )
     
     def load_config(self) -> dict:
-        if not os.path.exists(CONFIG_PATH):
-            logger.error("❌ config.json не найден!")
+        """Загрузка конфига"""
+        try:
+            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+                logger.info("Конфиг загружен")
+                return config
+        except Exception as e:
+            logger.error(f"❌ Ошибка: {e}")
             sys.exit(1)
-        
-        with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-            config = json.load(f)
-        
-        logger.info("✅ Конфигурация загружена")
-        return config
     
     def is_admin(self, user_id: int) -> bool:
-        """Базовая проверка - есть ли в списке админов"""
-        return user_id in self.admin_ids or self.admin_mgr.get_admin(user_id) is not None
+        """Проверка прав администратора"""
+        if user_id in self.admin_ids:
+            return True
+        admin = self.admin_mgr.get_admin(user_id)
+        return admin is not None
     
     def can_teach(self, user_id: int) -> bool:
         """Может ли обучать бота"""
@@ -664,126 +744,102 @@ class Bot:
         return admin and admin['can_teach']
     
     def can_import(self, user_id: int) -> bool:
-        """Может ли импортировать данные"""
+        """Может ли импортировать"""
         if user_id in self.admin_ids:
             return True
         admin = self.admin_mgr.get_admin(user_id)
         return admin and admin['can_import']
     
     def can_manage_admins(self, user_id: int) -> bool:
-        """Может ли управлять другими админами"""
+        """Может ли управлять админами"""
         return user_id in self.admin_ids
     
-    # Обработчики команд
+    # === КОМАНДЫ ===
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.info(f"/start от {update.effective_user.id}")
-        
         text = (
-            "Привет! Я Club Assistant.\n\n"
+            "👋 Привет! Я Club Assistant v3.0\n\n"
             "Задавай любые вопросы о клубе!\n\n"
             "Команды:\n"
-            "/help - подробная справка\n"
-            "/stats - статистика\n"
+            "/help - подробная справка"
         )
         
         if self.is_admin(update.effective_user.id):
-            text += "\nДля админов:\n"
-            text += "/help - полный список команд"
+            text += "\n/help - все команды админа"
         
         await update.message.reply_text(text)
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Подробная справка по командам"""
+        """Подробная справка"""
         user_id = update.effective_user.id
-        is_admin = self.is_admin(user_id)
         
-        if not is_admin:
-            # Обычный пользователь
+        if not self.is_admin(user_id):
             text = (
                 "📖 Справка Club Assistant\n\n"
-                "Просто напиши мне любой вопрос о клубе, и я отвечу!\n\n"
-                "Основные команды:\n"
+                "Просто напиши любой вопрос о клубе!\n\n"
                 "/help - эта справка\n"
-                "/stats - статистика базы знаний\n\n"
-                "Примеры вопросов:\n"
+                "/stats - статистика базы\n\n"
+                "Примеры:\n"
                 "• Где находится клуб?\n"
-                "• Какой график работы?\n"
-                "• Сколько стоит абонемент?\n"
+                "• Какие цены на игры?\n"
                 "• Есть ли парковка?"
             )
             await update.message.reply_text(text)
             return
         
-        # Администратор
+        # Для админов
         can_teach = self.can_teach(user_id)
         can_import = self.can_import(user_id)
         can_manage = self.can_manage_admins(user_id)
         
         text = "📖 Справка для администраторов\n\n"
         
-        # Основные команды
         text += "🔷 Основные:\n"
-        text += "/help - эта справка\n"
-        text += "/stats - статистика базы\n"
-        text += "/health - проверка здоровья бота\n"
-        text += "/quota - использование OpenAI API\n\n"
+        text += "/help - справка\n"
+        text += "/stats - статистика\n"
+        text += "/health - здоровье бота\n"
+        text += "/quota - использование API\n\n"
         
-        # Обучение
         if can_teach:
-            text += "🔷 Обучение бота:\n"
-            text += "/learn текст - умное обучение\n"
-            text += "  Пример: /learn Клуб на ул. Ленина 123\n\n"
-            text += "/history вопрос - история изменений\n"
-            text += "  Пример: /history Где клуб?\n\n"
-            text += "/forget слово - удалить записи\n"
-            text += "  Пример: /forget старый_адрес\n\n"
+            text += "🔷 Обучение (УМНОЕ):\n"
+            text += "/learn текст\n"
+            text += "  → авто-теги, категория, поиск дублей\n\n"
+            text += "/search вопрос - тест поиска\n"
+            text += "/history вопрос - история\n"
+            text += "/forget слово - удалить\n\n"
         
-        # Импорт
         if can_import:
-            text += "🔷 Массовый импорт:\n"
-            text += "/import - режим импорта\n"
-            text += "  Затем отправьте CSV или JSONL файл\n\n"
+            text += "🔷 Импорт:\n"
+            text += "/import - массовый импорт CSV/JSONL\n\n"
         
-        # Личные данные
         text += "🔷 Личные данные:\n"
-        text += "/savecreds сервис логин пароль [заметки]\n"
-        text += "  Пример: /savecreds panel admin pass123\n\n"
-        text += "/getcreds [сервис] - показать данные\n"
-        text += "  Пример: /getcreds или /getcreds panel\n\n"
+        text += "/savecreds сервис логин пароль\n"
+        text += "/getcreds [сервис]\n\n"
         
-        # Управление
         if can_manage:
-            text += "🔷 Управление администраторами:\n"
-            text += "/addadmin @user Имя [права]\n"
-            text += "  Права: teach, import, manage\n"
-            text += "  Пример: /addadmin @ivan Иван teach,import\n\n"
-            text += "/listadmins - список админов\n"
-            text += "/rmadmin ID - удалить админа\n\n"
+            text += "🔷 Управление:\n"
+            text += "/addadmin - добавить админа\n"
+            text += "/listadmins - список\n"
+            text += "/rmadmin ID - удалить\n\n"
             
-            text += "🔷 Настройки GPT:\n"
-            text += "/model - показать модели\n"
-            text += "/model название - сменить модель\n"
-            text += "  Пример: /model gpt-4o\n\n"
-            text += "/resetstats - сброс счётчиков API\n\n"
+            text += "🔷 GPT:\n"
+            text += "/model - модели\n"
+            text += "/resetstats - сброс счётчиков\n\n"
         
-        # Обновление
         text += "🔷 Обновление:\n"
-        text += "/update - обновить с GitHub\n"
-        text += "  Автоматически перезапустит бота\n\n"
+        text += "/update - с GitHub\n\n"
         
-        # Дополнительная информация
-        text += "💡 Полезно знать:\n"
-        text += "• В группах пишите @botname вопрос\n"
-        text += "• Старые ответы сохраняются (legacy)\n"
-        text += "• Каждое изменение записывает автора\n"
-        text += "• Пароли удаляются после /savecreds"
+        text += "💡 v3.0:\n"
+        text += "• Авто-теги через GPT\n"
+        text += "• Умный поиск дублей\n"
+        text += "• Продвинутое ранжирование"
         
         await update.message.reply_text(text)
     
     async def cmd_learn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Умное обучение с авто-тегами"""
         if not self.can_teach(update.effective_user.id):
-            await update.message.reply_text("Нет прав для обучения")
+            await update.message.reply_text("Нет прав на обучение")
             return
         
         text = update.message.text.replace('/learn', '').strip()
@@ -791,40 +847,127 @@ class Bot:
         if not text:
             await update.message.reply_text(
                 "Использование: /learn текст\n\n"
-                "Примеры:\n"
-                "• /learn Клуб на ул. Ленина 123\n"
-                "• /learn Работаем пн-пт 9-21\n"
-                "• /learn Парковка бесплатная"
+                "Бот автоматически:\n"
+                "• Определит категорию\n"
+                "• Создаст теги\n"
+                "• Найдёт дубликаты\n\n"
+                "Пример:\n"
+                "/learn Клуб работает с 10:00 до 23:00 каждый день"
             )
             return
         
-        logger.info(f"/learn: {text[:50]} от {update.effective_user.id}")
-        
-        result = await self.gpt.smart_learn(text)
-        
-        if result and 'question' in result and 'answer' in result:
-            self.kb.add(
-                result['question'],
-                result['answer'],
-                result.get('category', 'general'),
-                added_by=update.effective_user.id
-            )
+        # Парсим текст
+        if '\n' in text or ' - ' in text or ': ' in text:
+            # Пытаемся разделить на вопрос и ответ
+            if '\n' in text:
+                parts = text.split('\n', 1)
+            elif ' - ' in text:
+                parts = text.split(' - ', 1)
+            elif ': ' in text:
+                parts = text.split(': ', 1)
+            else:
+                parts = [text]
             
-            username = update.effective_user.username or update.effective_user.full_name
-            
-            await update.message.reply_text(
-                f"Запомнил!\n\n"
-                f"Вопрос: {result['question']}\n"
-                f"Ответ: {result['answer']}\n"
-                f"Категория: {result.get('category', 'general')}\n"
-                f"Обучил: @{username}"
-            )
+            if len(parts) == 2:
+                question = parts[0].strip()
+                answer = parts[1].strip()
+            else:
+                # Генерируем вопрос через GPT
+                question_prompt = f"Сформулируй короткий вопрос (3-7 слов) для этой информации: {text}"
+                question = await self.gpt.ask(question_prompt)
+                question = question.strip('?"')
+                answer = text
         else:
-            await update.message.reply_text("Не смог извлечь знание")
+            # Короткий текст - генерируем вопрос
+            question_prompt = f"Сформулируй короткий вопрос (3-7 слов) для этой информации: {text}"
+            question = await self.gpt.ask(question_prompt)
+            question = question.strip('?"')
+            answer = text
+        
+        # Умное добавление
+        msg = await update.message.reply_text("⏳ Анализирую...")
+        
+        result = await self.kb.smart_add(
+            question=question,
+            answer=answer,
+            gpt_client=self.gpt,
+            added_by=update.effective_user.id
+        )
+        
+        if result['success']:
+            response = f"✅ Добавлено!\n\n"
+            response += f"❓ {question}\n"
+            response += f"💬 {answer[:100]}...\n\n"
+            response += f"📂 Категория: {result['category']}\n"
+            
+            if result['tags']:
+                response += f"🏷 Теги: {result['tags']}\n"
+            
+            if result['duplicates_merged'] > 0:
+                response += f"\n🔗 Объединено дубликатов: {result['duplicates_merged']}"
+            
+            await msg.edit_text(response)
+        else:
+            error = result.get('error', 'Неизвестная ошибка')
+            await msg.edit_text(f"❌ Ошибка: {error}")
+    
+    async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Статистика базы"""
+        stats = self.kb.stats()
+        
+        text = f"📊 Статистика базы знаний\n\n"
+        text += f"Всего: {stats['total']}\n"
+        text += f"Legacy: {stats['legacy']}\n"
+        text += f"С тегами: {stats['with_tags']}\n\n"
+        
+        if stats['by_category']:
+            text += "По категориям:\n"
+            for cat, count in sorted(stats['by_category'].items(), key=lambda x: x[1], reverse=True):
+                text += f"• {cat}: {count}\n"
+        
+        await update.message.reply_text(text)
+    
+    async def cmd_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Тестирование умного поиска"""
+        if not self.is_admin(update.effective_user.id):
+            return
+        
+        question = update.message.text.replace('/search', '').strip()
+        
+        if not question:
+            await update.message.reply_text("Использование: /search вопрос")
+            return
+        
+        results = self.kb.smart_search(question, limit=5)
+        
+        if not results:
+            await update.message.reply_text("❌ Ничего не найдено")
+            return
+        
+        text = f"🔍 Результаты: '{question}'\n\n"
+        
+        for i, r in enumerate(results, 1):
+            text += f"{i}. [Score: {r['score']}]\n"
+            text += f"❓ {r['question']}\n"
+            text += f"💬 {r['answer']}\n"
+            text += f"📂 {r['category']}"
+            
+            if r['tags']:
+                text += f" | 🏷 {r['tags']}"
+            
+            text += "\n\n"
+        
+        # Разбиваем на части если длинно
+        if len(text) > 4000:
+            parts = [text[i:i+4000] for i in range(0, len(text), 4000)]
+            for part in parts:
+                await update.message.reply_text(part)
+        else:
+            await update.message.reply_text(text)
     
     async def cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("⛔ Только для администраторов")
+        """Удаление по ключевому слову"""
+        if not self.can_teach(update.effective_user.id):
             return
         
         keyword = update.message.text.replace('/forget', '').strip()
@@ -833,278 +976,16 @@ class Bot:
             await update.message.reply_text("Использование: /forget ключевое_слово")
             return
         
-        count = self.kb.delete_by_keyword(keyword)
-        await update.message.reply_text(f"✅ Удалено записей: {count}")
-    
-    async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        stats = self.kb.stats()
+        deleted = self.kb.delete(keyword)
         
-        text = f"Статистика\n\n"
-        text += f"Актуальных: {stats['total']}\n"
-        text += f"Legacy: {stats['legacy']}\n\n"
-        
-        if stats['by_category']:
-            text += "По категориям:\n"
-            for cat, count in stats['by_category'].items():
-                text += f"  • {cat}: {count}\n"
-        
-        await update.message.reply_text(text)
-    
-    async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
-            return
-        
-        github_repo = self.config.get('github_repo', '')
-        
-        if not github_repo:
-            await update.message.reply_text(
-                "GitHub репозиторий не настроен!\n"
-                "Добавьте 'github_repo' в config.json"
-            )
-            return
-        
-        await update.message.reply_text("Обновляю с GitHub...")
-        
-        try:
-            import subprocess
-            
-            work_dir = os.path.dirname(os.path.abspath(__file__))
-            
-            # Git pull - обновляем ВСЁ из репозитория
-            result = subprocess.run(
-                ['git', 'pull', 'origin', 'main'],
-                capture_output=True,
-                text=True,
-                cwd=work_dir
-            )
-            
-            if result.returncode == 0:
-                changes = result.stdout
-                
-                await update.message.reply_text(
-                    f"Обновление загружено!\n\n"
-                    f"Изменения:\n{changes[:500]}\n\n"
-                    f"Перезапускаю бота..."
-                )
-                
-                # Перезапускаем через systemd
-                subprocess.Popen(['systemctl', 'restart', 'club_assistant'])
-            else:
-                await update.message.reply_text(f"Ошибка: {result.stderr}")
-        
-        except Exception as e:
-            await update.message.reply_text(f"Ошибка обновления: {e}")
-    
-    async def cmd_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Команда /import - активирует режим ожидания файла"""
-        if not self.can_import(update.effective_user.id):
-            await update.message.reply_text("Нет прав для импорта")
-            return
-        
-        await update.message.reply_text(
-            "Режим импорта активирован\n\n"
-            "Отправьте файл в формате:\n"
-            "• CSV (.csv)\n"
-            "• JSONL (.jsonl)\n\n"
-            "Формат CSV:\n"
-            "question,answer,category,tags,source\n\n"
-            "Формат JSONL (каждая строка - JSON):\n"
-            '{"question":"...","answer":"...","category":"..."}'
-        )
-    
-    async def cmd_add_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Добавление нового администратора"""
-        if not self.can_manage_admins(update.effective_user.id):
-            await update.message.reply_text("Только главный администратор может добавлять админов")
-            return
-        
-        # Парсим: /addadmin @username Имя Фамилия teach,import
-        args = update.message.text.split(maxsplit=3)
-        
-        if len(args) < 3:
-            await update.message.reply_text(
-                "Использование:\n"
-                "/addadmin @username Имя_Фамилия [права]\n\n"
-                "Права (через запятую):\n"
-                "• teach - может обучать\n"
-                "• import - может импортировать\n"
-                "• manage - может управлять админами\n\n"
-                "Пример:\n"
-                "/addadmin @ivan Иван_Петров teach,import"
-            )
-            return
-        
-        username = args[1].replace('@', '')
-        full_name = args[2].replace('_', ' ')
-        
-        permissions = args[3].split(',') if len(args) > 3 else ['teach']
-        
-        can_teach = 'teach' in permissions
-        can_import = 'import' in permissions
-        can_manage = 'manage' in permissions
-        
-        # Сохраняем запрос на подтверждение
-        context.user_data['pending_admin'] = {
-            'username': username,
-            'full_name': full_name,
-            'can_teach': can_teach,
-            'can_import': can_import,
-            'can_manage': can_manage
-        }
-        
-        await update.message.reply_text(
-            f"Добавить администратора?\n\n"
-            f"Username: @{username}\n"
-            f"Имя: {full_name}\n"
-            f"Права:\n"
-            f"  • Обучение: {'да' if can_teach else 'нет'}\n"
-            f"  • Импорт: {'да' if can_import else 'нет'}\n"
-            f"  • Управление: {'да' if can_manage else 'нет'}\n\n"
-            f"Для подтверждения пусть @{username} напишет боту:\n"
-            f"/confirm_admin"
-        )
-    
-    async def cmd_confirm_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Подтверждение добавления админа"""
-        user_id = update.effective_user.id
-        username = update.effective_user.username
-        
-        # Проверяем есть ли запрос от главного админа
-        # (в реальной системе нужно хранить в БД, но для простоты - в памяти)
-        
-        success = self.admin_mgr.add_admin(
-            user_id=user_id,
-            username=username or 'unknown',
-            full_name=update.effective_user.full_name or 'Без имени',
-            added_by=self.admin_ids[0],
-            can_teach=True,
-            can_import=False,
-            can_manage=False
-        )
-        
-        if success:
-            await update.message.reply_text(
-                f"Вы добавлены как администратор!\n\n"
-                f"Ваши права:\n"
-                f"• Обучение бота (/learn)\n"
-                f"• Просмотр статистики (/stats)"
-            )
+        if deleted > 0:
+            await update.message.reply_text(f"✅ Удалено записей: {deleted}")
         else:
-            await update.message.reply_text("Ошибка при добавлении")
-    
-    async def cmd_list_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Список администраторов"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
-            return
-        
-        admins = self.admin_mgr.list_admins()
-        
-        if not admins:
-            await update.message.reply_text("Нет администраторов")
-            return
-        
-        text = "Список администраторов:\n\n"
-        for user_id, username, full_name, can_teach, can_import, can_manage in admins:
-            rights = []
-            if can_teach:
-                rights.append("обучение")
-            if can_import:
-                rights.append("импорт")
-            if can_manage:
-                rights.append("управление")
-            
-            text += f"• @{username} ({full_name})\n"
-            text += f"  ID: {user_id}\n"
-            text += f"  Права: {', '.join(rights)}\n\n"
-        
-        await update.message.reply_text(text)
-    
-    async def cmd_remove_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Удаление администратора"""
-        if not self.can_manage_admins(update.effective_user.id):
-            await update.message.reply_text("Только главный администратор")
-            return
-        
-        args = update.message.text.split()
-        if len(args) < 2:
-            await update.message.reply_text("Использование: /rmadmin user_id")
-            return
-        
-        try:
-            user_id = int(args[1])
-            if self.admin_mgr.remove_admin(user_id):
-                await update.message.reply_text(f"Администратор {user_id} удалён")
-            else:
-                await update.message.reply_text("Ошибка удаления")
-        except:
-            await update.message.reply_text("Неверный ID")
-    
-    async def cmd_save_creds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Сохранение личных данных"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
-            return
-        
-        # /savecreds сервис логин пароль [заметки]
-        args = update.message.text.split(maxsplit=4)
-        
-        if len(args) < 4:
-            await update.message.reply_text(
-                "Использование:\n"
-                "/savecreds сервис логин пароль [заметки]\n\n"
-                "Пример:\n"
-                "/savecreds auth_site admin123 pass456 Доступ к панели"
-            )
-            return
-        
-        service = args[1]
-        login = args[2]
-        password = args[3]
-        notes = args[4] if len(args) > 4 else ''
-        
-        if self.admin_mgr.save_credentials(update.effective_user.id, service, login, password, notes):
-            await update.message.reply_text(f"Данные для '{service}' сохранены")
-            
-            # Удаляем сообщение с паролем (для безопасности)
-            try:
-                await update.message.delete()
-            except:
-                pass
-        else:
-            await update.message.reply_text("Ошибка сохранения")
-    
-    async def cmd_get_creds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получение личных данных"""
-        if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
-            return
-        
-        args = update.message.text.split()
-        service = args[1] if len(args) > 1 else None
-        
-        creds = self.admin_mgr.get_credentials(update.effective_user.id, service)
-        
-        if not creds:
-            await update.message.reply_text("Нет сохранённых данных")
-            return
-        
-        text = "Ваши сохранённые данные:\n\n"
-        for srv, login, pwd, notes, created in creds:
-            text += f"Сервис: {srv}\n"
-            text += f"Логин: {login}\n"
-            text += f"Пароль: {pwd}\n"
-            if notes:
-                text += f"Заметки: {notes}\n"
-            text += f"Создано: {created}\n\n"
-        
-        await update.message.reply_text(text)
+            await update.message.reply_text("❌ Ничего не найдено")
     
     async def cmd_history(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """История изменений вопроса"""
+        """История изменений"""
         if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
             return
         
         question = update.message.text.replace('/history', '').strip()
@@ -1116,349 +997,295 @@ class Bot:
         history = self.kb.find_history(question)
         
         if not history:
-            await update.message.reply_text("История не найдена")
+            await update.message.reply_text("❌ История не найдена")
             return
         
-        text = f"История: '{question}'\n\n"
-        for version, answer, created, is_current, added_by in history:
-            status = "актуальный" if is_current else "legacy"
-            text += f"v{version} ({status})\n"
-            text += f"Ответ: {answer}\n"
-            text += f"Создан: {created}\n"
-            if added_by:
-                text += f"Автор: {added_by}\n"
-            text += "\n"
+        text = f"📜 История: '{question}'\n\n"
+        
+        for ver, ans, created, is_cur, added_by in history:
+            status = "🟢 актуальная" if is_cur else "⚫ legacy"
+            text += f"v{ver} {status}\n"
+            text += f"{ans[:100]}...\n"
+            text += f"📅 {created}\n\n"
         
         await update.message.reply_text(text)
     
     async def cmd_health(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Проверка здоровья бота"""
+        """Проверка здоровья"""
         if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
             return
         
-        checks = []
+        text = "🏥 Проверка здоровья\n\n"
         
-        # 1. База данных
+        # База данных
         try:
             stats = self.kb.stats()
-            checks.append(("База данных", "OK", f"{stats['total']} записей"))
-        except Exception as e:
-            checks.append(("База данных", "FAIL", str(e)))
+            text += f"✅ База данных: {stats['total']} записей\n"
+        except:
+            text += "❌ База данных: ошибка\n"
         
-        # 2. OpenAI API
+        # GPT API
         try:
-            test_response = await self.gpt.ask("test")
-            if test_response:
-                checks.append(("OpenAI API", "OK", "Доступен"))
+            quota = await self.gpt.check_quota()
+            if 'error' not in quota:
+                text += f"✅ GPT API: OK ({self.gpt.model})\n"
             else:
-                checks.append(("OpenAI API", "FAIL", "Нет ответа"))
-        except Exception as e:
-            checks.append(("OpenAI API", "FAIL", str(e)))
-        
-        # 3. GitHub
-        github_repo = self.config.get('github_repo', '')
-        if github_repo:
-            checks.append(("GitHub", "OK", github_repo))
-        else:
-            checks.append(("GitHub", "WARNING", "Не настроен"))
-        
-        # 4. Память
-        try:
-            import psutil
-            process = psutil.Process()
-            mem_mb = process.memory_info().rss / 1024 / 1024
-            checks.append(("Память", "OK", f"{mem_mb:.1f} MB"))
+                text += f"❌ GPT API: {quota['error']}\n"
         except:
-            checks.append(("Память", "WARNING", "Нет данных"))
+            text += "❌ GPT API: ошибка\n"
         
-        # 5. Uptime
-        try:
-            import psutil
-            import time
-            process = psutil.Process()
-            uptime_sec = time.time() - process.create_time()
-            uptime_hours = uptime_sec / 3600
-            checks.append(("Uptime", "OK", f"{uptime_hours:.1f} часов"))
-        except:
-            checks.append(("Uptime", "WARNING", "Нет данных"))
-        
-        # Формируем отчёт
-        text = "Проверка здоровья бота:\n\n"
-        for check, status, details in checks:
-            emoji = "✅" if status == "OK" else "⚠️" if status == "WARNING" else "❌"
-            text += f"{emoji} {check}: {status}\n"
-            text += f"   {details}\n\n"
+        # Статистика
+        text += f"\n📊 Использование:\n"
+        text += f"Запросов: {self.gpt.request_count}\n"
+        text += f"Токенов: {self.gpt.token_count}"
         
         await update.message.reply_text(text)
     
     async def cmd_quota(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Проверка использования OpenAI API"""
+        """Квоты API"""
         if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
             return
         
-        await update.message.reply_text("Проверяю API...")
+        quota_info = await self.gpt.check_quota()
         
-        try:
-            quota_info = await self.gpt.check_quota()
-            
-            if quota_info and 'error' not in quota_info:
-                text = "Использование OpenAI API:\n\n"
-                text += f"Модель: {quota_info['model']}\n\n"
-                
-                if 'local_stats' in quota_info:
-                    stats = quota_info['local_stats']
-                    text += f"С момента запуска бота:\n"
-                    text += f"• Запросов: {stats['requests']}\n"
-                    text += f"• Токенов: {stats['tokens']}\n\n"
-                
-                text += f"Статус API: {quota_info.get('api_response', 'OK')}\n\n"
-                text += f"{quota_info.get('note', '')}\n\n"
-                text += "Полная статистика:\nhttps://platform.openai.com/usage"
-                
-                await update.message.reply_text(text)
-            
-            elif quota_info and 'error' in quota_info:
-                text = f"Ошибка API:\n\n"
-                text += f"Тип: {quota_info['error']}\n"
-                
-                if 'message' in quota_info:
-                    text += f"Сообщение: {quota_info['message']}\n\n"
-                
-                if 'action' in quota_info:
-                    text += f"Действие: {quota_info['action']}"
-                
-                await update.message.reply_text(text)
-            else:
-                await update.message.reply_text(
-                    "Не удалось получить информацию\n\n"
-                    "Проверьте статистику:\n"
-                    "https://platform.openai.com/usage"
-                )
+        if 'error' not in quota_info:
+            stats = quota_info['local_stats']
+            text = f"📊 Использование API\n\n"
+            text += f"Модель: {quota_info['model']}\n\n"
+            text += f"Запросов: {stats['requests']}\n"
+            text += f"Токенов: {stats['tokens']}\n\n"
+            text += f"Статус: {quota_info['api_response']}\n\n"
+            text += "Полная статистика:\nplatform.openai.com/usage"
+        else:
+            text = f"❌ Ошибка: {quota_info['error']}"
+            if 'message' in quota_info:
+                text += f"\n{quota_info['message']}"
         
-        except Exception as e:
-            logger.error(f"Ошибка quota: {e}")
-            await update.message.reply_text(f"Ошибка: {e}")
+        await update.message.reply_text(text)
     
     async def cmd_model(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать текущую модель или сменить"""
+        """Управление моделью GPT"""
         if not self.can_manage_admins(update.effective_user.id):
-            await update.message.reply_text("Только главный администратор")
             return
         
         args = update.message.text.split()
         
-        # Без аргументов - показываем текущую модель
         if len(args) == 1:
-            text = f"Текущая модель: {self.gpt.model}\n\n"
-            text += "Доступные модели:\n"
-            for model in self.gpt.get_available_models():
-                mark = "→" if model == self.gpt.model else "  "
-                text += f"{mark} {model}\n"
-            text += f"\nДля смены: /model название"
-            
+            # Показываем текущую
+            models = self.gpt.get_available_models()
+            text = f"Текущая: {self.gpt.model}\n\nДоступные:\n"
+            for m in models:
+                mark = "→" if m == self.gpt.model else "  "
+                text += f"{mark} {m}\n"
+            text += "\nСменить: /model название"
             await update.message.reply_text(text)
-            return
-        
-        # С аргументом - меняем модель
-        new_model = args[1]
-        available = self.gpt.get_available_models()
-        
-        if new_model not in available:
-            await update.message.reply_text(
-                f"Неизвестная модель: {new_model}\n\n"
-                f"Доступные:\n" + "\n".join(f"• {m}" for m in available)
-            )
-            return
-        
-        # Меняем модель
-        old_model = self.gpt.model
-        self.gpt.set_model(new_model)
-        
-        # Сохраняем в config
-        self.config['gpt_model'] = new_model
-        try:
-            with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
-                json.dump(self.config, f, indent=2, ensure_ascii=False)
-        except Exception as e:
-            logger.error(f"Ошибка сохранения config: {e}")
-        
-        await update.message.reply_text(
-            f"Модель изменена\n\n"
-            f"Было: {old_model}\n"
-            f"Стало: {new_model}\n\n"
-            f"Изменение сохранено в config.json"
-        )
+        else:
+            # Меняем
+            new_model = args[1]
+            if new_model in self.gpt.get_available_models():
+                old = self.gpt.model
+                self.gpt.set_model(new_model)
+                
+                # Сохраняем
+                self.config['gpt_model'] = new_model
+                with open(CONFIG_PATH, 'w', encoding='utf-8') as f:
+                    json.dump(self.config, f, indent=2, ensure_ascii=False)
+                
+                await update.message.reply_text(f"✅ {old} → {new_model}")
+            else:
+                await update.message.reply_text("❌ Неизвестная модель")
     
     async def cmd_resetstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Сброс счётчиков использования"""
+        """Сброс счётчиков"""
         if not self.can_manage_admins(update.effective_user.id):
-            await update.message.reply_text("Только главный администратор")
             return
         
-        old_requests = self.gpt.request_count
-        old_tokens = self.gpt.token_count
+        old_r = self.gpt.request_count
+        old_t = self.gpt.token_count
         
         self.gpt.request_count = 0
         self.gpt.token_count = 0
         
         await update.message.reply_text(
-            f"Счётчики сброшены\n\n"
-            f"Было:\n"
-            f"• Запросов: {old_requests}\n"
-            f"• Токенов: {old_tokens}\n\n"
-            f"Теперь: 0 / 0"
+            f"✅ Сброшено\n\n"
+            f"Было: {old_r} запросов, {old_t} токенов"
         )
     
-    async def cmd_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Тестирование умного поиска"""
+    async def cmd_addadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Добавление админа (упрощённо)"""
+        if not self.can_manage_admins(update.effective_user.id):
+            return
+        
+        await update.message.reply_text(
+            "Перешли мне сообщение от пользователя, "
+            "которого хочешь сделать админом"
+        )
+    
+    async def cmd_listadmins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Список админов"""
         if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("Только для администраторов")
             return
         
-        question = update.message.text.replace('/search', '').strip()
+        admins = self.admin_mgr.list_admins()
         
-        if not question:
-            await update.message.reply_text(
-                "Использование: /search вопрос\n\n"
-                "Показывает результаты умного поиска с релевантностью"
-            )
+        if not admins:
+            await update.message.reply_text("Нет администраторов")
             return
         
-        results = self.kb.smart_search(question)
+        text = "👥 Администраторы:\n\n"
         
-        if not results:
-            await update.message.reply_text("Ничего не найдено")
-            return
-        
-        text = f"Результаты поиска: '{question}'\n\n"
-        
-        for i, result in enumerate(results, 1):
-            text += f"{i}. [Score: {result['score']:.1f}]\n"
-            text += f"Q: {result['question']}\n"
-            text += f"A: {result['answer'][:100]}...\n"
-            text += f"Категория: {result['category']}\n\n"
+        for uid, uname, fname, teach, imp, manage in admins:
+            text += f"• @{uname} ({fname})\n"
+            text += f"  ID: {uid}\n"
+            
+            rights = []
+            if teach: rights.append("обучение")
+            if imp: rights.append("импорт")
+            if manage: rights.append("управление")
+            
+            text += f"  Права: {', '.join(rights)}\n\n"
         
         await update.message.reply_text(text)
     
-    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработчик загруженных файлов"""
+    async def cmd_rmadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление админа"""
+        if not self.can_manage_admins(update.effective_user.id):
+            return
+        
+        args = update.message.text.split()
+        
+        if len(args) < 2:
+            await update.message.reply_text("Использование: /rmadmin ID")
+            return
+        
+        try:
+            user_id = int(args[1])
+            
+            if user_id in self.admin_ids:
+                await update.message.reply_text("❌ Нельзя удалить главного админа")
+                return
+            
+            if self.admin_mgr.remove_admin(user_id):
+                await update.message.reply_text(f"✅ Админ {user_id} удалён")
+            else:
+                await update.message.reply_text("❌ Ошибка")
+        except:
+            await update.message.reply_text("❌ Неверный ID")
+    
+    async def cmd_savecreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Сохранение данных"""
         if not self.is_admin(update.effective_user.id):
             return
         
-        document = update.message.document
-        file_name = document.file_name
-        file_ext = os.path.splitext(file_name)[1].lower()
+        parts = update.message.text.split(maxsplit=4)
         
-        # Проверяем формат
-        if file_ext not in ['.csv', '.jsonl']:
+        if len(parts) < 4:
             await update.message.reply_text(
-                "Неподдерживаемый формат\n"
-                "Используйте: .csv или .jsonl"
+                "Использование: /savecreds сервис логин пароль [заметки]"
             )
             return
         
-        await update.message.reply_text("Загружаю файл...")
+        service = parts[1]
+        login = parts[2]
+        password = parts[3]
+        notes = parts[4] if len(parts) > 4 else ''
+        
+        if self.admin_mgr.save_credentials(
+            update.effective_user.id, service, login, password, notes
+        ):
+            # Удаляем сообщение с паролем
+            await update.message.delete()
+            await context.bot.send_message(
+                update.effective_chat.id,
+                f"✅ Данные для '{service}' сохранены"
+            )
+        else:
+            await update.message.reply_text("❌ Ошибка")
+    
+    async def cmd_getcreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Получение данных"""
+        if not self.is_admin(update.effective_user.id):
+            return
+        
+        args = update.message.text.split()
+        service = args[1] if len(args) > 1 else None
+        
+        creds = self.admin_mgr.get_credentials(update.effective_user.id, service)
+        
+        if not creds:
+            await update.message.reply_text("❌ Данных нет")
+            return
+        
+        text = "🔐 Ваши данные:\n\n"
+        
+        for srv, login, pwd, notes, created in creds:
+            text += f"• {srv}\n"
+            text += f"  Логин: {login}\n"
+            text += f"  Пароль: {pwd}\n"
+            if notes:
+                text += f"  Заметки: {notes}\n"
+            text += "\n"
+        
+        # Отправляем приватно
+        await context.bot.send_message(update.effective_user.id, text)
+        
+        if update.effective_chat.type != 'private':
+            await update.message.reply_text("✅ Отправил в ЛС")
+    
+    async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обновление с GitHub"""
+        if not self.can_manage_admins(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("🔄 Обновляюсь...")
         
         try:
-            # Скачиваем файл
-            tmp_dir = '/tmp/bot_imports'
-            os.makedirs(tmp_dir, exist_ok=True)
-            tmp_path = os.path.join(tmp_dir, f"{update.effective_user.id}_{file_name}")
+            import subprocess
             
-            file = await context.bot.get_file(document.file_id)
-            await file.download_to_drive(tmp_path)
-            
-            # Импортируем
-            records = self.parse_import_file(tmp_path, file_ext)
-            added, updated, skipped = self.kb.bulk_import(records)
-            
-            # Удаляем временный файл
-            os.remove(tmp_path)
-            
-            await update.message.reply_text(
-                f"Импорт завершён\n\n"
-                f"Добавлено: {added}\n"
-                f"Обновлено: {updated}\n"
-                f"Пропущено: {skipped}"
+            result = subprocess.run(
+                ['git', 'pull', 'origin', 'main'],
+                capture_output=True,
+                text=True,
+                cwd='/opt/club_assistant'
             )
             
-            logger.info(f"Импорт: +{added} ~{updated} !{skipped}")
-            
+            if result.returncode == 0:
+                await update.message.reply_text(
+                    f"✅ Обновлено!\n\n{result.stdout}\n\nПерезапускаюсь..."
+                )
+                
+                # Перезапуск
+                subprocess.run(['systemctl', 'restart', 'club_assistant'])
+            else:
+                await update.message.reply_text(f"❌ Ошибка:\n{result.stderr}")
         except Exception as e:
-            logger.error(f"Ошибка импорта: {e}")
-            await update.message.reply_text(f"Ошибка импорта: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
     
-    def parse_import_file(self, file_path: str, file_ext: str) -> list:
-        """Парсит CSV или JSONL файл"""
-        records = []
-        
-        if file_ext == '.csv':
-            import csv
-            with open(file_path, 'r', encoding='utf-8') as f:
-                reader = csv.DictReader(f)
-                for row in reader:
-                    records.append({
-                        'question': row.get('question', ''),
-                        'answer': row.get('answer', ''),
-                        'category': row.get('category', 'general'),
-                        'tags': row.get('tags', ''),
-                        'source': row.get('source', '')
-                    })
-        
-        elif file_ext == '.jsonl':
-            with open(file_path, 'r', encoding='utf-8') as f:
-                for line in f:
-                    try:
-                        obj = json.loads(line.strip())
-                        # Если tags - список, конвертируем в строку
-                        tags = obj.get('tags', '')
-                        if isinstance(tags, list):
-                            tags = ','.join(tags)
-                        
-                        records.append({
-                            'question': obj.get('question', ''),
-                            'answer': obj.get('answer', ''),
-                            'category': obj.get('category', 'general'),
-                            'tags': tags,
-                            'source': obj.get('source', '')
-                        })
-                    except:
-                        continue
-        
-        return records
+    # === ОБРАБОТЧИКИ ===
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка сообщений"""
         question = update.message.text.strip()
         user_id = update.effective_user.id
         chat_type = update.effective_chat.type
         
-        # В группах реагируем только на упоминания или ответы
+        # В группах - только по упоминанию
         if chat_type in ['group', 'supergroup']:
             bot_username = context.bot.username
             
-            # Проверяем: это ответ на наше сообщение?
-            is_reply_to_bot = (
+            is_reply = (
                 update.message.reply_to_message and 
                 update.message.reply_to_message.from_user.id == context.bot.id
             )
             
-            # Проверяем: есть упоминание бота?
             is_mention = f"@{bot_username}" in question
             
-            # Если ни то, ни другое - игнорируем
-            if not (is_reply_to_bot or is_mention):
+            if not (is_reply or is_mention):
                 return
             
-            # Убираем упоминание из текста
             question = question.replace(f"@{bot_username}", "").strip()
-            
-            logger.info(f"[ГРУППА] Сообщение от {user_id}: {question[:50]}")
-        else:
-            logger.info(f"[ЛС] Сообщение от {user_id}: {question[:50]}")
         
-        # 1. Точный поиск в базе
+        # 1. Точный поиск
         exact_answer = self.kb.find(question)
         
         if exact_answer:
@@ -1466,72 +1293,58 @@ class Bot:
             await update.message.reply_text(exact_answer)
             return
         
-        # 2. Умный поиск (по ключевым словам, частичное совпадение)
-        smart_results = self.kb.smart_search(question)
+        # 2. Умный поиск
+        smart_results = self.kb.smart_search(question, limit=3)
         
-        if smart_results and smart_results[0]['score'] >= 70:
+        if smart_results and smart_results[0]['score'] >= 200:
             # Высокая релевантность - отвечаем сразу
             best = smart_results[0]
-            logger.info(f"Найдено умным поиском (score: {best['score']})")
+            logger.info(f"Умный поиск: score {best['score']}")
             await update.message.reply_text(best['answer'])
             return
         
-        # 3. GPT с контекстом из базы
+        # 3. GPT с контекстом
         context_text = None
         
         if smart_results:
-            # Есть похожие результаты - передаём их как контекст
             context_parts = []
-            for result in smart_results[:3]:  # Топ 3
-                context_parts.append(f"Q: {result['question']}\nA: {result['answer']}")
+            for r in smart_results:
+                context_parts.append(f"Q: {r['question']}\nA: {r['answer']}")
             
-            context_text = "Похожие вопросы из базы:\n\n" + "\n\n".join(context_parts)
-            logger.info(f"Передаю {len(smart_results)} результатов в GPT как контекст")
+            context_text = "Похожие из базы:\n\n" + "\n\n".join(context_parts)
+            logger.info(f"Передаю {len(smart_results)} результатов в GPT")
         
-        # Запрос к GPT
         gpt_answer = await self.gpt.ask(question, context=context_text)
         
-        # Сохраняем в базу
+        # Сохраняем
         self.kb.add(question, gpt_answer, 'auto', added_by=user_id)
         
-        logger.info("Ответ GPT с контекстом")
         await update.message.reply_text(gpt_answer)
     
     def run(self):
         """Запуск бота"""
-        logger.info("Запуск Club Assistant Bot v2.4...")
+        logger.info("Запуск Club Assistant Bot v3.0...")
         
         app = Application.builder().token(self.config['telegram_token']).build()
         
-        # Основные команды
+        # Команды
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("help", self.cmd_help))
         app.add_handler(CommandHandler("learn", self.cmd_learn))
-        app.add_handler(CommandHandler("forget", self.cmd_forget))
         app.add_handler(CommandHandler("stats", self.cmd_stats))
-        app.add_handler(CommandHandler("update", self.cmd_update))
-        app.add_handler(CommandHandler("import", self.cmd_import))
-        
-        # Управление админами
-        app.add_handler(CommandHandler("addadmin", self.cmd_add_admin))
-        app.add_handler(CommandHandler("confirmadmin", self.cmd_confirm_admin))
-        app.add_handler(CommandHandler("listadmins", self.cmd_list_admins))
-        app.add_handler(CommandHandler("rmadmin", self.cmd_remove_admin))
-        
-        # Личные данные
-        app.add_handler(CommandHandler("savecreds", self.cmd_save_creds))
-        app.add_handler(CommandHandler("getcreds", self.cmd_get_creds))
-        
-        # Дополнительные
+        app.add_handler(CommandHandler("search", self.cmd_search))
+        app.add_handler(CommandHandler("forget", self.cmd_forget))
         app.add_handler(CommandHandler("history", self.cmd_history))
         app.add_handler(CommandHandler("health", self.cmd_health))
         app.add_handler(CommandHandler("quota", self.cmd_quota))
         app.add_handler(CommandHandler("model", self.cmd_model))
         app.add_handler(CommandHandler("resetstats", self.cmd_resetstats))
-        app.add_handler(CommandHandler("search", self.cmd_search))
-        
-        # Файлы (для импорта)
-        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        app.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
+        app.add_handler(CommandHandler("listadmins", self.cmd_listadmins))
+        app.add_handler(CommandHandler("rmadmin", self.cmd_rmadmin))
+        app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
+        app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
+        app.add_handler(CommandHandler("update", self.cmd_update))
         
         # Текст
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
@@ -1546,8 +1359,7 @@ if __name__ == '__main__':
         bot = Bot()
         bot.run()
     except KeyboardInterrupt:
-        logger.info("⏹️ Остановлен")
+        logger.info("Бот остановлен")
     except Exception as e:
-        logger.error(f"❌ Ошибка: {e}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"Критическая ошибка: {e}")
+        sys.exit(1)
