@@ -356,8 +356,31 @@ class Bot:
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         question = update.message.text.strip()
         user_id = update.effective_user.id
+        chat_type = update.effective_chat.type
         
-        logger.info(f"💬 Сообщение от {user_id}: {question[:50]}")
+        # В группах реагируем только на упоминания или ответы
+        if chat_type in ['group', 'supergroup']:
+            bot_username = context.bot.username
+            
+            # Проверяем: это ответ на наше сообщение?
+            is_reply_to_bot = (
+                update.message.reply_to_message and 
+                update.message.reply_to_message.from_user.id == context.bot.id
+            )
+            
+            # Проверяем: есть упоминание бота?
+            is_mention = f"@{bot_username}" in question
+            
+            # Если ни то, ни другое - игнорируем
+            if not (is_reply_to_bot or is_mention):
+                return
+            
+            # Убираем упоминание из текста
+            question = question.replace(f"@{bot_username}", "").strip()
+            
+            logger.info(f"💬 [ГРУППА] Сообщение от {user_id}: {question[:50]}")
+        else:
+            logger.info(f"💬 [ЛС] Сообщение от {user_id}: {question[:50]}")
         
         # Ищем в базе
         answer = self.kb.find(question)
