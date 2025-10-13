@@ -443,6 +443,41 @@ class GPTClient:
             logger.error(f"GPT ошибка: {e}")
             return f"Извините, ошибка GPT: {str(e)}"
     
+    async def check_quota(self) -> dict:
+        """Проверка лимитов OpenAI (работает частично с v0.28)"""
+        try:
+            # В OpenAI API v0.28 нет прямого метода для проверки квоты
+            # Но можем сделать тестовый запрос и посмотреть headers
+            
+            response = openai.ChatCompletion.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "user", "content": "test"}],
+                max_tokens=5
+            )
+            
+            # Информация о модели и использовании из ответа
+            info = {
+                'model': response.model,
+                'usage': {
+                    'requests': 'N/A (API v0.28 не предоставляет)',
+                    'tokens': 'N/A'
+                },
+                'limits': {
+                    'requests': 'Зависит от плана',
+                    'tokens': 'Зависит от плана'
+                },
+                'remaining': {
+                    'requests': 'Проверьте на platform.openai.com',
+                    'tokens': 'Проверьте на platform.openai.com'
+                }
+            }
+            
+            return info
+            
+        except Exception as e:
+            logger.error(f"Ошибка check_quota: {e}")
+            return None
+    
     async def smart_learn(self, text: str) -> dict:
         """Умное извлечение знаний из текста"""
         try:
@@ -559,6 +594,7 @@ class Bot:
             text += "/savecreds - сохранить данные\n"
             text += "/getcreds - показать данные\n"
             text += "/health - проверка бота\n"
+            text += "/quota - лимиты OpenAI\n"
             text += "/forget - удалить\n"
             text += "/update - обновить\n"
             
@@ -953,16 +989,24 @@ class Bot:
             checks.append(("GitHub", "WARNING", "Не настроен"))
         
         # 4. Память
-        import psutil
-        process = psutil.Process()
-        mem_mb = process.memory_info().rss / 1024 / 1024
-        checks.append(("Память", "OK", f"{mem_mb:.1f} MB"))
+        try:
+            import psutil
+            process = psutil.Process()
+            mem_mb = process.memory_info().rss / 1024 / 1024
+            checks.append(("Память", "OK", f"{mem_mb:.1f} MB"))
+        except:
+            checks.append(("Память", "WARNING", "Нет данных"))
         
         # 5. Uptime
-        import time
-        uptime_sec = time.time() - process.create_time()
-        uptime_hours = uptime_sec / 3600
-        checks.append(("Uptime", "OK", f"{uptime_hours:.1f} часов"))
+        try:
+            import psutil
+            import time
+            process = psutil.Process()
+            uptime_sec = time.time() - process.create_time()
+            uptime_hours = uptime_sec / 3600
+            checks.append(("Uptime", "OK", f"{uptime_hours:.1f} часов"))
+        except:
+            checks.append(("Uptime", "WARNING", "Нет данных"))
         
         # Формируем отчёт
         text = "Проверка здоровья бота:\n\n"
@@ -972,6 +1016,58 @@ class Bot:
             text += f"   {details}\n\n"
         
         await update.message.reply_text(text)
+    
+    async def cmd_quota(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Проверка лимитов OpenAI API"""
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Только для администраторов")
+            return
+        
+        await update.message.reply_text("Проверяю лимиты OpenAI...")
+        
+        try:
+            # Получаем информацию о лимитах
+            quota_info = await self.gpt.check_quota()
+            
+            if quota_info:
+                text = "Лимиты OpenAI API:\n\n"
+                text += f"Модель: {quota_info.get('model', 'gpt-4o-mini')}\n\n"
+                
+                if 'usage' in quota_info:
+                    usage = quota_info['usage']
+                    text += f"Использовано запросов: {usage.get('requests', 'N/A')}\n"
+                    text += f"Использовано токенов: {usage.get('tokens', 'N/A')}\n\n"
+                
+                if 'limits' in quota_info:
+                    limits = quota_info['limits']
+                    text += f"Лимит запросов: {limits.get('requests', 'N/A')}\n"
+                    text += f"Лимит токенов: {limits.get('tokens', 'N/A')}\n\n"
+                
+                if 'remaining' in quota_info:
+                    remaining = quota_info['remaining']
+                    text += f"Осталось запросов: {remaining.get('requests', 'N/A')}\n"
+                    text += f"Осталось токенов: {remaining.get('tokens', 'N/A')}\n"
+                
+                # Проверяем баланс через API (если доступно)
+                balance = quota_info.get('balance')
+                if balance:
+                    text += f"\nБаланс: ${balance:.2f}"
+                
+                await update.message.reply_text(text)
+            else:
+                await update.message.reply_text(
+                    "Не удалось получить информацию о лимитах\n\n"
+                    "OpenAI API v0.28 не предоставляет детальную информацию о квотах.\n"
+                    "Проверьте баланс на: https://platform.openai.com/usage"
+                )
+        
+        except Exception as e:
+            logger.error(f"Ошибка проверки квоты: {e}")
+            await update.message.reply_text(
+                f"Ошибка при проверке лимитов\n\n"
+                f"Проверьте баланс вручную:\n"
+                f"https://platform.openai.com/usage"
+            )
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик загруженных файлов"""
@@ -1133,6 +1229,7 @@ class Bot:
         # Дополнительные
         app.add_handler(CommandHandler("history", self.cmd_history))
         app.add_handler(CommandHandler("health", self.cmd_health))
+        app.add_handler(CommandHandler("quota", self.cmd_quota))
         
         # Файлы (для импорта)
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
