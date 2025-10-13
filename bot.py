@@ -1111,17 +1111,365 @@ class Bot:
             f"Было: {old_r} запросов, {old_t} токенов"
         )
     
-    async def cmd_addadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Добавление админа (упрощённо)"""
-        if not self.can_manage_admins(update.effective_user.id):
+    async def cmd_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Режим импорта"""
+        if not self.can_import(update.effective_user.id):
+            await update.message.reply_text("Нет прав на импорт")
             return
         
         await update.message.reply_text(
-            "Перешли мне сообщение от пользователя, "
-            "которого хочешь сделать админом"
+            "📥 Режим импорта\n\n"
+            "Отправьте файл:\n"
+            "• CSV (question,answer,category)\n"
+            "• JSONL (по строке JSON)\n\n"
+            "Файл будет обработан автоматически"
         )
     
-    async def cmd_listadmins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка файлов для импорта"""
+        if not self.can_import(update.effective_user.id):
+            return
+        
+        document = update.message.document
+        file_name = document.file_name
+        
+        if not (file_name.endswith('.csv') or file_name.endswith('.jsonl')):
+            await update.message.reply_text("❌ Поддерживаются только CSV и JSONL")
+            return
+        
+        # Скачиваем файл
+        msg = await update.message.reply_text("⏳ Загружаю файл...")
+        
+        try:
+            file = await context.bot.get_file(document.file_id)
+            file_path = f"/tmp/{file_name}"
+            await file.download_to_drive(file_path)
+            
+            await msg.edit_text("⏳ Обрабатываю...")
+            
+            # Импорт
+            imported = 0
+            errors = 0
+            
+            if file_name.endswith('.csv'):
+                import csv
+                
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    reader = csv.DictReader(f)
+                    
+                    for row in reader:
+                        question = row.get('question', '').strip()
+                        answer = row.get('answer', '').strip()
+                        category = row.get('category', 'general').strip()
+                        
+                        if question and answer:
+                            # Умное добавление
+                            result = await self.kb.smart_add(
+                                question=question,
+                                answer=answer,
+                                gpt_client=self.gpt,
+                                added_by=update.effective_user.id
+                            )
+                            
+                            if result['success']:
+                                imported += 1
+                            else:
+                                errors += 1
+            
+            elif file_name.endswith('.jsonl'):
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    for line in f:
+                        try:
+                            data = json.loads(line)
+                            question = data.get('question', '').strip()
+                            answer = data.get('answer', '').strip()
+                            
+                            if question and answer:
+                                result = await self.kb.smart_add(
+                                    question=question,
+                                    answer=answer,
+                                    gpt_client=self.gpt,
+                                    added_by=update.effective_user.id
+                                )
+                                
+                                if result['success']:
+                                    imported += 1
+                                else:
+                                    errors += 1
+                        except:
+                            errors += 1
+            
+            # Удаляем временный файл
+            import os
+            os.remove(file_path)
+            
+            # Результат
+            text = f"✅ Импорт завершён!\n\n"
+            text += f"Добавлено: {imported}\n"
+            if errors > 0:
+                text += f"Ошибок: {errors}"
+            
+            await msg.edit_text(text)
+            
+        except Exception as e:
+            logger.error(f"Ошибка импорта: {e}")
+            await msg.edit_text(f"❌ Ошибка импорта: {e}")
+    
+    async def cmd_addadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Добавление админа через кнопки"""
+        if not self.can_manage_admins(update.effective_user.id):
+            await update.message.reply_text("Только для главного администратора")
+            return
+        
+        # Проверяем аргументы
+        args = update.message.text.split(maxsplit=1)
+        
+        if len(args) < 2:
+            await update.message.reply_text(
+                "Использование:\n\n"
+                "1️⃣ По username:\n"
+                "/addadmin @username\n\n"
+                "2️⃣ По ID:\n"
+                "/addadmin 123456789\n\n"
+                "После этого выберешь права через кнопки"
+            )
+            return
+        
+        # Парсим username или ID
+        user_input = args[1].strip()
+        
+        if user_input.startswith('@'):
+            username = user_input[1:]
+            user_id = None
+        else:
+            try:
+                user_id = int(user_input)
+                username = f"user_{user_id}"
+            except:
+                await update.message.reply_text("❌ Неверный формат. Используй @username или ID")
+                return
+        
+        # Сохраняем в ожидание
+        if user_id:
+            context.user_data['pending_admin'] = {
+                'user_id': user_id,
+                'username': username,
+                'full_name': username
+            }
+        else:
+            # Для username сохраняем временно
+            context.user_data['pending_admin'] = {
+                'username': username,
+                'full_name': username
+            }
+        
+        # Показываем кнопки выбора прав
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Обучение", callback_data="admin_perm_teach_yes"),
+                InlineKeyboardButton("❌ Обучение", callback_data="admin_perm_teach_no")
+            ],
+            [
+                InlineKeyboardButton("✅ Импорт", callback_data="admin_perm_import_yes"),
+                InlineKeyboardButton("❌ Импорт", callback_data="admin_perm_import_no")
+            ],
+            [
+                InlineKeyboardButton("✅ Управление админами", callback_data="admin_perm_manage_yes"),
+                InlineKeyboardButton("❌ Управление админами", callback_data="admin_perm_manage_no")
+            ],
+            [
+                InlineKeyboardButton("✅ Сохранить", callback_data="admin_save"),
+                InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        text = f"👤 Добавление админа\n\n"
+        if user_id:
+            text += f"ID: {user_id}\n"
+        text += f"Username: @{username}\n\n"
+        text += "Выбери права:"
+        
+        await update.message.reply_text(text, reply_markup=reply_markup)
+    
+    async def handle_admin_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка кнопок добавления админа"""
+        query = update.callback_query
+        await query.answer()
+        
+        if 'pending_admin' not in context.user_data:
+            await query.edit_message_text("❌ Сессия истекла. Начни заново с /addadmin")
+            return
+        
+        data = query.data
+        pending = context.user_data['pending_admin']
+        
+        # Инициализируем права если их нет
+        if 'permissions' not in pending:
+            pending['permissions'] = {
+                'teach': True,
+                'import': False,
+                'manage': False
+            }
+        
+        # Обрабатываем выбор
+        if data.startswith('admin_perm_'):
+            parts = data.split('_')
+            perm_type = parts[2]  # teach, import, manage
+            value = parts[3] == 'yes'  # yes/no
+            
+            pending['permissions'][perm_type] = value
+            
+            # Обновляем сообщение
+            keyboard = [
+                [
+                    InlineKeyboardButton(
+                        "✅ Обучение" if pending['permissions']['teach'] else "❌ Обучение",
+                        callback_data="admin_perm_teach_yes" if not pending['permissions']['teach'] else "admin_perm_teach_no"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "✅ Импорт" if pending['permissions']['import'] else "❌ Импорт",
+                        callback_data="admin_perm_import_yes" if not pending['permissions']['import'] else "admin_perm_import_no"
+                    )
+                ],
+                [
+                    InlineKeyboardButton(
+                        "✅ Управление админами" if pending['permissions']['manage'] else "❌ Управление админами",
+                        callback_data="admin_perm_manage_yes" if not pending['permissions']['manage'] else "admin_perm_manage_no"
+                    )
+                ],
+                [
+                    InlineKeyboardButton("💾 Сохранить", callback_data="admin_save"),
+                    InlineKeyboardButton("❌ Отмена", callback_data="admin_cancel")
+                ]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            text = f"👤 Добавление админа\n\n"
+            if pending.get('user_id'):
+                text += f"ID: {pending['user_id']}\n"
+            text += f"Username: @{pending['username']}\n\n"
+            text += "Права:\n"
+            text += f"{'✅' if pending['permissions']['teach'] else '❌'} Обучение\n"
+            text += f"{'✅' if pending['permissions']['import'] else '❌'} Импорт\n"
+            text += f"{'✅' if pending['permissions']['manage'] else '❌'} Управление админами"
+            
+            await query.edit_message_text(text, reply_markup=reply_markup)
+        
+        elif data == 'admin_save':
+            # Сохраняем админа
+            perms = pending['permissions']
+            
+            # Если user_id есть - сохраняем сразу
+            if pending.get('user_id'):
+                success = self.admin_mgr.add_admin(
+                    user_id=pending['user_id'],
+                    username=pending['username'],
+                    full_name=pending['full_name'],
+                    added_by=update.effective_user.id,
+                    can_teach=perms['teach'],
+                    can_import=perms['import'],
+                    can_manage_admins=perms['manage']
+                )
+                
+                if success:
+                    text = f"✅ Админ добавлен!\n\n"
+                    text += f"ID: {pending['user_id']}\n"
+                    text += f"Username: @{pending['username']}\n\n"
+                    text += f"Права:\n"
+                    text += f"{'✅' if perms['teach'] else '❌'} Обучение\n"
+                    text += f"{'✅' if perms['import'] else '❌'} Импорт\n"
+                    text += f"{'✅' if perms['manage'] else '❌'} Управление"
+                    
+                    await query.edit_message_text(text)
+                else:
+                    await query.edit_message_text("❌ Ошибка сохранения")
+                
+                # Очищаем
+                del context.user_data['pending_admin']
+            else:
+                # Для username - сохраняем в ожидание подтверждения
+                self.admin_mgr.pending_admins[pending['username']] = {
+                    'added_by': update.effective_user.id,
+                    'permissions': perms
+                }
+                
+                text = f"✅ Настройки сохранены!\n\n"
+                text += f"Теперь пользователь @{pending['username']}\n"
+                text += f"должен написать боту команду:\n"
+                text += f"/confirmadmin\n\n"
+                text += f"После этого он станет админом"
+                
+                await query.edit_message_text(text)
+                del context.user_data['pending_admin']
+        
+        elif data == 'admin_cancel':
+            await query.edit_message_text("❌ Отменено")
+            if 'pending_admin' in context.user_data:
+                del context.user_data['pending_admin']
+    
+    async def cmd_confirmadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Подтверждение админа"""
+        user_id = update.effective_user.id
+        username = update.effective_user.username
+        
+        if not username:
+            await update.message.reply_text(
+                "❌ У тебя нет username в Telegram.\n"
+                "Установи его в настройках и попробуй снова."
+            )
+            return
+        
+        # Проверяем есть ли в ожидании
+        if username not in self.admin_mgr.pending_admins:
+            await update.message.reply_text(
+                "❌ Тебя не добавляли в админы.\n"
+                "Попроси главного админа добавить тебя через /addadmin"
+            )
+            return
+        
+        # Получаем права
+        pending = self.admin_mgr.pending_admins[username]
+        perms = pending['permissions']
+        
+        # Добавляем
+        success = self.admin_mgr.add_admin(
+            user_id=user_id,
+            username=username,
+            full_name=update.effective_user.full_name or username,
+            added_by=pending['added_by'],
+            can_teach=perms['teach'],
+            can_import=perms['import'],
+            can_manage_admins=perms['manage']
+        )
+        
+        if success:
+            text = f"✅ Ты стал администратором!\n\n"
+            text += f"Твои права:\n"
+            text += f"{'✅' if perms['teach'] else '❌'} Обучение бота\n"
+            text += f"{'✅' if perms['import'] else '❌'} Импорт данных\n"
+            text += f"{'✅' if perms['manage'] else '❌'} Управление админами\n\n"
+            text += f"Используй /help для справки"
+            
+            await update.message.reply_text(text)
+            
+            # Удаляем из ожидания
+            del self.admin_mgr.pending_admins[username]
+            
+            # Уведомляем главного админа
+            try:
+                await context.bot.send_message(
+                    pending['added_by'],
+                    f"✅ Пользователь @{username} (ID: {user_id}) подтвердил права администратора"
+                )
+            except:
+                pass
+        else:
+            await update.message.reply_text("❌ Ошибка добавления")
         """Список админов"""
         if not self.is_admin(update.effective_user.id):
             return
@@ -1147,7 +1495,97 @@ class Bot:
         
         await update.message.reply_text(text)
     
-    async def cmd_rmadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    async def cmd_listadmins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Список админов с кнопками управления"""
+        if not self.is_admin(update.effective_user.id):
+            return
+        
+        admins = self.admin_mgr.list_admins()
+        
+        if not admins:
+            await update.message.reply_text("Нет администраторов")
+            return
+        
+        can_manage = self.can_manage_admins(update.effective_user.id)
+        
+        text = "👥 Администраторы:\n\n"
+        
+        keyboard = []
+        
+        for uid, uname, fname, teach, imp, manage in admins:
+            text += f"• @{uname} ({fname})\n"
+            text += f"  ID: {uid}\n"
+            
+            rights = []
+            if teach: rights.append("обучение")
+            if imp: rights.append("импорт")
+            if manage: rights.append("управление")
+            
+            text += f"  Права: {', '.join(rights)}\n\n"
+            
+            # Кнопка удаления (только для главного админа)
+            if can_manage and uid not in self.admin_ids:
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"🗑 Удалить {uname}",
+                        callback_data=f"rmadmin_{uid}"
+                    )
+                ])
+        
+        if keyboard and can_manage:
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(text, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text)
+    
+    async def handle_rmadmin_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка удаления админа через кнопку"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.can_manage_admins(update.effective_user.id):
+            await query.edit_message_text("❌ Нет прав")
+            return
+        
+        # Получаем ID
+        user_id = int(query.data.split('_')[1])
+        
+        if user_id in self.admin_ids:
+            await query.answer("❌ Нельзя удалить главного админа", show_alert=True)
+            return
+        
+        # Подтверждение
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Да, удалить", callback_data=f"rmadmin_confirm_{user_id}"),
+                InlineKeyboardButton("❌ Отмена", callback_data="rmadmin_cancel")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            f"⚠️ Удалить админа ID: {user_id}?\n\n"
+            f"Это действие нельзя отменить.",
+            reply_markup=reply_markup
+        )
+    
+    async def handle_rmadmin_confirm_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Подтверждение удаления админа"""
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == "rmadmin_cancel":
+            await query.edit_message_text("❌ Отменено")
+            return
+        
+        # Получаем ID
+        user_id = int(query.data.split('_')[2])
+        
+        if self.admin_mgr.remove_admin(user_id):
+            await query.edit_message_text(f"✅ Админ {user_id} удалён")
+        else:
+            await query.edit_message_text("❌ Ошибка удаления")
         """Удаление админа"""
         if not self.can_manage_admins(update.effective_user.id):
             return
@@ -1339,12 +1777,30 @@ class Bot:
         app.add_handler(CommandHandler("quota", self.cmd_quota))
         app.add_handler(CommandHandler("model", self.cmd_model))
         app.add_handler(CommandHandler("resetstats", self.cmd_resetstats))
+        app.add_handler(CommandHandler("import", self.cmd_import))
         app.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
+        app.add_handler(CommandHandler("confirmadmin", self.cmd_confirmadmin))
         app.add_handler(CommandHandler("listadmins", self.cmd_listadmins))
-        app.add_handler(CommandHandler("rmadmin", self.cmd_rmadmin))
         app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         app.add_handler(CommandHandler("update", self.cmd_update))
+        
+        # Обработчики кнопок
+        app.add_handler(CallbackQueryHandler(
+            self.handle_admin_callback,
+            pattern="^admin_(perm|save|cancel)"
+        ))
+        app.add_handler(CallbackQueryHandler(
+            self.handle_rmadmin_callback,
+            pattern="^rmadmin_\\d+$"
+        ))
+        app.add_handler(CallbackQueryHandler(
+            self.handle_rmadmin_confirm_callback,
+            pattern="^rmadmin_(confirm|cancel)"
+        ))
+        
+        # Файлы (для импорта)
+        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         
         # Текст
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
