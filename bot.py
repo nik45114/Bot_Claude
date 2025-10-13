@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Club Assistant Bot v4.3 - Production Edition
-Telegram бот с RAG, векторным поиском и полным функционалом
+Club Assistant Bot v4.4 - Production Edition
+Telegram бот с RAG, векторным поиском и автогенерацией вопросов
 """
 
 import os
@@ -45,7 +45,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "4.3"
+VERSION = "4.4"
 
 
 class AdminManager:
@@ -194,6 +194,44 @@ class KnowledgeBase:
             logger.error(f"Ошибка add: {e}")
             return 0
     
+    def add_info_only(self, info: str, gpt_model: str = 'gpt-4o-mini', added_by: int = 0) -> int:
+        """Добавление информации с автогенерацией вопросов"""
+        try:
+            # Генерируем 3-5 вопросов через GPT
+            prompt = f"""Из этого текста сформулируй 3-5 коротких вопросов (3-10 слов каждый), на которые этот текст отвечает.
+
+Текст:
+{info}
+
+Верни только вопросы, каждый с новой строки, без нумерации."""
+
+            response = openai.ChatCompletion.create(
+                model=gpt_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.5,
+                max_tokens=200
+            )
+            
+            questions_text = response['choices'][0]['message']['content'].strip()
+            questions = [q.strip() for q in questions_text.split('\n') if q.strip()]
+            
+            if not questions:
+                questions = ["Информация"]
+            
+            # Берём первый вопрос как основной
+            main_question = questions[0]
+            
+            # Добавляем в базу
+            kb_id = self.add(main_question, info, source='info_import', added_by=added_by)
+            
+            logger.info(f"Добавлено (auto-Q): {main_question[:50]}...")
+            return kb_id
+            
+        except Exception as e:
+            logger.error(f"Ошибка add_info_only: {e}")
+            # Fallback - добавляем с дефолтным вопросом
+            return self.add("Информация", info, source='info_import', added_by=added_by)
+    
     def get_by_id(self, kb_id: int) -> Optional[Dict]:
         """Получить по ID"""
         try:
@@ -337,12 +375,12 @@ class RAGAnswerer:
 
 
 class ClubAssistantBot:
-    """Главный класс бота v4.3"""
+    """Главный класс бота v4.4"""
     
     def __init__(self, config: dict):
         self.config = config
         
-        logger.info("🚀 Инициализация v4.3...")
+        logger.info("🚀 Инициализация v4.4...")
         
         self.embedding_service = EmbeddingService(config['openai_api_key'])
         self.vector_store = VectorStore()
@@ -396,11 +434,11 @@ class ClubAssistantBot:
         if is_admin:
             text += """\n\n🔧 Админ-команды:
 /admin - админ-панель
-/learn <текст> - добавить знание
-/import - импорт (формат: вопрос|ответ)
-/addadmin <user_id> - добавить админа
+/learn <текст> - добавить инфу
+/import - импорт файла
+/addadmin <user_id>
 /admins - список админов
-/review - черновики (одобрение)
+/review - черновики
 /savecreds <сервис> <логин> <пароль>
 /getcreds [сервис]"""
 
@@ -430,15 +468,19 @@ class ClubAssistantBot:
             await update.message.reply_text("❌ Только для админов")
             return
         
-        text = """🔧 Админ-панель v4.3
+        text = f"""🔧 Админ-панель v{VERSION}
 
-/learn <текст> - добавить знание
-  Пример: /learn Клуб находится на ул. Ленина 123
+/learn <информация>
+  Просто пиши инфу, вопрос сгенерится сам
+  Пример: /learn Клуб на ул. Ленина 123
 
-/import - импорт базы
-  Формат файла: вопрос|ответ (по строке)
+/import
+  Отправь .txt файл с информацией
+  Формат: каждая строка = 1 запись (только инфа!)
   
-/review - одобрение черновиков (474 шт)
+/review - черновики ({self.draft_queue.stats().get('pending', 0)} шт)
+/approve <id> - одобрить
+/reject <id> - отклонить
 
 /addadmin <id> - добавить админа
 /admins - список админов
@@ -446,8 +488,7 @@ class ClubAssistantBot:
 /savecreds <сервис> <логин> <пароль>
 /getcreds [сервис]
 
-/vectorstats - статистика индекса
-/reindex - переиндексация"""
+/update - обновить бота из GitHub"""
 
         await update.message.reply_text(text)
     
@@ -463,23 +504,18 @@ class ClubAssistantBot:
             await update.message.reply_text("Напиши информацию после /learn\n\nПример:\n/learn Клуб находится на ул. Ленина 123, работает с 10 до 22")
             return
         
+        await update.message.reply_text("⏳ Генерирую вопрос и добавляю...")
+        
         try:
-            # Генерируем вопрос через GPT
-            response = openai.ChatCompletion.create(
-                model='gpt-4o-mini',
-                messages=[{
-                    "role": "user",
-                    "content": f"Из этого текста сформулируй короткий вопрос (3-7 слов):\n\n{text}"
-                }],
-                temperature=0.5,
-                max_tokens=50
-            )
-            question = response['choices'][0]['message']['content'].strip()
+            kb_id = self.kb.add_info_only(text, added_by=update.effective_user.id)
             
-            # Добавляем
-            kb_id = self.kb.add(question, text, source='learn', added_by=update.effective_user.id)
+            # Получаем что добавили
+            record = self.kb.get_by_id(kb_id)
             
-            await update.message.reply_text(f"✅ Добавлено [ID: {kb_id}]\n\n❓ {question}\n💬 {text[:100]}...")
+            if record:
+                await update.message.reply_text(f"✅ Добавлено [ID: {kb_id}]\n\n❓ {record['question']}\n💬 {text[:150]}...")
+            else:
+                await update.message.reply_text(f"✅ Добавлено [ID: {kb_id}]")
             
         except Exception as e:
             logger.error(f"Learn error: {e}")
@@ -491,16 +527,19 @@ class ClubAssistantBot:
             await update.message.reply_text("❌ Только для админов")
             return
         
-        await update.message.reply_text("""📥 Импорт базы знаний
+        await update.message.reply_text("""📥 Импорт информации
 
-Формат файла (текст):
+Формат файла .txt:
 ```
-вопрос1|ответ1
-вопрос2|ответ2
-вопрос3|ответ3
+информация 1
+информация 2
+информация 3
 ```
 
-Отправь файл .txt с таким содержимым.""")
+Каждая строка = 1 запись.
+Вопросы генерятся автоматически!
+
+Отправь файл.""")
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка файлов импорта"""
@@ -513,7 +552,7 @@ class ClubAssistantBot:
             await update.message.reply_text("Только .txt файлы!")
             return
         
-        await update.message.reply_text("⏳ Обрабатываю...")
+        await update.message.reply_text("⏳ Импортирую (генерирую вопросы)...")
         
         try:
             file = await context.bot.get_file(doc.file_id)
@@ -523,20 +562,18 @@ class ClubAssistantBot:
             imported = 0
             errors = 0
             
-            for line in text.split('\n'):
-                line = line.strip()
-                if not line or '|' not in line:
-                    continue
-                
+            lines = [l.strip() for l in text.split('\n') if l.strip() and len(l.strip()) > 10]
+            total = len(lines)
+            
+            for i, info in enumerate(lines, 1):
                 try:
-                    parts = line.split('|', 1)
-                    question = parts[0].strip()
-                    answer = parts[1].strip()
+                    if i % 10 == 0:
+                        await update.message.reply_text(f"⏳ {i}/{total}...")
                     
-                    if question and answer:
-                        self.kb.add(question, answer, source='import', added_by=update.effective_user.id)
-                        imported += 1
-                except:
+                    self.kb.add_info_only(info, added_by=update.effective_user.id)
+                    imported += 1
+                except Exception as e:
+                    logger.error(f"Import line error: {e}")
                     errors += 1
             
             await update.message.reply_text(f"✅ Импортировано: {imported}\n⚠️ Ошибок: {errors}")
@@ -545,7 +582,7 @@ class ClubAssistantBot:
             await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_review(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Ревью черновиков (без кнопок)"""
+        """Ревью черновиков"""
         if not self.admin_manager.is_admin(update.effective_user.id):
             await update.message.reply_text("❌ Только для админов")
             return
@@ -556,14 +593,14 @@ class ClubAssistantBot:
             await update.message.reply_text("✅ Нет черновиков!")
             return
         
-        text = f"📝 Черновиков: {len(drafts)}\n\n"
+        text = f"📝 Черновиков: {self.draft_queue.stats().get('pending', 0)}\n\n"
         
         for d in drafts:
             text += f"#{d['id']} (conf: {d['confidence']:.2f})\n"
             text += f"❓ {d['question'][:100]}\n"
             text += f"💬 {d['answer'][:150]}...\n\n"
         
-        text += "Для одобрения: /approve <id>\nДля удаления: /reject <id>"
+        text += "Одобрить: /approve <id>\nУдалить: /reject <id>"
         
         await update.message.reply_text(text)
     
@@ -675,6 +712,16 @@ class ClubAssistantBot:
         if update.message.chat.type != 'private':
             await update.message.reply_text("✅ Отправил в личку")
     
+    async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обновление из GitHub"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("🔄 Запускаю обновление...\nБот перезапустится через несколько секунд.")
+        
+        # Запускаем update.sh
+        os.system('bash /opt/club_assistant/update.sh > /tmp/update.log 2>&1 &')
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработка вопросов"""
         user = update.effective_user
@@ -716,7 +763,7 @@ class ClubAssistantBot:
             
             # GPT-4 Vision
             response = openai.ChatCompletion.create(
-                model="gpt-4o",  # или gpt-4-turbo если есть доступ
+                model="gpt-4o",
                 messages=[
                     {
                         "role": "user",
@@ -754,6 +801,7 @@ class ClubAssistantBot:
         app.add_handler(CommandHandler("admins", self.cmd_admins))
         app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
+        app.add_handler(CommandHandler("update", self.cmd_update))
         
         # Документы
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
@@ -819,7 +867,7 @@ def init_database():
 def main():
     print("=" * 60)
     print(f"   Club Assistant Bot v{VERSION}")
-    print("   Production Edition")
+    print("   Auto-Question Generation Edition")
     print("=" * 60)
     
     init_database()
