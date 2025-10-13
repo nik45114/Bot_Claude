@@ -50,14 +50,17 @@ class KnowledgeBase:
                 question TEXT NOT NULL,
                 answer TEXT NOT NULL,
                 category TEXT DEFAULT 'general',
+                tags TEXT DEFAULT '',
+                source TEXT DEFAULT '',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(question)
             )
         ''')
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_question ON knowledge(question)')
         conn.commit()
         conn.close()
-        logger.info("✅ База данных готова")
+        logger.info("База данных готова")
     
     def add(self, question: str, answer: str, category: str = 'general') -> bool:
         try:
@@ -139,6 +142,57 @@ class KnowledgeBase:
             return count
         except:
             return 0
+    
+    def bulk_import(self, records: list) -> tuple:
+        """
+        Массовый импорт записей
+        records: список словарей с ключами question, answer, category, tags, source
+        Возвращает: (добавлено, обновлено, пропущено)
+        """
+        conn = sqlite3.connect(self.db_path)
+        cursor = conn.cursor()
+        
+        added = 0
+        updated = 0
+        skipped = 0
+        
+        for record in records:
+            try:
+                question = record.get('question', '').strip()
+                answer = record.get('answer', '').strip()
+                
+                if not question or not answer:
+                    skipped += 1
+                    continue
+                
+                category = record.get('category', 'general')
+                tags = record.get('tags', '')
+                source = record.get('source', '')
+                
+                # Проверяем существует ли запись
+                cursor.execute('SELECT id FROM knowledge WHERE question = ?', (question,))
+                exists = cursor.fetchone()
+                
+                if exists:
+                    updated += 1
+                else:
+                    added += 1
+                
+                # INSERT OR REPLACE
+                cursor.execute('''
+                    INSERT OR REPLACE INTO knowledge 
+                    (question, answer, category, tags, source, updated_at)
+                    VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                ''', (question, answer, category, tags, source))
+                
+            except Exception as e:
+                logger.error(f"Ошибка импорта записи: {e}")
+                skipped += 1
+        
+        conn.commit()
+        conn.close()
+        
+        return (added, updated, skipped)
 
 
 class GPTClient:
@@ -244,20 +298,21 @@ class Bot:
     # Обработчики команд
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        logger.info(f"📨 /start от {update.effective_user.id}")
+        logger.info(f"/start от {update.effective_user.id}")
         
         text = (
-            "👋 Привет! Я Club Assistant.\n\n"
+            "Привет! Я Club Assistant.\n\n"
             "Задавай любые вопросы о клубе!\n\n"
-            "📚 Команды:\n"
+            "Команды:\n"
             "/start - справка\n"
             "/stats - статистика\n"
         )
         
         if self.is_admin(update.effective_user.id):
             text += (
-                "\n🔧 Админ:\n"
+                "\nАдмин:\n"
                 "/learn текст - умное обучение\n"
+                "/import - импорт из CSV/JSONL\n"
                 "/forget слово - удалить\n"
                 "/update - обновить бота\n"
             )
@@ -266,14 +321,14 @@ class Bot:
     
     async def cmd_learn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.is_admin(update.effective_user.id):
-            await update.message.reply_text("⛔ Только для администраторов")
+            await update.message.reply_text("Только для администраторов")
             return
         
         text = update.message.text.replace('/learn', '').strip()
         
         if not text:
             await update.message.reply_text(
-                "📝 Использование: /learn текст\n\n"
+                "Использование: /learn текст\n\n"
                 "Примеры:\n"
                 "• /learn Клуб на ул. Ленина 123\n"
                 "• /learn Работаем пн-пт 9-21\n"
@@ -281,8 +336,7 @@ class Bot:
             )
             return
         
-        logger.info(f"📝 /learn: {text[:50]}")
-        await update.message.reply_text("🤔 Анализирую...")
+        logger.info(f"/learn: {text[:50]}")
         
         result = await self.gpt.smart_learn(text)
         
@@ -294,13 +348,13 @@ class Bot:
             )
             
             await update.message.reply_text(
-                f"✅ Запомнил!\n\n"
-                f"❓ {result['question']}\n"
-                f"💬 {result['answer']}\n"
-                f"📁 {result.get('category', 'general')}"
+                f"Запомнил!\n\n"
+                f"Вопрос: {result['question']}\n"
+                f"Ответ: {result['answer']}\n"
+                f"Категория: {result.get('category', 'general')}"
             )
         else:
-            await update.message.reply_text("❌ Не смог извлечь знание")
+            await update.message.reply_text("Не смог извлечь знание")
     
     async def cmd_forget(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.is_admin(update.effective_user.id):
@@ -378,6 +432,110 @@ class Bot:
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка обновления: {e}")
     
+    async def cmd_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /import - активирует режим ожидания файла"""
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Только для администраторов")
+            return
+        
+        await update.message.reply_text(
+            "Режим импорта активирован\n\n"
+            "Отправьте файл в формате:\n"
+            "• CSV (.csv)\n"
+            "• JSONL (.jsonl)\n\n"
+            "Формат CSV:\n"
+            "question,answer,category,tags,source\n\n"
+            "Формат JSONL (каждая строка - JSON):\n"
+            '{"question":"...","answer":"...","category":"..."}'
+        )
+    
+    async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик загруженных файлов"""
+        if not self.is_admin(update.effective_user.id):
+            return
+        
+        document = update.message.document
+        file_name = document.file_name
+        file_ext = os.path.splitext(file_name)[1].lower()
+        
+        # Проверяем формат
+        if file_ext not in ['.csv', '.jsonl']:
+            await update.message.reply_text(
+                "Неподдерживаемый формат\n"
+                "Используйте: .csv или .jsonl"
+            )
+            return
+        
+        await update.message.reply_text("Загружаю файл...")
+        
+        try:
+            # Скачиваем файл
+            tmp_dir = '/tmp/bot_imports'
+            os.makedirs(tmp_dir, exist_ok=True)
+            tmp_path = os.path.join(tmp_dir, f"{update.effective_user.id}_{file_name}")
+            
+            file = await context.bot.get_file(document.file_id)
+            await file.download_to_drive(tmp_path)
+            
+            # Импортируем
+            records = self.parse_import_file(tmp_path, file_ext)
+            added, updated, skipped = self.kb.bulk_import(records)
+            
+            # Удаляем временный файл
+            os.remove(tmp_path)
+            
+            await update.message.reply_text(
+                f"Импорт завершён\n\n"
+                f"Добавлено: {added}\n"
+                f"Обновлено: {updated}\n"
+                f"Пропущено: {skipped}"
+            )
+            
+            logger.info(f"Импорт: +{added} ~{updated} !{skipped}")
+            
+        except Exception as e:
+            logger.error(f"Ошибка импорта: {e}")
+            await update.message.reply_text(f"Ошибка импорта: {e}")
+    
+    def parse_import_file(self, file_path: str, file_ext: str) -> list:
+        """Парсит CSV или JSONL файл"""
+        records = []
+        
+        if file_ext == '.csv':
+            import csv
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+                for row in reader:
+                    records.append({
+                        'question': row.get('question', ''),
+                        'answer': row.get('answer', ''),
+                        'category': row.get('category', 'general'),
+                        'tags': row.get('tags', ''),
+                        'source': row.get('source', '')
+                    })
+        
+        elif file_ext == '.jsonl':
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    try:
+                        obj = json.loads(line.strip())
+                        # Если tags - список, конвертируем в строку
+                        tags = obj.get('tags', '')
+                        if isinstance(tags, list):
+                            tags = ','.join(tags)
+                        
+                        records.append({
+                            'question': obj.get('question', ''),
+                            'answer': obj.get('answer', ''),
+                            'category': obj.get('category', 'general'),
+                            'tags': tags,
+                            'source': obj.get('source', '')
+                        })
+                    except:
+                        continue
+        
+        return records
+    
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         question = update.message.text.strip()
         user_id = update.effective_user.id
@@ -426,7 +584,7 @@ class Bot:
     
     def run(self):
         """Запуск бота"""
-        logger.info("🚀 Запуск Club Assistant Bot v2.1...")
+        logger.info("Запуск Club Assistant Bot v2.2...")
         
         app = Application.builder().token(self.config['telegram_token']).build()
         
@@ -436,11 +594,15 @@ class Bot:
         app.add_handler(CommandHandler("forget", self.cmd_forget))
         app.add_handler(CommandHandler("stats", self.cmd_stats))
         app.add_handler(CommandHandler("update", self.cmd_update))
+        app.add_handler(CommandHandler("import", self.cmd_import))
+        
+        # Файлы (для импорта)
+        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         
         # Текст
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
-        logger.info("✅ Бот готов к работе!")
+        logger.info("Бот готов к работе!")
         
         app.run_polling(allowed_updates=Update.ALL_TYPES)
 
