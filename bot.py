@@ -290,6 +290,74 @@ class KnowledgeBase:
             logger.error(f"Ошибка find: {e}")
             return None
     
+    def smart_search(self, question: str) -> list:
+        """Умный поиск по ключевым словам и контексту"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT question, answer, category, tags 
+                FROM knowledge 
+                WHERE is_current = 1
+            ''')
+            records = cursor.fetchall()
+            conn.close()
+            
+            if not records:
+                return []
+            
+            # Извлекаем ключевые слова из вопроса
+            q_lower = question.lower().strip()
+            keywords = set(q_lower.split())
+            
+            # Убираем стоп-слова
+            stop_words = {'что', 'как', 'где', 'когда', 'почему', 'какой', 'какая', 'какие', 
+                         'это', 'the', 'is', 'are', 'a', 'an', 'в', 'на', 'с', 'у', '?', 'о'}
+            keywords = keywords - stop_words
+            
+            results = []
+            
+            for db_q, db_a, category, tags in records:
+                score = 0
+                
+                # 1. Точное совпадение вопроса
+                if db_q.lower() == q_lower:
+                    score = 100
+                # 2. Вопрос содержится в вопросе из БД
+                elif q_lower in db_q.lower() or db_q.lower() in q_lower:
+                    score = 90
+                else:
+                    # 3. Совпадение по ключевым словам
+                    db_words = set(db_q.lower().split())
+                    db_words.update(db_a.lower().split())
+                    if tags:
+                        db_words.update(tags.lower().split(','))
+                    
+                    matches = keywords & db_words
+                    if matches:
+                        score = len(matches) * 10
+                    
+                    # 4. Частичное совпадение строк
+                    ratio = SequenceMatcher(None, q_lower, db_q.lower()).ratio()
+                    score += ratio * 30
+                
+                if score > 20:  # Минимальный порог
+                    results.append({
+                        'question': db_q,
+                        'answer': db_a,
+                        'category': category,
+                        'score': score
+                    })
+            
+            # Сортируем по релевантности
+            results.sort(key=lambda x: x['score'], reverse=True)
+            
+            return results[:5]  # Топ 5 результатов
+            
+        except Exception as e:
+            logger.error(f"Ошибка smart_search: {e}")
+            return []
+    
     def find_history(self, question: str) -> list:
         """Находит всю историю изменений вопроса"""
         try:
@@ -416,25 +484,22 @@ class GPTClient:
     
     async def ask(self, question: str, context: str = None) -> str:
         try:
-            messages = [
-                {
-                    "role": "system", 
-                    "content": (
-                        "Ты ассистент клуба. Правила:\n"
-                        "1. Отвечай кратко и по делу\n"
-                        "2. Без лишних смайликов\n"
-                        "3. Если знаешь ответ из контекста - отвечай сразу\n"
-                        "4. НЕ спрашивай уточнений если можешь ответить\n"
-                        "5. Максимум 2-3 предложения\n"
-                        "6. Говори на русском языке"
-                    )
-                }
-            ]
+            system_prompt = (
+                "Ты ассистент клуба. Правила:\n"
+                "1. ПРИОРИТЕТ: используй информацию из базы знаний если она есть в контексте\n"
+                "2. Если в контексте есть похожий вопрос - адаптируй ответ из базы\n"
+                "3. Отвечай кратко и по делу (2-3 предложения)\n"
+                "4. Без лишних смайликов\n"
+                "5. НЕ спрашивай уточнений если можешь ответить\n"
+                "6. Говори на русском языке"
+            )
+            
+            messages = [{"role": "system", "content": system_prompt}]
             
             if context:
                 messages.append({
                     "role": "system", 
-                    "content": f"Используй эту информацию для ответа: {context}"
+                    "content": f"БАЗА ЗНАНИЙ:\n{context}\n\nИспользуй эту информацию для ответа. Если вопрос похож на что-то из базы - отвечай на основе базы."
                 })
             
             messages.append({"role": "user", "content": question})
@@ -1246,6 +1311,37 @@ class Bot:
             f"Теперь: 0 / 0"
         )
     
+    async def cmd_search(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Тестирование умного поиска"""
+        if not self.is_admin(update.effective_user.id):
+            await update.message.reply_text("Только для администраторов")
+            return
+        
+        question = update.message.text.replace('/search', '').strip()
+        
+        if not question:
+            await update.message.reply_text(
+                "Использование: /search вопрос\n\n"
+                "Показывает результаты умного поиска с релевантностью"
+            )
+            return
+        
+        results = self.kb.smart_search(question)
+        
+        if not results:
+            await update.message.reply_text("Ничего не найдено")
+            return
+        
+        text = f"Результаты поиска: '{question}'\n\n"
+        
+        for i, result in enumerate(results, 1):
+            text += f"{i}. [Score: {result['score']:.1f}]\n"
+            text += f"Q: {result['question']}\n"
+            text += f"A: {result['answer'][:100]}...\n"
+            text += f"Категория: {result['category']}\n\n"
+        
+        await update.message.reply_text(text)
+    
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик загруженных файлов"""
         if not self.is_admin(update.effective_user.id):
@@ -1362,21 +1458,43 @@ class Bot:
         else:
             logger.info(f"[ЛС] Сообщение от {user_id}: {question[:50]}")
         
-        # Ищем в базе
-        answer = self.kb.find(question)
+        # 1. Точный поиск в базе
+        exact_answer = self.kb.find(question)
         
-        if answer:
-            logger.info("Найдено в базе")
-            await update.message.reply_text(answer)
+        if exact_answer:
+            logger.info("Найдено точное совпадение")
+            await update.message.reply_text(exact_answer)
             return
         
-        # GPT (без "Думаю...")
-        gpt_answer = await self.gpt.ask(question)
+        # 2. Умный поиск (по ключевым словам, частичное совпадение)
+        smart_results = self.kb.smart_search(question)
         
-        # Сохраняем
-        self.kb.add(question, gpt_answer, 'auto')
+        if smart_results and smart_results[0]['score'] >= 70:
+            # Высокая релевантность - отвечаем сразу
+            best = smart_results[0]
+            logger.info(f"Найдено умным поиском (score: {best['score']})")
+            await update.message.reply_text(best['answer'])
+            return
         
-        logger.info("Ответ GPT")
+        # 3. GPT с контекстом из базы
+        context_text = None
+        
+        if smart_results:
+            # Есть похожие результаты - передаём их как контекст
+            context_parts = []
+            for result in smart_results[:3]:  # Топ 3
+                context_parts.append(f"Q: {result['question']}\nA: {result['answer']}")
+            
+            context_text = "Похожие вопросы из базы:\n\n" + "\n\n".join(context_parts)
+            logger.info(f"Передаю {len(smart_results)} результатов в GPT как контекст")
+        
+        # Запрос к GPT
+        gpt_answer = await self.gpt.ask(question, context=context_text)
+        
+        # Сохраняем в базу
+        self.kb.add(question, gpt_answer, 'auto', added_by=user_id)
+        
+        logger.info("Ответ GPT с контекстом")
         await update.message.reply_text(gpt_answer)
     
     def run(self):
@@ -1410,6 +1528,7 @@ class Bot:
         app.add_handler(CommandHandler("quota", self.cmd_quota))
         app.add_handler(CommandHandler("model", self.cmd_model))
         app.add_handler(CommandHandler("resetstats", self.cmd_resetstats))
+        app.add_handler(CommandHandler("search", self.cmd_search))
         
         # Файлы (для импорта)
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
