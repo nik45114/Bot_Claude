@@ -150,18 +150,32 @@ class GPTClient:
     async def ask(self, question: str, context: str = None) -> str:
         try:
             messages = [
-                {"role": "system", "content": "Ты полезный ассистент клуба. Отвечай кратко и по делу на русском языке."}
+                {
+                    "role": "system", 
+                    "content": (
+                        "Ты ассистент клуба. Правила:\n"
+                        "1. Отвечай кратко и по делу\n"
+                        "2. Без лишних смайликов\n"
+                        "3. Если знаешь ответ из контекста - отвечай сразу\n"
+                        "4. НЕ спрашивай уточнений если можешь ответить\n"
+                        "5. Максимум 2-3 предложения\n"
+                        "6. Говори на русском языке"
+                    )
+                }
             ]
             
             if context:
-                messages.append({"role": "system", "content": f"Контекст: {context}"})
+                messages.append({
+                    "role": "system", 
+                    "content": f"Используй эту информацию для ответа: {context}"
+                })
             
             messages.append({"role": "user", "content": question})
             
             response = openai.ChatCompletion.create(
                 model="gpt-4o-mini",
                 messages=messages,
-                max_tokens=500,
+                max_tokens=300,
                 temperature=0.7
             )
             
@@ -328,7 +342,7 @@ class Bot:
             )
             return
         
-        await update.message.reply_text("🔄 Обновляю с GitHub...")
+        await update.message.reply_text("Обновляю с GitHub...")
         
         try:
             import subprocess
@@ -342,11 +356,22 @@ class Bot:
             )
             
             if result.returncode == 0:
-                await update.message.reply_text(
-                    "✅ Обновление загружено!\n\n"
-                    "Перезапустите бота:\n"
-                    "systemctl restart club_assistant"
-                )
+                auto_restart = self.config.get('auto_restart', False)
+                
+                if auto_restart:
+                    await update.message.reply_text(
+                        "✅ Обновление загружено!\n"
+                        "Перезапускаю бота..."
+                    )
+                    
+                    # Перезапуск через systemd
+                    subprocess.run(['systemctl', 'restart', 'club_assistant'])
+                else:
+                    await update.message.reply_text(
+                        "✅ Обновление загружено!\n\n"
+                        "Перезапустите бота:\n"
+                        "systemctl restart club_assistant"
+                    )
             else:
                 await update.message.reply_text(f"❌ Ошибка: {result.stderr}")
         
@@ -378,28 +403,26 @@ class Bot:
             # Убираем упоминание из текста
             question = question.replace(f"@{bot_username}", "").strip()
             
-            logger.info(f"💬 [ГРУППА] Сообщение от {user_id}: {question[:50]}")
+            logger.info(f"[ГРУППА] Сообщение от {user_id}: {question[:50]}")
         else:
-            logger.info(f"💬 [ЛС] Сообщение от {user_id}: {question[:50]}")
+            logger.info(f"[ЛС] Сообщение от {user_id}: {question[:50]}")
         
         # Ищем в базе
         answer = self.kb.find(question)
         
         if answer:
-            logger.info("✅ Найдено в базе")
-            await update.message.reply_text(f"💡 {answer}")
+            logger.info("Найдено в базе")
+            await update.message.reply_text(answer)
             return
         
-        # GPT
-        await update.message.reply_text("🤔 Думаю...")
-        
+        # GPT (без "Думаю...")
         gpt_answer = await self.gpt.ask(question)
         
         # Сохраняем
         self.kb.add(question, gpt_answer, 'auto')
         
-        logger.info("🤖 Ответ GPT")
-        await update.message.reply_text(f"🤖 {gpt_answer}\n\n💾 Сохранено в базу")
+        logger.info("Ответ GPT")
+        await update.message.reply_text(gpt_answer)
     
     def run(self):
         """Запуск бота"""
