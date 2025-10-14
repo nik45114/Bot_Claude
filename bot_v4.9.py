@@ -504,7 +504,8 @@ class ClubAssistantBot:
 /learn <инфо> - добавить
 /import - импорт файла
 /cleanup - удалить дубликаты
-/fixdb - исправить битые записи (вопрос=ответ)
+/fixdb - исправить битые записи
+/deletetrash - удалить мусорные записи ⚠️
 /addadmin <id>
 /admins
 /savecreds <сервис> <логин> <пароль>
@@ -569,6 +570,63 @@ class ClubAssistantBot:
             conn.close()
             
             await update.message.reply_text(f"✅ Исправлено: {fixed} из {len(bad_records)}")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    async def cmd_deletetrash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление мусорных автогенерированных записей"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("⏳ Ищу мусорные записи...")
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Ищем записи с плохими вопросами
+            cursor.execute('''
+                SELECT COUNT(*) 
+                FROM knowledge 
+                WHERE (
+                    question LIKE 'что делать если%'
+                    OR question LIKE 'Что делать если%'
+                    OR LENGTH(question) > 200
+                )
+                AND is_current = 1
+            ''')
+            
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                await update.message.reply_text("✅ Нет мусорных записей")
+                conn.close()
+                return
+            
+            await update.message.reply_text(f"Найдено мусорных записей: {count}\n\nУдаляю...")
+            
+            # Удаляем
+            cursor.execute('''
+                DELETE FROM knowledge 
+                WHERE (
+                    question LIKE 'что делать если%'
+                    OR question LIKE 'Что делать если%'
+                    OR LENGTH(question) > 200
+                )
+                AND is_current = 1
+            ''')
+            
+            deleted = cursor.rowcount
+            conn.commit()
+            
+            # Статистика
+            cursor.execute('SELECT COUNT(*) FROM knowledge WHERE is_current = 1')
+            remaining = cursor.fetchone()[0]
+            
+            conn.close()
+            
+            await update.message.reply_text(f"✅ Удалено: {deleted}\nОсталось записей: {remaining}")
             
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -812,6 +870,7 @@ class ClubAssistantBot:
         app.add_handler(CommandHandler("learn", self.cmd_learn))
         app.add_handler(CommandHandler("cleanup", self.cmd_cleanup))
         app.add_handler(CommandHandler("fixdb", self.cmd_fixdb))
+        app.add_handler(CommandHandler("deletetrash", self.cmd_deletetrash))
         app.add_handler(CommandHandler("import", self.cmd_import))
         app.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
         app.add_handler(CommandHandler("admins", self.cmd_admins))
