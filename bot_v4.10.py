@@ -274,7 +274,7 @@ class SmartAutoLearner:
     def analyze_message(self, text: str) -> Optional[Dict]:
         """Анализ сообщения через GPT: стоит ли запоминать?"""
         
-        if len(text) < 20:
+        if len(text) < 10:  # Минимум 10 символов
             return None
         
         if text.startswith('/'):
@@ -597,34 +597,47 @@ class ClubAssistantBot:
             conn = sqlite3.connect(DB_PATH)
             cursor = conn.cursor()
             
-            # Ищем записи с ID 7023-7026 как пример
+            # Ищем записи где ответ - это вопрос
             cursor.execute('''
                 SELECT id, question, answer 
                 FROM knowledge 
-                WHERE id IN (7023, 7024, 7025, 7026)
-                AND is_current = 1
+                WHERE is_current = 1 
+                AND (
+                    answer LIKE 'что %'
+                    OR answer LIKE 'как %'
+                    OR answer LIKE 'где %'
+                    OR answer LIKE 'когда %'
+                    OR answer LIKE 'почему %'
+                    OR answer LIKE 'зачем %'
+                    OR LENGTH(answer) < 30
+                )
+                LIMIT 20
             ''')
             
             examples = cursor.fetchall()
             
             if examples:
-                msg = "📋 Найдены проблемные записи:\n\n"
-                for rec_id, q, a in examples:
+                msg = "📋 Найдены мусорные записи:\n\n"
+                for rec_id, q, a in examples[:5]:
                     msg += f"ID: {rec_id}\n"
-                    msg += f"Q: {q[:60]}...\n"
-                    msg += f"A: {a[:60]}...\n\n"
+                    msg += f"Q: {q[:60]}\n"
+                    msg += f"A: {a[:60]}\n\n"
                 await update.message.reply_text(msg)
             
-            # Ищем все записи где ответ слишком короткий или совпадает с вопросом
+            # Считаем всего
             cursor.execute('''
                 SELECT COUNT(*) 
                 FROM knowledge 
-                WHERE (
-                    LENGTH(answer) < 30
-                    OR answer = question
-                    OR (question LIKE 'что делать%' AND LENGTH(answer) < 100)
+                WHERE is_current = 1 
+                AND (
+                    answer LIKE 'что %'
+                    OR answer LIKE 'как %'
+                    OR answer LIKE 'где %'
+                    OR answer LIKE 'когда %'
+                    OR answer LIKE 'почему %'
+                    OR answer LIKE 'зачем %'
+                    OR LENGTH(answer) < 30
                 )
-                AND is_current = 1
             ''')
             
             count = cursor.fetchone()[0]
@@ -634,17 +647,21 @@ class ClubAssistantBot:
                 conn.close()
                 return
             
-            await update.message.reply_text(f"Найдено подозрительных записей: {count}\n\nУдаляю...")
+            await update.message.reply_text(f"Найдено мусорных записей: {count}\n\nУдаляю...")
             
             # Удаляем
             cursor.execute('''
                 DELETE FROM knowledge 
-                WHERE (
-                    LENGTH(answer) < 30
-                    OR answer = question
-                    OR (question LIKE 'что делать%' AND LENGTH(answer) < 100)
+                WHERE is_current = 1 
+                AND (
+                    answer LIKE 'что %'
+                    OR answer LIKE 'как %'
+                    OR answer LIKE 'где %'
+                    OR answer LIKE 'когда %'
+                    OR answer LIKE 'почему %'
+                    OR answer LIKE 'зачем %'
+                    OR LENGTH(answer) < 30
                 )
-                AND is_current = 1
             ''')
             
             deleted = cursor.rowcount
