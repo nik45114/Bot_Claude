@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Club Assistant Bot v4.6 - Final Production
-Telegram бот с RAG, автообучением и векторным поиском
+Club Assistant Bot v4.7 - Smart Auto-Learning
+Telegram бот с умным автообучением через GPT-анализ
 """
 
 import os
@@ -13,7 +13,7 @@ import logging
 from datetime import datetime
 from typing import List, Dict, Optional, Tuple
 import base64
-import re
+import subprocess
 
 from telegram import Update, ReplyKeyboardRemove
 from telegram.ext import (
@@ -34,7 +34,6 @@ except ImportError:
     print("❌ Не найдены модули v4.0!")
     sys.exit(1)
 
-# Настройки
 CONFIG_PATH = 'config.json'
 DB_PATH = 'knowledge.db'
 
@@ -44,12 +43,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "4.6"
+VERSION = "4.7"
 
 
 class AdminManager:
-    """Управление администраторами"""
-    
     def __init__(self, db_path: str):
         self.db_path = db_path
     
@@ -65,8 +62,7 @@ class AdminManager:
             conn.commit()
             conn.close()
             return True
-        except Exception as e:
-            logger.error(f"Ошибка add_admin: {e}")
+        except:
             return False
     
     def is_admin(self, user_id: int) -> bool:
@@ -93,8 +89,6 @@ class AdminManager:
 
 
 class CredentialManager:
-    """Управление учётками"""
-    
     def __init__(self, db_path: str):
         self.db_path = db_path
     
@@ -102,11 +96,8 @@ class CredentialManager:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            cursor.execute('''
-                INSERT OR REPLACE INTO admin_credentials
-                (user_id, service, login, password)
-                VALUES (?, ?, ?, ?)
-            ''', (user_id, service, login, password))
+            cursor.execute('INSERT OR REPLACE INTO admin_credentials (user_id, service, login, password) VALUES (?, ?, ?, ?)', 
+                         (user_id, service, login, password))
             conn.commit()
             conn.close()
             return True
@@ -132,14 +123,12 @@ class CredentialManager:
 
 
 class KnowledgeBase:
-    """База знаний с векторным поиском"""
-    
     def __init__(self, db_path: str, embedding_service: EmbeddingService, vector_store: VectorStore):
         self.db_path = db_path
         self.embedding_service = embedding_service
         self.vector_store = vector_store
     
-    def add(self, question: str, answer: str, category: str = 'general',
+    def add(self, question: str, answer: str, category: str = 'general', 
             tags: str = '', source: str = 'manual', added_by: int = 0) -> int:
         try:
             conn = sqlite3.connect(self.db_path)
@@ -161,39 +150,44 @@ class KnowledgeBase:
             self.vector_store.upsert(kb_id, vector, {'category': category})
             self.vector_store.save()
             
-            logger.info(f"Добавлено: kb_id={kb_id}")
+            logger.info(f"✅ Добавлено: kb_id={kb_id}, Q: {question[:50]}")
             return kb_id
         except Exception as e:
-            logger.error(f"Ошибка add: {e}")
+            logger.error(f"❌ Ошибка add: {e}")
             return 0
     
-    def add_info_only(self, info: str, gpt_model: str = 'gpt-4o-mini', added_by: int = 0) -> int:
-        """Добавление информации с автогенерацией вопроса"""
+    def add_smart(self, info: str, category: str, gpt_model: str = 'gpt-4o-mini', added_by: int = 0) -> int:
+        """Умное добавление с генерацией вопроса через GPT"""
         try:
-            prompt = f"""Из текста сформулируй короткий вопрос (3-10 слов):
+            # Генерируем вопрос
+            prompt = f"""Из текста сформулируй короткий вопрос (3-10 слов), на который этот текст отвечает.
 
+Категория: {category}
+
+Текст:
 {info}
 
-Только вопрос, без лишнего."""
+Верни только вопрос."""
 
             response = openai.ChatCompletion.create(
                 model=gpt_model,
                 messages=[{"role": "user", "content": prompt}],
-                temperature=0.5,
+                temperature=0.3,
                 max_tokens=50
             )
             
             question = response['choices'][0]['message']['content'].strip()
             
             if not question or len(question) < 3:
-                question = "Информация"
+                question = f"Информация ({category})"
             
-            kb_id = self.add(question, info, source='auto_learn', added_by=added_by)
+            # Добавляем в базу
+            kb_id = self.add(question, info, category=category, source='auto_smart', added_by=added_by)
             return kb_id
             
         except Exception as e:
-            logger.error(f"Ошибка add_info_only: {e}")
-            return self.add("Информация", info, source='auto_learn', added_by=added_by)
+            logger.error(f"❌ add_smart error: {e}")
+            return 0
     
     def vector_search(self, query: str, top_k: int = 5, min_score: float = 0.5) -> List[Dict]:
         try:
@@ -224,7 +218,7 @@ class KnowledgeBase:
             enriched.sort(key=lambda x: x['score'], reverse=True)
             return enriched
         except Exception as e:
-            logger.error(f"Ошибка vector_search: {e}")
+            logger.error(f"❌ vector_search error: {e}")
             return []
     
     def count(self) -> int:
@@ -239,27 +233,121 @@ class KnowledgeBase:
             return 0
 
 
-class RAGAnswerer:
-    """RAG ответчик"""
+class SmartAutoLearner:
+    """Умное автообучение через GPT-анализ"""
     
+    def __init__(self, kb: KnowledgeBase, gpt_model: str = 'gpt-4o-mini'):
+        self.kb = kb
+        self.gpt_model = gpt_model
+    
+    def analyze_message(self, text: str) -> Optional[Dict]:
+        """Анализ сообщения через GPT: стоит ли запоминать?"""
+        
+        # Быстрые фильтры
+        if len(text) < 20:
+            return None
+        
+        if text.startswith('/'):
+            return None
+        
+        # Анализ через GPT
+        try:
+            prompt = f"""Проанализируй сообщение из чата компьютерного клуба.
+
+Сообщение:
+{text}
+
+Определи:
+1. Это полезная информация для базы знаний клуба? (да/нет)
+2. Если да, какая категория:
+   - "problem" - проблема/неисправность
+   - "solution" - решение/инструкция
+   - "incident" - инцидент/случай
+   - "info" - важная информация о работе клуба
+   - "skip" - не нужно запоминать
+
+Верни JSON:
+{{"should_remember": true/false, "category": "...", "reason": "..."}}
+
+Запоминать только:
+- Технические проблемы и их решения
+- Инструкции по работе оборудования
+- Инциденты и как их решили
+- Важную информацию о работе клуба (цены, правила, контакты)
+
+НЕ запоминать:
+- Обычное общение
+- Вопросы (если нет ответа)
+- Приветствия
+- Короткие фразы"""
+
+            response = openai.ChatCompletion.create(
+                model=self.gpt_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                max_tokens=150
+            )
+            
+            result_text = response['choices'][0]['message']['content'].strip()
+            
+            # Парсим JSON
+            import re
+            json_match = re.search(r'\{[^}]+\}', result_text)
+            if json_match:
+                result = json.loads(json_match.group())
+                
+                if result.get('should_remember') and result.get('category') != 'skip':
+                    return {
+                        'category': result['category'],
+                        'reason': result.get('reason', '')
+                    }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ GPT analyze error: {e}")
+            return None
+    
+    def learn_from_message(self, text: str, user_id: int) -> Optional[int]:
+        """Обучение из сообщения с GPT-анализом"""
+        
+        # Анализируем сообщение
+        analysis = self.analyze_message(text)
+        
+        if not analysis:
+            return None
+        
+        category = analysis['category']
+        reason = analysis['reason']
+        
+        logger.info(f"📚 Запоминаю ({category}): {text[:50]}... | Причина: {reason}")
+        
+        # Добавляем в базу
+        kb_id = self.kb.add_smart(text, category=category, added_by=user_id)
+        
+        if kb_id:
+            logger.info(f"✅ Запомнил [ID: {kb_id}]")
+        
+        return kb_id
+
+
+class RAGAnswerer:
     def __init__(self, knowledge_base: KnowledgeBase, gpt_model: str = 'gpt-4o-mini'):
         self.kb = knowledge_base
         self.gpt_model = gpt_model
     
     def answer_question(self, question: str) -> Tuple[str, float, List[Dict], str]:
-        """Ответ с RAG + fallback. Возвращает (answer, confidence, results, source_type)"""
-        
         # Векторный поиск
         search_results = self.kb.vector_search(question, top_k=5, min_score=0.5)
         
-        # Если нашли - используем RAG
+        # RAG если нашли
         if search_results and search_results[0]['score'] >= 0.65:
             context = self._build_context(search_results[:3])
             confidence = search_results[0]['score']
             answer = self._generate_rag_answer(question, context, search_results)
             return answer, confidence, search_results, "knowledge_base"
         
-        # Fallback на GPT
+        # GPT fallback
         try:
             response = openai.ChatCompletion.create(
                 model=self.gpt_model,
@@ -272,8 +360,7 @@ class RAGAnswerer:
             )
             answer = response['choices'][0]['message']['content'].strip()
             return answer, 0.3, [], "gpt"
-        except Exception as e:
-            logger.error(f"GPT error: {e}")
+        except:
             return "Не могу ответить.", 0.0, [], "none"
     
     def _build_context(self, results: List[Dict]) -> str:
@@ -285,18 +372,9 @@ class RAGAnswerer:
     
     def _generate_rag_answer(self, question: str, context: str, results: List[Dict]) -> str:
         try:
-            prompt = f"""Ответь на вопрос используя контекст.
-
-Вопрос: {question}
-
-Контекст:
-{context}
-
-Ответь кратко. В конце укажи источники."""
-
             response = openai.ChatCompletion.create(
                 model=self.gpt_model,
-                messages=[{"role": "user", "content": prompt}],
+                messages=[{"role": "user", "content": f"Вопрос: {question}\n\nКонтекст:\n{context}\n\nОтветь кратко, укажи источники."}],
                 temperature=0.3,
                 max_tokens=400
             )
@@ -312,63 +390,11 @@ class RAGAnswerer:
             return f"{results[0]['answer'][:300]}\n\nИсточник: [{results[0]['id']}]"
 
 
-class AutoLearner:
-    """Автоматическое обучение из сообщений"""
-    
-    def __init__(self, kb: KnowledgeBase):
-        self.kb = kb
-    
-    def should_learn(self, text: str) -> bool:
-        """Проверка: нужно ли запоминать это сообщение"""
-        # Игнорируем короткие
-        if len(text) < 20:
-            return False
-        
-        # Игнорируем команды
-        if text.startswith('/'):
-            return False
-        
-        # Игнорируем вопросы
-        if text.strip().endswith('?'):
-            return False
-        
-        # Ключевые слова клуба
-        keywords = ['клуб', 'компьютер', 'игр', 'час', 'цена', 'стоимость', 'адрес', 'телефон', 
-                   'время', 'работа', 'запись', 'парковка', 'оплата', 'карта', 'cls', 'биос', 'bios']
-        
-        text_lower = text.lower()
-        
-        # Если есть ключевые слова
-        for keyword in keywords:
-            if keyword in text_lower:
-                return True
-        
-        return False
-    
-    def learn_from_message(self, text: str, user_id: int) -> Optional[int]:
-        """Обучение из сообщения"""
-        try:
-            if not self.should_learn(text):
-                return None
-            
-            # Добавляем в базу
-            kb_id = self.kb.add_info_only(text, added_by=user_id)
-            
-            logger.info(f"Auto-learned from message: {text[:50]}... [ID: {kb_id}]")
-            return kb_id
-            
-        except Exception as e:
-            logger.error(f"Auto-learn error: {e}")
-            return None
-
-
 class ClubAssistantBot:
-    """Главный класс бота v4.6"""
-    
     def __init__(self, config: dict):
         self.config = config
         
-        logger.info("🚀 Инициализация v4.6...")
+        logger.info("🚀 Инициализация v4.7...")
         
         self.embedding_service = EmbeddingService(config['openai_api_key'])
         self.vector_store = VectorStore()
@@ -379,7 +405,7 @@ class ClubAssistantBot:
         self.kb = KnowledgeBase(DB_PATH, self.embedding_service, self.vector_store)
         self.draft_queue = DraftQueue(DB_PATH)
         self.rag = RAGAnswerer(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
-        self.auto_learner = AutoLearner(self.kb)
+        self.smart_learner = SmartAutoLearner(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
         
         openai.api_key = config['openai_api_key']
         
@@ -390,57 +416,49 @@ class ClubAssistantBot:
         logger.info(f"   Записей: {self.kb.count()}")
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        user = update.effective_user
-        is_admin = self.admin_manager.is_admin(user.id)
-        
-        text = f"""👋 Привет, {user.first_name}!
+        text = f"""👋 Привет!
 
-Я ассистент клуба v{VERSION} с автообучением.
+Я ассистент клуба v{VERSION} с умным автообучением.
 
-💬 В личке: просто спрашивай
-💬 В группе: упомяни @{self.bot_username or 'bot'}
-
-Команды: /help"""
-
-        if is_admin:
-            text += "\n\n🔧 Админ: /admin"
-        
-        await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
-    
-    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        is_admin = self.admin_manager.is_admin(update.effective_user.id)
-        
-        text = f"""📖 Помощь v{VERSION}
-
-🤖 Автообучение включено!
-Бот запоминает всё что связано с клубом.
+🤖 Я запоминаю:
+• Проблемы и их решения
+• Инструкции
+• Инциденты
+• Важную информацию о клубе
 
 💬 В личке: просто спрашивай
 💬 В группе: @{self.bot_username or 'bot'} вопрос
 
-Команды:
-/start - приветствие
-/stats - статистика
 /help - справка"""
 
-        if is_admin:
-            text += """\n\n🔧 Админ:
-/admin - панель
-/learn <инфо> - добавить
-/import - файл
-/approveall - принять все черновики
-/addadmin <id>
-/admins
-/savecreds <сервис> <логин> <пароль>
-/getcreds
-/update - обновить"""
+        if self.admin_manager.is_admin(update.effective_user.id):
+            text += "\n\n🔧 /admin - админка"
+        
+        await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
+    
+    async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        text = f"""📖 Помощь v{VERSION}
+
+🤖 Умное автообучение:
+Я читаю все сообщения и запоминаю только важное:
+• Технические проблемы
+• Инструкции и решения
+• Инциденты
+• Важную инфу о клубе
+
+💬 В личке: спрашивай
+💬 В группе: @{self.bot_username or 'bot'} вопрос
+
+/stats - статистика"""
+
+        if self.admin_manager.is_admin(update.effective_user.id):
+            text += "\n\n🔧 /admin - админ-панель"
 
         await update.message.reply_text(text)
     
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb_count = self.kb.count()
         vector_stats = self.vector_store.stats()
-        draft_stats = self.draft_queue.stats()
         
         text = f"""📊 Статистика v{VERSION}
 
@@ -448,10 +466,8 @@ class ClubAssistantBot:
 • Записей: {kb_count}
 • Векторов: {vector_stats['total_vectors']}
 
-📝 Черновики (старые):
-• Ожидают: {draft_stats.get('pending', 0)}
-
-🤖 Автообучение: ВКЛ"""
+🤖 Умное автообучение: ВКЛ
+Запоминаю проблемы, решения, инциденты"""
 
         await update.message.reply_text(text)
     
@@ -464,41 +480,38 @@ class ClubAssistantBot:
         
         text = f"""🔧 Админ-панель v{VERSION}
 
-🤖 Автообучение: ВКЛ
-Бот автоматически запоминает всё о клубе!
+🤖 Умное автообучение: ВКЛ
 
-/learn <информация> - добавить вручную
+Команды:
+/learn <инфо> - добавить вручную
 /import - импорт файла
 /approveall - принять {pending} черновиков
 /addadmin <id>
 /admins
 /savecreds <сервис> <логин> <пароль>
 /getcreds
-/update - обновить из GitHub"""
+/update - обновить"""
 
         await update.message.reply_text(text)
     
     async def cmd_learn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
-            await update.message.reply_text("❌ Только для админов")
             return
         
         text = update.message.text.replace('/learn', '').strip()
         
-        if not text or len(text) < 10:
+        if len(text) < 10:
             await update.message.reply_text("Напиши информацию после /learn")
             return
         
         try:
-            kb_id = self.kb.add_info_only(text, added_by=update.effective_user.id)
+            kb_id = self.kb.add_smart(text, category='manual', added_by=update.effective_user.id)
             await update.message.reply_text(f"✅ Добавлено [ID: {kb_id}]")
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await update.message.reply_text(f"❌ {e}")
     
     async def cmd_approveall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Принять все черновики сразу"""
         if not self.admin_manager.is_admin(update.effective_user.id):
-            await update.message.reply_text("❌ Только для админов")
             return
         
         await update.message.reply_text("⏳ Принимаю все черновики...")
@@ -514,34 +527,26 @@ class ClubAssistantBot:
             
             for draft in drafts:
                 try:
-                    kb_id = self.kb.add(
-                        draft['question'], 
-                        draft['answer'], 
-                        draft['category'], 
-                        draft['tags'], 
-                        'approved_draft', 
-                        update.effective_user.id
-                    )
+                    kb_id = self.kb.add(draft['question'], draft['answer'], draft['category'], 
+                                       draft['tags'], 'approved_draft', update.effective_user.id)
                     self.draft_queue.approve(draft['id'], update.effective_user.id)
                     approved += 1
                     
                     if approved % 50 == 0:
                         await update.message.reply_text(f"⏳ {approved}/{len(drafts)}...")
-                        
-                except Exception as e:
-                    logger.error(f"Approve error: {e}")
+                except:
+                    pass
             
-            await update.message.reply_text(f"✅ Принято: {approved} из {len(drafts)}")
+            await update.message.reply_text(f"✅ Принято: {approved}")
             
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await update.message.reply_text(f"❌ {e}")
     
     async def cmd_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
-            await update.message.reply_text("❌ Только для админов")
             return
         
-        await update.message.reply_text("📥 Импорт\n\nОтправь .txt файл (каждая строка = инфо)")
+        await update.message.reply_text("📥 Импорт\n\nОтправь .txt файл")
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -550,7 +555,6 @@ class ClubAssistantBot:
         doc = update.message.document
         
         if not doc.file_name.endswith('.txt'):
-            await update.message.reply_text("Только .txt!")
             return
         
         await update.message.reply_text("⏳ Импортирую...")
@@ -568,7 +572,7 @@ class ClubAssistantBot:
                     if i % 10 == 0:
                         await update.message.reply_text(f"⏳ {i}/{len(lines)}...")
                     
-                    self.kb.add_info_only(info, added_by=update.effective_user.id)
+                    self.kb.add_smart(info, category='import', added_by=update.effective_user.id)
                     imported += 1
                 except:
                     pass
@@ -576,7 +580,7 @@ class ClubAssistantBot:
             await update.message.reply_text(f"✅ Импортировано: {imported}")
             
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            await update.message.reply_text(f"❌ {e}")
     
     async def cmd_addadmin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -587,7 +591,7 @@ class ClubAssistantBot:
             self.admin_manager.add_admin(new_admin_id, added_by=update.effective_user.id)
             await update.message.reply_text(f"✅ Админ: {new_admin_id}")
         except:
-            await update.message.reply_text("Использование: /addadmin <user_id>")
+            await update.message.reply_text("/addadmin <user_id>")
     
     async def cmd_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -613,15 +617,12 @@ class ClubAssistantBot:
             return
         
         try:
-            service = context.args[0]
-            login = context.args[1]
-            password = context.args[2]
-            
+            service, login, password = context.args[0], context.args[1], context.args[2]
             self.creds_manager.save(update.effective_user.id, service, login, password)
-            await update.message.reply_text(f"✅ Сохранено: {service}")
+            await update.message.reply_text(f"✅ {service}")
             await update.message.delete()
         except:
-            await update.message.reply_text("Использование: /savecreds <сервис> <логин> <пароль>")
+            await update.message.reply_text("/savecreds <сервис> <логин> <пароль>")
     
     async def cmd_getcreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -648,38 +649,30 @@ class ClubAssistantBot:
         
         await update.message.reply_text("🔄 Обновляю...")
         
-        import subprocess
         subprocess.Popen(['bash', '/opt/club_assistant/update.sh'], 
                         stdout=subprocess.DEVNULL, 
                         stderr=subprocess.DEVNULL)
     
     def _should_respond(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
-        """Проверка: нужно ли отвечать"""
         message = update.message
         
-        # В личке - всегда
         if message.chat.type == 'private':
             return True
         
-        # Reply на бота
         if message.reply_to_message:
             bot_id = context.bot.id if hasattr(context.bot, 'id') else None
             if bot_id and message.reply_to_message.from_user.id == bot_id:
                 return True
         
-        # Упомянут бот
-        if message.text and self.bot_username:
-            if f"@{self.bot_username}" in message.text:
-                return True
+        if message.text and self.bot_username and f"@{self.bot_username}" in message.text:
+            return True
         
-        # Команда
         if message.text and message.text.startswith('/'):
             return True
         
         return False
     
     async def handle_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обработка сообщений"""
         user = update.effective_user
         message = update.message
         text = message.text.strip()
@@ -687,8 +680,11 @@ class ClubAssistantBot:
         if len(text) < 3:
             return
         
-        # Автообучение (в группах и личке)
-        self.auto_learner.learn_from_message(text, user.id)
+        # Умное автообучение (асинхронно, не блокирует ответ)
+        try:
+            self.smart_learner.learn_from_message(text, user.id)
+        except Exception as e:
+            logger.error(f"❌ Auto-learn error: {e}")
         
         # Проверяем нужно ли отвечать
         if not self._should_respond(update, context):
@@ -701,14 +697,14 @@ class ClubAssistantBot:
         
         await context.bot.send_chat_action(chat_id=message.chat.id, action="typing")
         
-        logger.info(f"Q: {user.username}: {question}")
+        logger.info(f"❓ {user.username}: {question}")
         
         # RAG ответ
         answer, confidence, results, source_type = self.rag.answer_question(question)
         
-        logger.info(f"A: source={source_type}, conf={confidence:.2f}")
+        logger.info(f"✅ source={source_type}, conf={confidence:.2f}")
         
-        # Метка источника
+        # Метка
         if source_type == "knowledge_base":
             prefix = "📚 Из базы:\n\n"
         elif source_type == "gpt":
@@ -719,7 +715,6 @@ class ClubAssistantBot:
         await message.reply_text(prefix + answer)
     
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Фото"""
         if not self._should_respond(update, context):
             return
         
@@ -752,18 +747,15 @@ class ClubAssistantBot:
             await update.message.reply_text(f"❌ {e}")
     
     async def post_init(self, application: Application):
-        """Инициализация"""
         bot = await application.bot.get_me()
         self.bot_username = bot.username
-        logger.info(f"Bot: @{self.bot_username}")
+        logger.info(f"✅ Bot: @{self.bot_username}")
     
     def run(self):
-        """Запуск"""
         app = Application.builder().token(self.config['telegram_token']).build()
         
         app.post_init = self.post_init
         
-        # Команды
         app.add_handler(CommandHandler("start", self.cmd_start))
         app.add_handler(CommandHandler("help", self.cmd_help))
         app.add_handler(CommandHandler("stats", self.cmd_stats))
@@ -777,13 +769,8 @@ class ClubAssistantBot:
         app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         app.add_handler(CommandHandler("update", self.cmd_update))
         
-        # Документы
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
-        
-        # Фото
         app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
-        
-        # Текст
         app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
         logger.info(f"🤖 Бот v{VERSION} запущен!")
@@ -792,7 +779,7 @@ class ClubAssistantBot:
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        print(f"❌ Не найден {CONFIG_PATH}")
+        print(f"❌ {CONFIG_PATH}")
         sys.exit(1)
     
     with open(CONFIG_PATH, 'r') as f:
@@ -838,7 +825,7 @@ def init_database():
 def main():
     print("=" * 60)
     print(f"   Club Assistant Bot v{VERSION}")
-    print("   Auto-Learning Final Edition")
+    print("   Smart Auto-Learning with GPT Analysis")
     print("=" * 60)
     
     init_database()
