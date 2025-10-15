@@ -517,7 +517,9 @@ class ClubAssistantBot:
 /import - импорт файла
 /cleanup - удалить дубликаты
 /fixdb - исправить битые записи
+/fixjson - исправить JSON в ответах ⚠️
 /deletetrash - удалить мусорные записи ⚠️
+/viewrecord <id> - посмотреть запись
 /addadmin <id>
 /admins
 /savecreds <сервис> <логин> <пароль>
@@ -711,6 +713,88 @@ class ClubAssistantBot:
             
         except:
             await update.message.reply_text("Использование: /viewrecord <id>\n\nПример: /viewrecord 7023")
+    
+    async def cmd_fixjson(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Исправление записей с JSON в ответах"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("⏳ Ищу записи с JSON...")
+        
+        try:
+            import re
+            import json as json_lib
+            
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Ищем записи с JSON
+            cursor.execute('''
+                SELECT COUNT(*) FROM knowledge 
+                WHERE is_current = 1 
+                AND (answer LIKE '%"text":%' OR answer LIKE 'Ответ:%' OR answer LIKE '%"answer":%')
+            ''')
+            
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                await update.message.reply_text("✅ Нет записей с JSON")
+                conn.close()
+                return
+            
+            await update.message.reply_text(f"Найдено записей с JSON: {count}\n\nИсправляю...")
+            
+            # Получаем все проблемные записи
+            cursor.execute('''
+                SELECT id, answer FROM knowledge 
+                WHERE is_current = 1 
+                AND (answer LIKE '%"text":%' OR answer LIKE 'Ответ:%' OR answer LIKE '%"answer":%')
+            ''')
+            
+            records = cursor.fetchall()
+            fixed = 0
+            
+            for rec_id, answer in records:
+                try:
+                    clean_answer = answer
+                    
+                    # Убираем "text": "..."
+                    clean_answer = re.sub(r'"text"\s*:\s*"([^"]+)"', r'\1', clean_answer)
+                    
+                    # Убираем Ответ: "..."
+                    clean_answer = re.sub(r'Ответ:\s*"([^"]+)"', r'\1', clean_answer)
+                    
+                    # Убираем "answer": "..."
+                    clean_answer = re.sub(r'"answer"\s*:\s*"([^"]+)"', r'\1', clean_answer)
+                    
+                    # Убираем экранирование \n
+                    clean_answer = clean_answer.replace('\\n', '\n')
+                    
+                    # Убираем экранирование \"
+                    clean_answer = clean_answer.replace('\\"', '"')
+                    
+                    # Убираем лишние кавычки в начале/конце
+                    clean_answer = clean_answer.strip('"')
+                    
+                    # Обновляем если изменилось
+                    if clean_answer != answer:
+                        cursor.execute('UPDATE knowledge SET answer = ? WHERE id = ?', (clean_answer, rec_id))
+                        fixed += 1
+                    
+                    if fixed % 100 == 0 and fixed > 0:
+                        conn.commit()
+                        await update.message.reply_text(f"⏳ Исправлено: {fixed}/{len(records)}...")
+                
+                except Exception as e:
+                    logger.error(f"Error fixing record {rec_id}: {e}")
+            
+            conn.commit()
+            conn.close()
+            
+            await update.message.reply_text(f"✅ Исправлено: {fixed} из {count}")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_learn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -954,6 +1038,7 @@ class ClubAssistantBot:
         app.add_handler(CommandHandler("fixdb", self.cmd_fixdb))
         app.add_handler(CommandHandler("deletetrash", self.cmd_deletetrash))
         app.add_handler(CommandHandler("viewrecord", self.cmd_viewrecord))
+        app.add_handler(CommandHandler("fixjson", self.cmd_fixjson))
         app.add_handler(CommandHandler("import", self.cmd_import))
         app.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
         app.add_handler(CommandHandler("admins", self.cmd_admins))
