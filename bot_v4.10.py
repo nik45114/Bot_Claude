@@ -29,6 +29,8 @@ try:
     from embeddings import EmbeddingService
     from vector_store import VectorStore
     from draft_queue import DraftQueue
+    from v2ray_manager import V2RayManager
+    from v2ray_commands import V2RayCommands
 except ImportError:
     print("❌ Не найдены модули v4.0!")
     sys.exit(1)
@@ -445,6 +447,11 @@ class ClubAssistantBot:
         self.draft_queue = DraftQueue(DB_PATH)
         self.rag = RAGAnswerer(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
         self.smart_learner = SmartAutoLearner(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
+        
+        # V2Ray Manager (только для владельца)
+        self.v2ray_manager = V2RayManager(DB_PATH)
+        owner_id = config.get('owner_id', config['admin_ids'][0] if config.get('admin_ids') else 0)
+        self.v2ray_commands = V2RayCommands(self.v2ray_manager, self.admin_manager, owner_id)
         
         openai.api_key = config['openai_api_key']
         
@@ -1045,6 +1052,16 @@ class ClubAssistantBot:
         app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         app.add_handler(CommandHandler("update", self.cmd_update))
+        
+        # V2Ray команды
+        app.add_handler(CommandHandler("v2ray", self.v2ray_commands.cmd_v2ray))
+        app.add_handler(CommandHandler("v2add", self.v2ray_commands.cmd_v2add))
+        app.add_handler(CommandHandler("v2list", self.v2ray_commands.cmd_v2list))
+        app.add_handler(CommandHandler("v2setup", self.v2ray_commands.cmd_v2setup))
+        app.add_handler(CommandHandler("v2user", self.v2ray_commands.cmd_v2user))
+        app.add_handler(CommandHandler("v2stats", self.v2ray_commands.cmd_v2stats))
+        app.add_handler(CommandHandler("v2traffic", self.v2ray_commands.cmd_v2traffic))
+        app.add_handler(CommandHandler("v2remove", self.v2ray_commands.cmd_v2remove))
         
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
