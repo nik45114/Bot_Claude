@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Club Assistant Bot v4.7 - Smart Auto-Learning
-Telegram бот с умным автообучением через GPT-анализ
+Club Assistant Bot v4.10 - Learning Logic Fix
+Автообучение ТОЛЬКО в группах, улучшенные фильтры
 """
 
 import os
@@ -25,13 +25,16 @@ from telegram.ext import (
 )
 import openai
 
-# Импорты v4.0 модулей
 try:
     from embeddings import EmbeddingService
     from vector_store import VectorStore
     from draft_queue import DraftQueue
+    from v2ray_manager import V2RayManager
+    from v2ray_commands import V2RayCommands
+    from club_manager import ClubManager
+    from club_commands import ClubCommands, WAITING_REPORT
 except ImportError:
-    print("❌ Не найдены модули v4.0!")
+    print("❌ Не найдены модули v4.10!")
     sys.exit(1)
 
 CONFIG_PATH = 'config.json'
@@ -43,7 +46,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "4.7"
+VERSION = "4.10"
 
 
 class AdminManager:
@@ -160,12 +163,14 @@ class KnowledgeBase:
         """Умное добавление с генерацией вопроса через GPT"""
         try:
             # Генерируем вопрос
-            prompt = f"""Из текста сформулируй короткий вопрос (3-10 слов), на который этот текст отвечает.
+            prompt = f"""Из текста сформулируй короткий вопрос (3-10 слов).
 
 Категория: {category}
 
 Текст:
 {info}
+
+ВАЖНО: Вопрос должен быть ДРУГИМ, не просто повторять текст!
 
 Верни только вопрос."""
 
@@ -178,11 +183,17 @@ class KnowledgeBase:
             
             question = response['choices'][0]['message']['content'].strip()
             
-            if not question or len(question) < 3:
-                question = f"Информация ({category})"
+            # Проверка: вопрос не должен совпадать с ответом
+            if not question or len(question) < 3 or question == info:
+                # Если GPT вернул тот же текст - делаем вопрос из первых слов
+                words = info.split()[:8]
+                question = ' '.join(words) + '?'
             
-            # Добавляем в базу
             kb_id = self.add(question, info, category=category, source='auto_smart', added_by=added_by)
+            
+            logger.info(f"  Q: {question[:50]}")
+            logger.info(f"  A: {info[:50]}")
+            
             return kb_id
             
         except Exception as e:
@@ -231,6 +242,30 @@ class KnowledgeBase:
             return count
         except:
             return 0
+    
+    def cleanup_duplicates(self) -> int:
+        """Удаление дубликатов и мусора"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Удаляем точные дубликаты
+            cursor.execute('''
+                DELETE FROM knowledge 
+                WHERE id NOT IN (
+                    SELECT MIN(id) 
+                    FROM knowledge 
+                    GROUP BY question, answer
+                )
+            ''')
+            
+            deleted = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            return deleted
+        except:
+            return 0
 
 
 class SmartAutoLearner:
@@ -243,14 +278,23 @@ class SmartAutoLearner:
     def analyze_message(self, text: str) -> Optional[Dict]:
         """Анализ сообщения через GPT: стоит ли запоминать?"""
         
-        # Быстрые фильтры
-        if len(text) < 20:
+        if len(text) < 10:  # Минимум 10 символов
             return None
         
         if text.startswith('/'):
             return None
         
-        # Анализ через GPT
+        # НЕ запоминаем вопросы
+        if text.strip().endswith('?'):
+            return None
+        
+        # НЕ запоминаем если начинается с вопросительных слов
+        question_starts = ['что ', 'как ', 'где ', 'когда ', 'почему ', 'зачем ', 'кто ', 'куда ', 'откуда ']
+        text_lower = text.lower()
+        for q in question_starts:
+            if text_lower.startswith(q):
+                return None
+        
         try:
             prompt = f"""Проанализируй сообщение из чата компьютерного клуба.
 
@@ -258,28 +302,29 @@ class SmartAutoLearner:
 {text}
 
 Определи:
-1. Это полезная информация для базы знаний клуба? (да/нет)
-2. Если да, какая категория:
-   - "problem" - проблема/неисправность
+1. Это полезная информация для базы знаний? (да/нет)
+2. Категория:
+   - "problem" - проблема
    - "solution" - решение/инструкция
-   - "incident" - инцидент/случай
-   - "info" - важная информация о работе клуба
-   - "skip" - не нужно запоминать
+   - "incident" - инцидент
+   - "info" - важная информация о клубе
+   - "skip" - не нужно
 
 Верни JSON:
 {{"should_remember": true/false, "category": "...", "reason": "..."}}
 
-Запоминать только:
-- Технические проблемы и их решения
+Запоминать ТОЛЬКО:
+- Решения технических проблем (с конкретными действиями)
 - Инструкции по работе оборудования
-- Инциденты и как их решили
-- Важную информацию о работе клуба (цены, правила, контакты)
+- Инциденты и их решения
+- Важную информацию о клубе (цены, адрес, время)
 
 НЕ запоминать:
+- Вопросы (даже если есть "что делать")
 - Обычное общение
-- Вопросы (если нет ответа)
 - Приветствия
-- Короткие фразы"""
+- Короткие фразы
+- Обсуждения без конкретных решений"""
 
             response = openai.ChatCompletion.create(
                 model=self.gpt_model,
@@ -290,7 +335,6 @@ class SmartAutoLearner:
             
             result_text = response['choices'][0]['message']['content'].strip()
             
-            # Парсим JSON
             import re
             json_match = re.search(r'\{[^}]+\}', result_text)
             if json_match:
@@ -309,9 +353,8 @@ class SmartAutoLearner:
             return None
     
     def learn_from_message(self, text: str, user_id: int) -> Optional[int]:
-        """Обучение из сообщения с GPT-анализом"""
+        """Обучение из сообщения"""
         
-        # Анализируем сообщение
         analysis = self.analyze_message(text)
         
         if not analysis:
@@ -320,9 +363,8 @@ class SmartAutoLearner:
         category = analysis['category']
         reason = analysis['reason']
         
-        logger.info(f"📚 Запоминаю ({category}): {text[:50]}... | Причина: {reason}")
+        logger.info(f"📚 Запоминаю ({category}): {text[:50]}... | {reason}")
         
-        # Добавляем в базу
         kb_id = self.kb.add_smart(text, category=category, added_by=user_id)
         
         if kb_id:
@@ -332,27 +374,37 @@ class SmartAutoLearner:
 
 
 class RAGAnswerer:
+    """RAG с защитой от галлюцинаций"""
+    
     def __init__(self, knowledge_base: KnowledgeBase, gpt_model: str = 'gpt-4o-mini'):
         self.kb = knowledge_base
         self.gpt_model = gpt_model
     
     def answer_question(self, question: str) -> Tuple[str, float, List[Dict], str]:
+        """Ответ с защитой от галлюцинаций"""
+        
         # Векторный поиск
-        search_results = self.kb.vector_search(question, top_k=5, min_score=0.5)
+        search_results = self.kb.vector_search(question, top_k=3, min_score=0.65)
         
-        # RAG если нашли
-        if search_results and search_results[0]['score'] >= 0.65:
-            context = self._build_context(search_results[:3])
-            confidence = search_results[0]['score']
-            answer = self._generate_rag_answer(question, context, search_results)
-            return answer, confidence, search_results, "knowledge_base"
+        # Если нашли с хорошим скором - используем базу
+        if search_results and search_results[0]['score'] >= 0.70:
+            # Строгий RAG - только из базы
+            answer = self._build_strict_answer(search_results)
+            return answer, search_results[0]['score'], search_results, "knowledge_base"
         
-        # GPT fallback
+        # Если скор средний - честно говорим что нет в базе
+        if search_results and search_results[0]['score'] >= 0.55:
+            answer = f"В базе нет точной информации по этому вопросу.\n\nНашёл похожее:\n\n"
+            answer += search_results[0]['answer'][:200]
+            answer += f"\n\nИсточник: [{search_results[0]['id']}]"
+            return answer, search_results[0]['score'], search_results, "partial"
+        
+        # Fallback на GPT БЕЗ обмана
         try:
             response = openai.ChatCompletion.create(
                 model=self.gpt_model,
                 messages=[
-                    {"role": "system", "content": "Ты - помощник компьютерного клуба. Отвечай кратко."},
+                    {"role": "system", "content": "Ты - помощник компьютерного клуба. Отвечай кратко. Если не знаешь - честно скажи."},
                     {"role": "user", "content": question}
                 ],
                 temperature=0.7,
@@ -361,40 +413,31 @@ class RAGAnswerer:
             answer = response['choices'][0]['message']['content'].strip()
             return answer, 0.3, [], "gpt"
         except:
-            return "Не могу ответить.", 0.0, [], "none"
+            return "Не знаю ответа на этот вопрос.", 0.0, [], "none"
     
-    def _build_context(self, results: List[Dict]) -> str:
-        parts = []
-        for r in results:
-            answer = r['answer'][:500] + ("..." if len(r['answer']) > 500 else "")
-            parts.append(f"[{r['id']}] {r['question']}\n{answer}")
-        return "\n\n".join(parts)
-    
-    def _generate_rag_answer(self, question: str, context: str, results: List[Dict]) -> str:
-        try:
-            response = openai.ChatCompletion.create(
-                model=self.gpt_model,
-                messages=[{"role": "user", "content": f"Вопрос: {question}\n\nКонтекст:\n{context}\n\nОтветь кратко, укажи источники."}],
-                temperature=0.3,
-                max_tokens=400
-            )
-            
-            answer = response['choices'][0]['message']['content'].strip()
-            
-            if '[' not in answer:
-                sources = ', '.join([f"[{r['id']}]" for r in results[:3]])
-                answer += f"\n\nИсточники: {sources}"
-            
-            return answer
-        except:
-            return f"{results[0]['answer'][:300]}\n\nИсточник: [{results[0]['id']}]"
+    def _build_strict_answer(self, results: List[Dict]) -> str:
+        """Строгий ответ только из базы"""
+        # Берём топ результат
+        top = results[0]
+        
+        answer = top['answer']
+        
+        # Обрезаем если слишком длинный
+        if len(answer) > 800:
+            answer = answer[:800] + "..."
+        
+        # Добавляем источники
+        sources = ', '.join([f"[{r['id']}]" for r in results[:2]])
+        answer += f"\n\nИсточники: {sources}"
+        
+        return answer
 
 
 class ClubAssistantBot:
     def __init__(self, config: dict):
         self.config = config
         
-        logger.info("🚀 Инициализация v4.7...")
+        logger.info("🚀 Инициализация v4.8...")
         
         self.embedding_service = EmbeddingService(config['openai_api_key'])
         self.vector_store = VectorStore()
@@ -407,6 +450,15 @@ class ClubAssistantBot:
         self.rag = RAGAnswerer(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
         self.smart_learner = SmartAutoLearner(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
         
+        # V2Ray Manager (только для владельца)
+        self.v2ray_manager = V2RayManager(DB_PATH)
+        owner_id = config.get('owner_id', config['admin_ids'][0] if config.get('admin_ids') else 0)
+        self.v2ray_commands = V2RayCommands(self.v2ray_manager, self.admin_manager, owner_id)
+        
+        # Club Manager (только для владельца)
+        self.club_manager = ClubManager(DB_PATH)
+        self.club_commands = ClubCommands(self.club_manager, owner_id)
+        
         openai.api_key = config['openai_api_key']
         
         self.bot_username = None
@@ -418,10 +470,10 @@ class ClubAssistantBot:
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"""👋 Привет!
 
-Я ассистент клуба v{VERSION} с умным автообучением.
+Я ассистент клуба v{VERSION}.
 
-🤖 Я запоминаю:
-• Проблемы и их решения
+🤖 Запоминаю только важное:
+• Проблемы и решения
 • Инструкции
 • Инциденты
 • Важную информацию о клубе
@@ -432,7 +484,7 @@ class ClubAssistantBot:
 /help - справка"""
 
         if self.admin_manager.is_admin(update.effective_user.id):
-            text += "\n\n🔧 /admin - админка"
+            text += "\n\n🔧 /admin"
         
         await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
     
@@ -440,11 +492,7 @@ class ClubAssistantBot:
         text = f"""📖 Помощь v{VERSION}
 
 🤖 Умное автообучение:
-Я читаю все сообщения и запоминаю только важное:
-• Технические проблемы
-• Инструкции и решения
-• Инциденты
-• Важную инфу о клубе
+Запоминаю проблемы, решения, инциденты
 
 💬 В личке: спрашивай
 💬 В группе: @{self.bot_username or 'bot'} вопрос
@@ -466,8 +514,7 @@ class ClubAssistantBot:
 • Записей: {kb_count}
 • Векторов: {vector_stats['total_vectors']}
 
-🤖 Умное автообучение: ВКЛ
-Запоминаю проблемы, решения, инциденты"""
+🤖 Умное автообучение: ВКЛ"""
 
         await update.message.reply_text(text)
     
@@ -476,16 +523,16 @@ class ClubAssistantBot:
             await update.message.reply_text("❌ Только для админов")
             return
         
-        pending = self.draft_queue.stats().get('pending', 0)
-        
         text = f"""🔧 Админ-панель v{VERSION}
 
-🤖 Умное автообучение: ВКЛ
-
 Команды:
-/learn <инфо> - добавить вручную
+/learn <инфо> - добавить
 /import - импорт файла
-/approveall - принять {pending} черновиков
+/cleanup - удалить дубликаты
+/fixdb - исправить битые записи
+/fixjson - исправить JSON в ответах ⚠️
+/deletetrash - удалить мусорные записи ⚠️
+/viewrecord <id> - посмотреть запись
 /addadmin <id>
 /admins
 /savecreds <сервис> <логин> <пароль>
@@ -493,6 +540,274 @@ class ClubAssistantBot:
 /update - обновить"""
 
         await update.message.reply_text(text)
+    
+    async def cmd_cleanup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Очистка дубликатов"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("⏳ Удаляю дубликаты...")
+        
+        deleted = self.kb.cleanup_duplicates()
+        
+        await update.message.reply_text(f"✅ Удалено: {deleted}")
+    
+    async def cmd_fixdb(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Исправление записей где вопрос = ответ"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("⏳ Исправляю плохие записи...")
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Находим записи где вопрос = ответ
+            cursor.execute('''
+                SELECT id, answer 
+                FROM knowledge 
+                WHERE question = answer 
+                AND is_current = 1
+            ''')
+            
+            bad_records = cursor.fetchall()
+            
+            if not bad_records:
+                await update.message.reply_text("✅ Нет плохих записей")
+                conn.close()
+                return
+            
+            fixed = 0
+            
+            for rec_id, answer in bad_records[:100]:  # По 100 за раз
+                try:
+                    # Генерируем вопрос из первых слов
+                    words = answer.split()[:8]
+                    new_question = ' '.join(words) + '?'
+                    
+                    # Обновляем
+                    cursor.execute('UPDATE knowledge SET question = ? WHERE id = ?', (new_question, rec_id))
+                    fixed += 1
+                    
+                except:
+                    pass
+            
+            conn.commit()
+            conn.close()
+            
+            await update.message.reply_text(f"✅ Исправлено: {fixed} из {len(bad_records)}")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    async def cmd_deletetrash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаление мусорных автогенерированных записей"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("⏳ Ищу мусорные записи...")
+        
+        try:
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Ищем записи где ответ - это вопрос
+            cursor.execute('''
+                SELECT id, question, answer 
+                FROM knowledge 
+                WHERE is_current = 1 
+                AND (
+                    answer LIKE 'что %'
+                    OR answer LIKE 'как %'
+                    OR answer LIKE 'где %'
+                    OR answer LIKE 'когда %'
+                    OR answer LIKE 'почему %'
+                    OR answer LIKE 'зачем %'
+                    OR LENGTH(answer) < 30
+                )
+                LIMIT 20
+            ''')
+            
+            examples = cursor.fetchall()
+            
+            if examples:
+                msg = "📋 Найдены мусорные записи:\n\n"
+                for rec_id, q, a in examples[:5]:
+                    msg += f"ID: {rec_id}\n"
+                    msg += f"Q: {q[:60]}\n"
+                    msg += f"A: {a[:60]}\n\n"
+                await update.message.reply_text(msg)
+            
+            # Считаем всего
+            cursor.execute('''
+                SELECT COUNT(*) 
+                FROM knowledge 
+                WHERE is_current = 1 
+                AND (
+                    answer LIKE 'что %'
+                    OR answer LIKE 'как %'
+                    OR answer LIKE 'где %'
+                    OR answer LIKE 'когда %'
+                    OR answer LIKE 'почему %'
+                    OR answer LIKE 'зачем %'
+                    OR LENGTH(answer) < 30
+                )
+            ''')
+            
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                await update.message.reply_text("✅ Нет мусорных записей")
+                conn.close()
+                return
+            
+            await update.message.reply_text(f"Найдено мусорных записей: {count}\n\nУдаляю...")
+            
+            # Удаляем
+            cursor.execute('''
+                DELETE FROM knowledge 
+                WHERE is_current = 1 
+                AND (
+                    answer LIKE 'что %'
+                    OR answer LIKE 'как %'
+                    OR answer LIKE 'где %'
+                    OR answer LIKE 'когда %'
+                    OR answer LIKE 'почему %'
+                    OR answer LIKE 'зачем %'
+                    OR LENGTH(answer) < 30
+                )
+            ''')
+            
+            deleted = cursor.rowcount
+            conn.commit()
+            
+            # Статистика
+            cursor.execute('SELECT COUNT(*) FROM knowledge WHERE is_current = 1')
+            remaining = cursor.fetchone()[0]
+            
+            conn.close()
+            
+            await update.message.reply_text(f"✅ Удалено: {deleted}\nОсталось записей: {remaining}")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    async def cmd_viewrecord(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Просмотр конкретной записи по ID"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        try:
+            rec_id = int(context.args[0])
+            
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute('SELECT id, question, answer, category, source FROM knowledge WHERE id = ?', (rec_id,))
+            record = cursor.fetchone()
+            conn.close()
+            
+            if not record:
+                await update.message.reply_text(f"❌ Запись {rec_id} не найдена")
+                return
+            
+            rec_id, question, answer, category, source = record
+            
+            msg = f"📋 Запись #{rec_id}\n\n"
+            msg += f"🔹 Категория: {category}\n"
+            msg += f"🔹 Источник: {source}\n\n"
+            msg += f"❓ Вопрос:\n{question}\n\n"
+            msg += f"💬 Ответ:\n{answer[:500]}"
+            
+            if len(answer) > 500:
+                msg += f"\n\n... (всего {len(answer)} символов)"
+            
+            await update.message.reply_text(msg)
+            
+        except:
+            await update.message.reply_text("Использование: /viewrecord <id>\n\nПример: /viewrecord 7023")
+    
+    async def cmd_fixjson(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Исправление записей с JSON в ответах"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("⏳ Ищу записи с JSON...")
+        
+        try:
+            import re
+            import json as json_lib
+            
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            
+            # Ищем записи с JSON
+            cursor.execute('''
+                SELECT COUNT(*) FROM knowledge 
+                WHERE is_current = 1 
+                AND (answer LIKE '%"text":%' OR answer LIKE 'Ответ:%' OR answer LIKE '%"answer":%')
+            ''')
+            
+            count = cursor.fetchone()[0]
+            
+            if count == 0:
+                await update.message.reply_text("✅ Нет записей с JSON")
+                conn.close()
+                return
+            
+            await update.message.reply_text(f"Найдено записей с JSON: {count}\n\nИсправляю...")
+            
+            # Получаем все проблемные записи
+            cursor.execute('''
+                SELECT id, answer FROM knowledge 
+                WHERE is_current = 1 
+                AND (answer LIKE '%"text":%' OR answer LIKE 'Ответ:%' OR answer LIKE '%"answer":%')
+            ''')
+            
+            records = cursor.fetchall()
+            fixed = 0
+            
+            for rec_id, answer in records:
+                try:
+                    clean_answer = answer
+                    
+                    # Убираем "text": "..."
+                    clean_answer = re.sub(r'"text"\s*:\s*"([^"]+)"', r'\1', clean_answer)
+                    
+                    # Убираем Ответ: "..."
+                    clean_answer = re.sub(r'Ответ:\s*"([^"]+)"', r'\1', clean_answer)
+                    
+                    # Убираем "answer": "..."
+                    clean_answer = re.sub(r'"answer"\s*:\s*"([^"]+)"', r'\1', clean_answer)
+                    
+                    # Убираем экранирование \n
+                    clean_answer = clean_answer.replace('\\n', '\n')
+                    
+                    # Убираем экранирование \"
+                    clean_answer = clean_answer.replace('\\"', '"')
+                    
+                    # Убираем лишние кавычки в начале/конце
+                    clean_answer = clean_answer.strip('"')
+                    
+                    # Обновляем если изменилось
+                    if clean_answer != answer:
+                        cursor.execute('UPDATE knowledge SET answer = ? WHERE id = ?', (clean_answer, rec_id))
+                        fixed += 1
+                    
+                    if fixed % 100 == 0 and fixed > 0:
+                        conn.commit()
+                        await update.message.reply_text(f"⏳ Исправлено: {fixed}/{len(records)}...")
+                
+                except Exception as e:
+                    logger.error(f"Error fixing record {rec_id}: {e}")
+            
+            conn.commit()
+            conn.close()
+            
+            await update.message.reply_text(f"✅ Исправлено: {fixed} из {count}")
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_learn(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -510,43 +825,11 @@ class ClubAssistantBot:
         except Exception as e:
             await update.message.reply_text(f"❌ {e}")
     
-    async def cmd_approveall(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self.admin_manager.is_admin(update.effective_user.id):
-            return
-        
-        await update.message.reply_text("⏳ Принимаю все черновики...")
-        
-        try:
-            drafts = self.draft_queue.get_pending(limit=10000)
-            
-            if not drafts:
-                await update.message.reply_text("✅ Нет черновиков")
-                return
-            
-            approved = 0
-            
-            for draft in drafts:
-                try:
-                    kb_id = self.kb.add(draft['question'], draft['answer'], draft['category'], 
-                                       draft['tags'], 'approved_draft', update.effective_user.id)
-                    self.draft_queue.approve(draft['id'], update.effective_user.id)
-                    approved += 1
-                    
-                    if approved % 50 == 0:
-                        await update.message.reply_text(f"⏳ {approved}/{len(drafts)}...")
-                except:
-                    pass
-            
-            await update.message.reply_text(f"✅ Принято: {approved}")
-            
-        except Exception as e:
-            await update.message.reply_text(f"❌ {e}")
-    
     async def cmd_import(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
             return
         
-        await update.message.reply_text("📥 Импорт\n\nОтправь .txt файл")
+        await update.message.reply_text("📥 Отправь .txt файл")
     
     async def handle_document(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -680,11 +963,12 @@ class ClubAssistantBot:
         if len(text) < 3:
             return
         
-        # Умное автообучение (асинхронно, не блокирует ответ)
-        try:
-            self.smart_learner.learn_from_message(text, user.id)
-        except Exception as e:
-            logger.error(f"❌ Auto-learn error: {e}")
+        # Автообучение ТОЛЬКО в группах (не в личке!)
+        if message.chat.type != 'private':
+            try:
+                self.smart_learner.learn_from_message(text, user.id)
+            except Exception as e:
+                logger.error(f"❌ Auto-learn error: {e}")
         
         # Проверяем нужно ли отвечать
         if not self._should_respond(update, context):
@@ -707,8 +991,10 @@ class ClubAssistantBot:
         # Метка
         if source_type == "knowledge_base":
             prefix = "📚 Из базы:\n\n"
+        elif source_type == "partial":
+            prefix = "🔍 Похожее:\n\n"
         elif source_type == "gpt":
-            prefix = "🤖 GPT:\n\n"
+            prefix = "🤖 GPT (нет в базе):\n\n"
         else:
             prefix = ""
         
@@ -761,13 +1047,46 @@ class ClubAssistantBot:
         app.add_handler(CommandHandler("stats", self.cmd_stats))
         app.add_handler(CommandHandler("admin", self.cmd_admin))
         app.add_handler(CommandHandler("learn", self.cmd_learn))
-        app.add_handler(CommandHandler("approveall", self.cmd_approveall))
+        app.add_handler(CommandHandler("cleanup", self.cmd_cleanup))
+        app.add_handler(CommandHandler("fixdb", self.cmd_fixdb))
+        app.add_handler(CommandHandler("deletetrash", self.cmd_deletetrash))
+        app.add_handler(CommandHandler("viewrecord", self.cmd_viewrecord))
+        app.add_handler(CommandHandler("fixjson", self.cmd_fixjson))
         app.add_handler(CommandHandler("import", self.cmd_import))
         app.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
         app.add_handler(CommandHandler("admins", self.cmd_admins))
         app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         app.add_handler(CommandHandler("update", self.cmd_update))
+        
+        # V2Ray команды
+        app.add_handler(CommandHandler("v2ray", self.v2ray_commands.cmd_v2ray))
+        app.add_handler(CommandHandler("v2add", self.v2ray_commands.cmd_v2add))
+        app.add_handler(CommandHandler("v2list", self.v2ray_commands.cmd_v2list))
+        app.add_handler(CommandHandler("v2setup", self.v2ray_commands.cmd_v2setup))
+        app.add_handler(CommandHandler("v2user", self.v2ray_commands.cmd_v2user))
+        app.add_handler(CommandHandler("v2stats", self.v2ray_commands.cmd_v2stats))
+        app.add_handler(CommandHandler("v2traffic", self.v2ray_commands.cmd_v2traffic))
+        app.add_handler(CommandHandler("v2remove", self.v2ray_commands.cmd_v2remove))
+        
+        # Club команды
+        app.add_handler(CommandHandler("clubs", self.club_commands.cmd_clubs))
+        app.add_handler(CommandHandler("clubadd", self.club_commands.cmd_clubadd))
+        app.add_handler(CommandHandler("clublist", self.club_commands.cmd_clublist))
+        app.add_handler(CommandHandler("lastreport", self.club_commands.cmd_lastreport))
+        app.add_handler(CommandHandler("clubstats", self.club_commands.cmd_clubstats))
+        app.add_handler(CommandHandler("issues", self.club_commands.cmd_issues))
+        
+        # ConversationHandler для отчётов
+        from telegram.ext import ConversationHandler
+        report_handler = ConversationHandler(
+            entry_points=[CommandHandler("report", self.club_commands.cmd_report)],
+            states={
+                WAITING_REPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.club_commands.handle_report_text)]
+            },
+            fallbacks=[CommandHandler("cancel", self.club_commands.cmd_cancel)]
+        )
+        app.add_handler(report_handler)
         
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
@@ -825,7 +1144,7 @@ def init_database():
 def main():
     print("=" * 60)
     print(f"   Club Assistant Bot v{VERSION}")
-    print("   Smart Auto-Learning with GPT Analysis")
+    print("   Database Fix Edition")
     print("=" * 60)
     
     init_database()
