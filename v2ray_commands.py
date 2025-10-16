@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-V2Ray Bot Commands
-Команды для управления V2Ray через Telegram бота
+V2Ray Bot Commands v2 - With REALITY Support
+Команды для управления V2Ray с REALITY через Telegram бота
 """
 
 from telegram import Update
@@ -13,12 +13,12 @@ logger = logging.getLogger(__name__)
 
 
 class V2RayCommands:
-    """Класс с командами V2Ray для бота"""
+    """Класс с командами V2Ray для бота (с REALITY)"""
     
     def __init__(self, manager, admin_manager, owner_id: int):
         self.manager = manager
         self.admin_manager = admin_manager
-        self.owner_id = owner_id  # Только владелец может управлять V2Ray
+        self.owner_id = owner_id
     
     def is_owner(self, user_id: int) -> bool:
         """Проверка: является ли пользователь владельцем"""
@@ -30,14 +30,14 @@ class V2RayCommands:
             await update.message.reply_text("❌ Доступ запрещён")
             return
         
-        text = """🔐 V2Ray Manager
+        text = """🔐 V2Ray Manager (REALITY)
 
 Команды:
 
 📡 Серверы:
-/v2add <имя> <host> <user> <pass> - добавить сервер
+/v2add <имя> <host> <user> <pass> [sni] - добавить сервер
 /v2list - список серверов
-/v2setup <имя> - установить V2Ray на сервер
+/v2setup <имя> - установить Xray
 /v2stats <имя> - статистика сервера
 
 👤 Пользователи:
@@ -45,38 +45,49 @@ class V2RayCommands:
 /v2remove <сервер> <uuid> - удалить пользователя
 
 ⚙️ Настройки:
-/v2traffic <сервер> <тип> - изменить тип трафика
-  Типы: tcp, ws, grpc, tls
+/v2sni <сервер> <сайт> - изменить маскировку
+
+🌐 REALITY маскировка:
+По умолчанию: rutube.ru
+Можно: youtube.com, yandex.ru, google.com
 
 Пример:
-/v2add main 1.2.3.4 root MyPass123
+/v2add main 45.144.54.117 root MyPass123
 /v2setup main
-/v2user main @username Вася"""
+/v2user main @username Вася
+/v2sni main youtube.com"""
 
         await update.message.reply_text(text)
     
     async def cmd_v2add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Добавление сервера: /v2add <имя> <host> <user> <pass>"""
+        """Добавление сервера: /v2add <имя> <host> <user> <pass> [sni]"""
         if not self.is_owner(update.effective_user.id):
             return
         
         try:
             if len(context.args) < 4:
                 await update.message.reply_text(
-                    "Использование: /v2add <имя> <host> <user> <pass>\n\n"
-                    "Пример: /v2add main 1.2.3.4 root MyPass123"
+                    "Использование: /v2add <имя> <host> <user> <pass> [sni]\n\n"
+                    "Пример:\n"
+                    "/v2add main 45.144.54.117 root MyPass123\n"
+                    "/v2add main 45.144.54.117 root MyPass123 youtube.com"
                 )
                 return
             
-            name, host, username, password = context.args[0:4]
+            name = context.args[0]
+            host = context.args[1]
+            username = context.args[2]
+            password = context.args[3]
+            sni = context.args[4] if len(context.args) > 4 else "rutube.ru"
             
             await update.message.reply_text("⏳ Добавляю сервер...")
             
-            if self.manager.add_server(name, host, username, password):
+            if self.manager.add_server(name, host, username, password, sni=sni):
                 await update.message.reply_text(
                     f"✅ Сервер '{name}' добавлен!\n\n"
                     f"🖥 Host: {host}\n"
-                    f"👤 User: {username}\n\n"
+                    f"👤 User: {username}\n"
+                    f"🌐 SNI: {sni}\n\n"
                     f"Теперь выполни: /v2setup {name}"
                 )
             else:
@@ -96,18 +107,18 @@ class V2RayCommands:
             await update.message.reply_text("📭 Нет серверов")
             return
         
-        text = "📡 Серверы V2Ray:\n\n"
+        text = "📡 Серверы V2Ray (REALITY):\n\n"
         
         for srv in servers:
             text += f"🔹 {srv['name']}\n"
             text += f"   Host: {srv['host']}\n"
             text += f"   Port: {srv['port']}\n"
-            text += f"   Traffic: {srv['traffic_type']}\n\n"
+            text += f"   SNI: {srv['sni']}\n\n"
         
         await update.message.reply_text(text)
     
     async def cmd_v2setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Установка V2Ray на сервер: /v2setup <имя>"""
+        """Установка Xray на сервер: /v2setup <имя>"""
         if not self.is_owner(update.effective_user.id):
             return
         
@@ -130,16 +141,34 @@ class V2RayCommands:
                 await update.message.reply_text("❌ Не удалось подключиться к серверу")
                 return
             
-            await update.message.reply_text("📥 Устанавливаю V2Ray (может занять 2-3 минуты)...")
+            await update.message.reply_text("📥 Устанавливаю Xray (2-3 минуты)...")
             
             if not server.install_v2ray():
-                await update.message.reply_text("❌ Ошибка установки V2Ray")
+                await update.message.reply_text("❌ Ошибка установки Xray")
                 server.disconnect()
                 return
             
-            await update.message.reply_text("⚙️ Создаю конфигурацию...")
+            await update.message.reply_text("⚙️ Создаю REALITY конфигурацию...")
             
-            config = server.create_config(port=443, traffic_type="tcp")
+            # Получаем SNI из базы
+            server_keys = self.manager.get_server_keys(server_name)
+            sni = server_keys.get('sni', 'rutube.ru')
+            
+            config = server.create_reality_config(port=443, sni=sni)
+            
+            if not config:
+                await update.message.reply_text("❌ Ошибка создания конфигурации")
+                server.disconnect()
+                return
+            
+            # Сохраняем ключи в базу
+            client_keys = config.get('_client_keys', {})
+            if client_keys:
+                self.manager.save_server_keys(
+                    server_name,
+                    client_keys['public_key'],
+                    client_keys['short_id']
+                )
             
             if not server.deploy_config(config):
                 await update.message.reply_text("❌ Ошибка применения конфигурации")
@@ -149,7 +178,9 @@ class V2RayCommands:
             server.disconnect()
             
             await update.message.reply_text(
-                f"✅ V2Ray установлен на {server_name}!\n\n"
+                f"✅ Xray установлен на {server_name}!\n\n"
+                f"🔐 Протокол: REALITY\n"
+                f"🌐 Маскировка: {sni}\n\n"
                 f"Теперь можешь добавлять пользователей:\n"
                 f"/v2user {server_name} <user_id> [email]"
             )
@@ -182,11 +213,15 @@ class V2RayCommands:
                 await update.message.reply_text(f"❌ Сервер {server_name} не найден")
                 return
             
+            # Получаем SNI из базы
+            server_keys = self.manager.get_server_keys(server_name)
+            sni = server_keys.get('sni', 'rutube.ru')
+            
             if not server.connect():
                 await update.message.reply_text("❌ Не удалось подключиться")
                 return
             
-            vless_link = server.add_user(user_id, email)
+            vless_link = server.add_user_reality(user_id, email, sni)
             
             server.disconnect()
             
@@ -205,8 +240,9 @@ class V2RayCommands:
             text = f"✅ Пользователь добавлен!\n\n"
             text += f"👤 ID: {user_id}\n"
             text += f"📧 Email: {email or 'не указан'}\n"
-            text += f"🔑 UUID: {user_uuid}\n\n"
-            text += f"🔗 VLESS ссылка:\n`{vless_link}`"
+            text += f"🔑 UUID: {user_uuid}\n"
+            text += f"🌐 SNI: {sni}\n\n"
+            text += f"🔗 VLESS ссылка (REALITY):\n`{vless_link}`"
             
             await update.message.reply_text(text, parse_mode='Markdown')
             
@@ -251,7 +287,8 @@ class V2RayCommands:
             text += f"{status_emoji} Статус: {'Работает' if stats['running'] else 'Остановлен'}\n"
             text += f"🖥 Host: {stats['host']}\n"
             text += f"🔌 Port: {stats['port']}\n"
-            text += f"📡 Network: {stats['network']}\n"
+            text += f"🔐 Protocol: {stats['protocol']}\n"
+            text += f"🌐 SNI: {stats['sni']}\n"
             text += f"👥 Пользователей: {stats['users']}"
             
             await update.message.reply_text(text)
@@ -259,32 +296,29 @@ class V2RayCommands:
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")
     
-    async def cmd_v2traffic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Изменение типа трафика: /v2traffic <сервер> <тип>"""
+    async def cmd_v2sni(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Изменение SNI: /v2sni <сервер> <сайт>"""
         if not self.is_owner(update.effective_user.id):
             return
         
         try:
             if len(context.args) < 2:
                 await update.message.reply_text(
-                    "Использование: /v2traffic <сервер> <тип>\n\n"
-                    "Типы трафика:\n"
-                    "• tcp - обычный TCP\n"
-                    "• ws - WebSocket\n"
-                    "• grpc - gRPC\n"
-                    "• tls - TLS шифрование\n\n"
-                    "Пример: /v2traffic main ws"
+                    "Использование: /v2sni <сервер> <сайт>\n\n"
+                    "Популярные сайты для маскировки:\n"
+                    "• rutube.ru (по умолчанию)\n"
+                    "• youtube.com\n"
+                    "• google.com\n"
+                    "• yandex.ru\n"
+                    "• vk.com\n\n"
+                    "Пример: /v2sni main youtube.com"
                 )
                 return
             
             server_name = context.args[0]
-            traffic_type = context.args[1].lower()
+            new_sni = context.args[1]
             
-            if traffic_type not in ['tcp', 'ws', 'grpc', 'tls']:
-                await update.message.reply_text("❌ Неверный тип трафика. Используй: tcp, ws, grpc, tls")
-                return
-            
-            await update.message.reply_text(f"⏳ Изменяю тип трафика на {traffic_type}...")
+            await update.message.reply_text(f"⏳ Изменяю маскировку на {new_sni}...")
             
             server = self.manager.get_server(server_name)
             
@@ -296,16 +330,25 @@ class V2RayCommands:
                 await update.message.reply_text("❌ Не удалось подключиться")
                 return
             
-            if server.change_traffic_type(traffic_type):
+            if server.change_sni(new_sni):
                 server.disconnect()
+                
+                # Обновляем SNI в базе
+                import sqlite3
+                conn = sqlite3.connect(self.manager.db_path)
+                cursor = conn.cursor()
+                cursor.execute('UPDATE v2ray_servers SET sni = ? WHERE name = ?', (new_sni, server_name))
+                conn.commit()
+                conn.close()
+                
                 await update.message.reply_text(
-                    f"✅ Тип трафика изменён на {traffic_type}!\n\n"
+                    f"✅ Маскировка изменена на {new_sni}!\n\n"
                     f"⚠️ Все пользователи должны обновить свои ссылки.\n"
                     f"Создай новые: /v2user {server_name} <user_id>"
                 )
             else:
                 server.disconnect()
-                await update.message.reply_text("❌ Ошибка изменения типа трафика")
+                await update.message.reply_text("❌ Ошибка изменения маскировки")
             
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")

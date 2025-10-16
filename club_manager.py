@@ -95,6 +95,18 @@ class ClubManager:
             )
         ''')
         
+        # Таблица расходов (NEW!)
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS shift_expenses (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                shift_id INTEGER NOT NULL,
+                description TEXT NOT NULL,
+                amount INTEGER NOT NULL,
+                category TEXT DEFAULT 'other',
+                FOREIGN KEY (shift_id) REFERENCES shifts(id)
+            )
+        ''')
+        
         # Таблица проблем
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS shift_issues (
@@ -226,6 +238,35 @@ class ClubManager:
         if towels:
             report['supplies'].append({'item': 'Бумажные полотенца', 'status': towels.group(1)})
         
+        # Расходы (NEW!)
+        # Парсим строки типа: "- 4500 вика зп" или "( - 4500 вика, ваня зп)"
+        expense_patterns = [
+            r'-\s*(\d[\d\s,]+)\s+([^,\n]+)',  # - 4500 вика зп
+            r'\(\s*-\s*(\d[\d\s,]+)\s+([^)]+)\)',  # ( - 4500 вика)
+        ]
+        
+        report['expenses'] = []
+        
+        for pattern in expense_patterns:
+            for match in re.finditer(pattern, text):
+                amount = int(match.group(1).replace(' ', '').replace(',', ''))
+                description = match.group(2).strip()
+                
+                # Определяем категорию
+                category = 'other'
+                if any(word in description.lower() for word in ['зп', 'зарплата', 'аванс']):
+                    category = 'salary'
+                elif any(word in description.lower() for word in ['закупка', 'товар', 'monster', 'red bull']):
+                    category = 'purchase'
+                elif any(word in description.lower() for word in ['инкассация', 'сдача', 'банк']):
+                    category = 'collection'
+                
+                report['expenses'].append({
+                    'amount': amount,
+                    'description': description,
+                    'category': category
+                })
+        
         return report
     
     def save_shift_report(self, club_id: int, admin_id: int, admin_name: str, report: Dict) -> int:
@@ -270,6 +311,13 @@ class ClubManager:
                     INSERT INTO shift_supplies (shift_id, item, status)
                     VALUES (?, ?, ?)
                 ''', (shift_id, supply['item'], supply['status']))
+            
+            # Расходы (NEW!)
+            for expense in report.get('expenses', []):
+                cursor.execute('''
+                    INSERT INTO shift_expenses (shift_id, description, amount, category)
+                    VALUES (?, ?, ?, ?)
+                ''', (shift_id, expense['description'], expense['amount'], expense['category']))
             
             # Проблемы
             for issue in report.get('issues', []):
@@ -376,6 +424,27 @@ class ClubManager:
                     emoji = "✅" if status.lower() == "есть" else "❌"
                     text += f"{emoji} {item}: {status}\n"
                 text += "\n"
+            
+            # Расходы (NEW!)
+            cursor.execute('SELECT description, amount, category FROM shift_expenses WHERE shift_id = ?', (shift_id,))
+            expenses = cursor.fetchall()
+            
+            if expenses:
+                text += "💸 РАСХОДЫ\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                total_expenses = 0
+                
+                for desc, amount, category in expenses:
+                    category_emoji = {
+                        'salary': '👤',
+                        'purchase': '🛒',
+                        'collection': '🏦',
+                        'other': '💰'
+                    }.get(category, '💰')
+                    
+                    text += f"{category_emoji} {desc}: {amount:,} ₽\n"
+                    total_expenses += amount
+                
+                text += f"\n📊 Всего расходов: {total_expenses:,} ₽\n\n"
             
             # Проблемы
             cursor.execute('SELECT issue, status FROM shift_issues WHERE shift_id = ? AND status = "open"', (shift_id,))
