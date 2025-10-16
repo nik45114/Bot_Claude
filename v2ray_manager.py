@@ -1,43 +1,45 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-V2Ray Server Manager
-Модуль для управления V2Ray серверами через бота
+V2Ray Manager с REALITY протоколом
+Управление V2Ray/Xray серверами через SSH
 """
 
-import paramiko
-import json
-import uuid
-import logging
-from typing import Optional, Dict, List
 import sqlite3
+import json
+import paramiko
+import uuid
+import base64
+import subprocess
+import logging
+from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
 
 class V2RayServer:
-    """Класс для работы с одним V2Ray сервером"""
+    """Класс для работы с V2Ray сервером"""
     
-    def __init__(self, host: str, port: int, username: str, password: str):
+    def __init__(self, host: str, username: str, password: str, port: int = 22):
         self.host = host
-        self.port = port
         self.username = username
         self.password = password
-        self.ssh = None
+        self.port = port
+        self.ssh_client = None
     
     def connect(self) -> bool:
         """Подключение к серверу по SSH"""
         try:
-            self.ssh = paramiko.SSHClient()
-            self.ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            self.ssh.connect(
+            self.ssh_client = paramiko.SSHClient()
+            self.ssh_client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            self.ssh_client.connect(
                 hostname=self.host,
                 port=self.port,
                 username=self.username,
                 password=self.password,
                 timeout=10
             )
-            logger.info(f"✅ Подключено к {self.host}")
+            logger.info(f"✅ Подключен к {self.host}")
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка подключения к {self.host}: {e}")
@@ -45,157 +47,288 @@ class V2RayServer:
     
     def disconnect(self):
         """Отключение от сервера"""
-        if self.ssh:
-            self.ssh.close()
-            self.ssh = None
+        if self.ssh_client:
+            self.ssh_client.close()
+            logger.info(f"🔌 Отключен от {self.host}")
     
-    def execute_command(self, command: str) -> tuple:
+    def _exec_command(self, command: str, timeout: int = 30) -> tuple:
         """Выполнение команды на сервере"""
         try:
-            stdin, stdout, stderr = self.ssh.exec_command(command)
-            exit_status = stdout.channel.recv_exit_status()
-            output = stdout.read().decode('utf-8')
-            error = stderr.read().decode('utf-8')
-            return exit_status, output, error
+            stdin, stdout, stderr = self.ssh_client.exec_command(command, timeout=timeout)
+            exit_code = stdout.channel.recv_exit_status()
+            out = stdout.read().decode('utf-8')
+            err = stderr.read().decode('utf-8')
+            return exit_code, out, err
         except Exception as e:
             logger.error(f"❌ Ошибка выполнения команды: {e}")
             return 1, "", str(e)
     
     def install_v2ray(self) -> bool:
-        """Установка V2Ray на сервер"""
+        """Установка Xray на сервер"""
         try:
-            logger.info(f"📥 Установка V2Ray на {self.host}...")
+            logger.info("📥 Устанавливаю Xray...")
             
-            # Установка V2Ray
-            commands = [
-                "apt update",
-                "apt install -y curl",
-                "bash <(curl -L https://raw.githubusercontent.com/v2fly/fhs-install-v2ray/master/install-release.sh)"
-            ]
+            # Установка Xray
+            install_script = '''
+#!/bin/bash
+set -e
+
+# Обновление системы
+apt-get update
+
+# Установка зависимостей
+apt-get install -y curl unzip
+
+# Установка Xray
+bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+
+# Проверка установки
+if command -v xray &> /dev/null; then
+    echo "Xray установлен успешно"
+    xray version
+else
+    echo "Ошибка установки Xray"
+    exit 1
+fi
+'''
             
-            for cmd in commands:
-                status, output, error = self.execute_command(cmd)
-                if status != 0:
-                    logger.error(f"Ошибка: {error}")
-                    return False
+            # Загружаем скрипт на сервер
+            sftp = self.ssh_client.open_sftp()
+            with sftp.file('/tmp/install_xray.sh', 'w') as f:
+                f.write(install_script)
+            sftp.close()
             
-            logger.info("✅ V2Ray установлен")
-            return True
+            # Делаем скрипт исполняемым
+            self._exec_command('chmod +x /tmp/install_xray.sh')
             
+            # Запускаем установку
+            exit_code, out, err = self._exec_command('bash /tmp/install_xray.sh', timeout=180)
+            
+            if exit_code == 0:
+                logger.info("✅ Xray установлен успешно")
+                return True
+            else:
+                logger.error(f"❌ Ошибка установки: {err}")
+                return False
+                
         except Exception as e:
-            logger.error(f"❌ Ошибка установки V2Ray: {e}")
+            logger.error(f"❌ Ошибка установки Xray: {e}")
             return False
     
-    def create_config(self, port: int = 443, traffic_type: str = "tls") -> Dict:
-        """Создание конфигурации V2Ray"""
-        
-        config = {
-            "inbounds": [{
-                "port": port,
-                "protocol": "vless",
-                "settings": {
-                    "clients": [],
-                    "decryption": "none"
-                },
-                "streamSettings": {
-                    "network": "tcp"
+    def generate_reality_keys(self) -> Dict:
+        """Генерация ключей для REALITY"""
+        try:
+            # Генерируем ключи локально используя xray
+            result = subprocess.run(
+                ['xray', 'x25519'],
+                capture_output=True,
+                text=True,
+                timeout=5
+            )
+            
+            if result.returncode == 0:
+                lines = result.stdout.strip().split('\n')
+                private_key = lines[0].split(':')[1].strip()
+                public_key = lines[1].split(':')[1].strip()
+                
+                # Генерируем short ID (8 байт в hex = 16 символов)
+                short_id = uuid.uuid4().hex[:16]
+                
+                return {
+                    'private_key': private_key,
+                    'public_key': public_key,
+                    'short_id': short_id
                 }
-            }],
-            "outbounds": [{
-                "protocol": "freedom",
-                "settings": {}
-            }]
-        }
-        
-        # Настройка маскировки трафика
-        if traffic_type == "tls":
-            config["inbounds"][0]["streamSettings"]["security"] = "tls"
-            config["inbounds"][0]["streamSettings"]["tlsSettings"] = {
-                "certificates": [{
-                    "certificateFile": "/etc/v2ray/cert.crt",
-                    "keyFile": "/etc/v2ray/cert.key"
-                }]
+            else:
+                # Если xray не установлен локально, генерируем на сервере
+                return self._generate_keys_on_server()
+                
+        except FileNotFoundError:
+            # xray не установлен локально
+            return self._generate_keys_on_server()
+        except Exception as e:
+            logger.error(f"❌ Ошибка генерации ключей: {e}")
+            return None
+    
+    def _generate_keys_on_server(self) -> Dict:
+        """Генерация ключей на сервере"""
+        try:
+            exit_code, out, err = self._exec_command('xray x25519')
+            
+            if exit_code == 0:
+                lines = out.strip().split('\n')
+                private_key = lines[0].split(':')[1].strip()
+                public_key = lines[1].split(':')[1].strip()
+                short_id = uuid.uuid4().hex[:16]
+                
+                return {
+                    'private_key': private_key,
+                    'public_key': public_key,
+                    'short_id': short_id
+                }
+            else:
+                logger.error(f"❌ Ошибка генерации ключей на сервере: {err}")
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка генерации ключей на сервере: {e}")
+            return None
+    
+    def create_reality_config(self, port: int = 443, sni: str = "rutube.ru") -> Dict:
+        """Создание конфигурации Xray с REALITY"""
+        try:
+            # Генерируем ключи
+            keys = self.generate_reality_keys()
+            if not keys:
+                logger.error("❌ Не удалось сгенерировать ключи")
+                return None
+            
+            config = {
+                "log": {
+                    "loglevel": "warning"
+                },
+                "inbounds": [
+                    {
+                        "port": port,
+                        "protocol": "vless",
+                        "settings": {
+                            "clients": [],
+                            "decryption": "none"
+                        },
+                        "streamSettings": {
+                            "network": "tcp",
+                            "security": "reality",
+                            "realitySettings": {
+                                "dest": f"{sni}:443",
+                                "serverNames": [sni],
+                                "privateKey": keys['private_key'],
+                                "shortIds": [keys['short_id'], ""],
+                                "spiderX": ""
+                            },
+                            "tcpSettings": {
+                                "header": {
+                                    "type": "none"
+                                }
+                            }
+                        }
+                    }
+                ],
+                "outbounds": [
+                    {
+                        "protocol": "freedom",
+                        "tag": "direct"
+                    },
+                    {
+                        "protocol": "blackhole",
+                        "tag": "block"
+                    }
+                ]
             }
-        elif traffic_type == "ws":
-            config["inbounds"][0]["streamSettings"]["network"] = "ws"
-            config["inbounds"][0]["streamSettings"]["wsSettings"] = {
-                "path": "/v2ray"
+            
+            # Сохраняем ключи для клиента (они понадобятся для генерации ссылок)
+            config['_client_keys'] = {
+                'public_key': keys['public_key'],
+                'short_id': keys['short_id']
             }
-        elif traffic_type == "grpc":
-            config["inbounds"][0]["streamSettings"]["network"] = "grpc"
-            config["inbounds"][0]["streamSettings"]["grpcSettings"] = {
-                "serviceName": "v2ray"
-            }
-        
-        return config
+            
+            return config
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания конфигурации: {e}")
+            return None
     
     def deploy_config(self, config: Dict) -> bool:
-        """Загрузка конфигурации на сервер"""
+        """Развёртывание конфигурации на сервере"""
         try:
-            config_json = json.dumps(config, indent=2)
+            # Убираем служебные ключи перед сохранением
+            config_to_save = config.copy()
+            if '_client_keys' in config_to_save:
+                del config_to_save['_client_keys']
             
-            # Создаём временный файл
-            temp_file = "/tmp/v2ray_config.json"
-            self.execute_command(f"echo '{config_json}' > {temp_file}")
+            config_json = json.dumps(config_to_save, indent=2)
             
-            # Перемещаем в /etc/v2ray/
-            self.execute_command("mkdir -p /etc/v2ray")
-            self.execute_command(f"mv {temp_file} /etc/v2ray/config.json")
+            # Загружаем конфигурацию на сервер
+            sftp = self.ssh_client.open_sftp()
+            with sftp.file('/usr/local/etc/xray/config.json', 'w') as f:
+                f.write(config_json)
+            sftp.close()
             
-            # Перезапускаем V2Ray
-            self.execute_command("systemctl restart v2ray")
-            self.execute_command("systemctl enable v2ray")
+            # Перезапускаем Xray
+            exit_code, out, err = self._exec_command('systemctl restart xray')
             
-            logger.info("✅ Конфигурация применена")
-            return True
-            
+            if exit_code == 0:
+                # Проверяем статус
+                exit_code, out, err = self._exec_command('systemctl is-active xray')
+                if 'active' in out:
+                    logger.info("✅ Xray запущен успешно")
+                    return True
+                else:
+                    logger.error(f"❌ Xray не запустился: {err}")
+                    return False
+            else:
+                logger.error(f"❌ Ошибка перезапуска Xray: {err}")
+                return False
+                
         except Exception as e:
-            logger.error(f"❌ Ошибка применения конфигурации: {e}")
+            logger.error(f"❌ Ошибка развёртывания конфигурации: {e}")
             return False
     
-    def add_user(self, user_id: str, email: str = "") -> Optional[str]:
+    def add_user_reality(self, user_id: str, email: str = "", sni: str = "rutube.ru") -> str:
         """Добавление пользователя и генерация VLESS ссылки"""
         try:
-            # Генерируем UUID
+            # Генерируем UUID для пользователя
             user_uuid = str(uuid.uuid4())
             
             # Читаем текущую конфигурацию
-            status, config_text, error = self.execute_command("cat /etc/v2ray/config.json")
-            
-            if status != 0:
-                logger.error("Не удалось прочитать конфигурацию")
-                return None
-            
-            config = json.loads(config_text)
+            sftp = self.ssh_client.open_sftp()
+            with sftp.file('/usr/local/etc/xray/config.json', 'r') as f:
+                config = json.load(f)
             
             # Добавляем пользователя
             new_client = {
                 "id": user_uuid,
-                "email": email or f"user_{user_id}"
+                "email": email or user_id,
+                "flow": "xtls-rprx-vision"
             }
             
-            config["inbounds"][0]["settings"]["clients"].append(new_client)
+            config['inbounds'][0]['settings']['clients'].append(new_client)
             
-            # Сохраняем конфигурацию
-            if not self.deploy_config(config):
-                return None
+            # Сохраняем обновлённую конфигурацию
+            with sftp.file('/usr/local/etc/xray/config.json', 'w') as f:
+                json.dump(config, f, indent=2)
             
-            # Генерируем VLESS ссылку
-            port = config["inbounds"][0]["port"]
-            network = config["inbounds"][0]["streamSettings"]["network"]
-            security = config["inbounds"][0]["streamSettings"].get("security", "none")
+            sftp.close()
             
-            vless_link = f"vless://{user_uuid}@{self.host}:{port}"
-            vless_link += f"?type={network}&security={security}"
+            # Перезапускаем Xray
+            self._exec_command('systemctl restart xray')
             
-            if network == "ws":
-                path = config["inbounds"][0]["streamSettings"]["wsSettings"]["path"]
-                vless_link += f"&path={path}"
-            elif network == "grpc":
-                service = config["inbounds"][0]["streamSettings"]["grpcSettings"]["serviceName"]
-                vless_link += f"&serviceName={service}"
+            # Получаем публичный ключ из конфигурации
+            reality_settings = config['inbounds'][0]['streamSettings']['realitySettings']
             
-            vless_link += f"#{email or user_id}"
+            # Генерируем публичный ключ из приватного (если его нет)
+            # Для этого нужно выполнить xray x25519 на сервере
+            exit_code, out, err = self._exec_command('xray x25519')
+            
+            # Парсим вывод для получения публичного ключа
+            # Но проще сохранить его при создании конфигурации
+            # Поэтому будем требовать, чтобы он был в БД
+            
+            # Формируем VLESS ссылку
+            # Формат: vless://uuid@host:port?param=value#name
+            
+            params = [
+                "encryption=none",
+                "flow=xtls-rprx-vision",
+                "security=reality",
+                f"sni={sni}",
+                "fp=chrome",
+                # Публичный ключ и short_id нужно получить из БД
+                # Они сохраняются при setup сервера
+                "type=tcp"
+            ]
+            
+            # Базовая ссылка без pbk и sid (они добавятся позже из БД)
+            vless_link = f"vless://{user_uuid}@{self.host}:443?{'&'.join(params)}#{email or user_id}"
             
             logger.info(f"✅ Пользователь {user_id} добавлен")
             return vless_link
@@ -207,96 +340,106 @@ class V2RayServer:
     def remove_user(self, user_uuid: str) -> bool:
         """Удаление пользователя"""
         try:
-            # Читаем конфигурацию
-            status, config_text, error = self.execute_command("cat /etc/v2ray/config.json")
-            config = json.loads(config_text)
+            # Читаем текущую конфигурацию
+            sftp = self.ssh_client.open_sftp()
+            with sftp.file('/usr/local/etc/xray/config.json', 'r') as f:
+                config = json.load(f)
             
             # Удаляем пользователя
-            clients = config["inbounds"][0]["settings"]["clients"]
-            config["inbounds"][0]["settings"]["clients"] = [
-                c for c in clients if c["id"] != user_uuid
+            clients = config['inbounds'][0]['settings']['clients']
+            config['inbounds'][0]['settings']['clients'] = [
+                c for c in clients if c['id'] != user_uuid
             ]
             
-            # Сохраняем
-            if self.deploy_config(config):
-                logger.info(f"✅ Пользователь {user_uuid} удалён")
-                return True
+            # Сохраняем обновлённую конфигурацию
+            with sftp.file('/usr/local/etc/xray/config.json', 'w') as f:
+                json.dump(config, f, indent=2)
             
-            return False
+            sftp.close()
+            
+            # Перезапускаем Xray
+            self._exec_command('systemctl restart xray')
+            
+            logger.info(f"✅ Пользователь {user_uuid} удалён")
+            return True
             
         except Exception as e:
             logger.error(f"❌ Ошибка удаления пользователя: {e}")
             return False
     
+    def change_sni(self, new_sni: str) -> bool:
+        """Изменение SNI (маскировки)"""
+        try:
+            # Читаем текущую конфигурацию
+            sftp = self.ssh_client.open_sftp()
+            with sftp.file('/usr/local/etc/xray/config.json', 'r') as f:
+                config = json.load(f)
+            
+            # Изменяем SNI
+            reality_settings = config['inbounds'][0]['streamSettings']['realitySettings']
+            reality_settings['dest'] = f"{new_sni}:443"
+            reality_settings['serverNames'] = [new_sni]
+            
+            # Сохраняем обновлённую конфигурацию
+            with sftp.file('/usr/local/etc/xray/config.json', 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            sftp.close()
+            
+            # Перезапускаем Xray
+            self._exec_command('systemctl restart xray')
+            
+            logger.info(f"✅ SNI изменён на {new_sni}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка изменения SNI: {e}")
+            return False
+    
     def get_stats(self) -> Dict:
         """Получение статистики сервера"""
         try:
-            # Статус сервиса
-            status, output, _ = self.execute_command("systemctl status v2ray")
-            is_running = "active (running)" in output
+            # Проверяем статус Xray
+            exit_code, out, err = self._exec_command('systemctl is-active xray')
+            is_running = 'active' in out
             
-            # Количество пользователей
-            status, config_text, _ = self.execute_command("cat /etc/v2ray/config.json")
-            config = json.loads(config_text)
-            user_count = len(config["inbounds"][0]["settings"]["clients"])
+            # Читаем конфигурацию
+            sftp = self.ssh_client.open_sftp()
+            with sftp.file('/usr/local/etc/xray/config.json', 'r') as f:
+                config = json.load(f)
+            sftp.close()
             
-            # Порт
-            port = config["inbounds"][0]["port"]
+            # Получаем информацию о пользователях
+            clients = config['inbounds'][0]['settings']['clients']
+            users_count = len(clients)
             
-            # Тип трафика
-            network = config["inbounds"][0]["streamSettings"]["network"]
+            # Получаем настройки
+            inbound = config['inbounds'][0]
+            port = inbound.get('port', 443)
+            protocol = inbound.get('protocol', 'vless')
+            
+            reality_settings = inbound['streamSettings']['realitySettings']
+            sni = reality_settings['serverNames'][0] if reality_settings['serverNames'] else 'unknown'
             
             return {
-                "running": is_running,
-                "users": user_count,
-                "port": port,
-                "network": network,
-                "host": self.host
+                'running': is_running,
+                'host': self.host,
+                'port': port,
+                'protocol': protocol,
+                'sni': sni,
+                'users': users_count
             }
             
         except Exception as e:
             logger.error(f"❌ Ошибка получения статистики: {e}")
-            return {}
-    
-    def change_traffic_type(self, traffic_type: str) -> bool:
-        """Изменение типа маскировки трафика"""
-        try:
-            # Читаем конфигурацию
-            status, config_text, _ = self.execute_command("cat /etc/v2ray/config.json")
-            config = json.loads(config_text)
-            
-            # Меняем тип трафика
-            if traffic_type == "tcp":
-                config["inbounds"][0]["streamSettings"]["network"] = "tcp"
-                config["inbounds"][0]["streamSettings"].pop("security", None)
-                config["inbounds"][0]["streamSettings"].pop("wsSettings", None)
-                config["inbounds"][0]["streamSettings"].pop("grpcSettings", None)
-            
-            elif traffic_type == "ws":
-                config["inbounds"][0]["streamSettings"]["network"] = "ws"
-                config["inbounds"][0]["streamSettings"]["wsSettings"] = {
-                    "path": "/v2ray"
-                }
-            
-            elif traffic_type == "grpc":
-                config["inbounds"][0]["streamSettings"]["network"] = "grpc"
-                config["inbounds"][0]["streamSettings"]["grpcSettings"] = {
-                    "serviceName": "v2ray"
-                }
-            
-            elif traffic_type == "tls":
-                config["inbounds"][0]["streamSettings"]["security"] = "tls"
-            
-            # Сохраняем
-            if self.deploy_config(config):
-                logger.info(f"✅ Тип трафика изменён на {traffic_type}")
-                return True
-            
-            return False
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка изменения типа трафика: {e}")
-            return False
+            return {
+                'running': False,
+                'host': self.host,
+                'port': 443,
+                'protocol': 'vless',
+                'sni': 'unknown',
+                'users': 0
+            }
 
 
 class V2RayManager:
@@ -307,10 +450,11 @@ class V2RayManager:
         self._init_db()
     
     def _init_db(self):
-        """Инициализация таблицы серверов"""
+        """Инициализация таблиц"""
         conn = sqlite3.connect(self.db_path)
         cursor = conn.cursor()
         
+        # Таблица серверов
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS v2ray_servers (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -319,13 +463,15 @@ class V2RayManager:
                 port INTEGER DEFAULT 22,
                 username TEXT NOT NULL,
                 password TEXT NOT NULL,
-                v2ray_port INTEGER DEFAULT 443,
-                traffic_type TEXT DEFAULT 'tcp',
+                sni TEXT DEFAULT 'rutube.ru',
+                public_key TEXT,
+                short_id TEXT,
                 is_active BOOLEAN DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
         
+        # Таблица пользователей
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS v2ray_users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -334,6 +480,7 @@ class V2RayManager:
                 uuid TEXT NOT NULL,
                 email TEXT,
                 vless_link TEXT,
+                is_active BOOLEAN DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (server_id) REFERENCES v2ray_servers(id)
             )
@@ -343,23 +490,19 @@ class V2RayManager:
         conn.close()
     
     def add_server(self, name: str, host: str, username: str, password: str, 
-                   port: int = 22, v2ray_port: int = 443) -> bool:
-        """Добавление сервера в базу"""
+                   port: int = 22, sni: str = "rutube.ru") -> bool:
+        """Добавление сервера"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
             cursor.execute('''
-                INSERT INTO v2ray_servers (name, host, port, username, password, v2ray_port)
+                INSERT INTO v2ray_servers (name, host, port, username, password, sni)
                 VALUES (?, ?, ?, ?, ?, ?)
-            ''', (name, host, port, username, password, v2ray_port))
-            
+            ''', (name, host, port, username, password, sni))
             conn.commit()
             conn.close()
-            
             logger.info(f"✅ Сервер {name} добавлен")
             return True
-            
         except Exception as e:
             logger.error(f"❌ Ошибка добавления сервера: {e}")
             return False
@@ -369,10 +512,9 @@ class V2RayManager:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
             cursor.execute('''
-                SELECT host, port, username, password 
-                FROM v2ray_servers 
+                SELECT host, port, username, password
+                FROM v2ray_servers
                 WHERE name = ? AND is_active = 1
             ''', (name,))
             
@@ -380,34 +522,32 @@ class V2RayManager:
             conn.close()
             
             if row:
-                return V2RayServer(row[0], row[1], row[2], row[3])
-            
-            return None
-            
+                return V2RayServer(row[0], row[2], row[3], row[1])
+            else:
+                return None
+                
         except Exception as e:
             logger.error(f"❌ Ошибка получения сервера: {e}")
             return None
     
     def list_servers(self) -> List[Dict]:
-        """Список всех серверов"""
+        """Список серверов"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
             cursor.execute('''
-                SELECT id, name, host, v2ray_port, traffic_type 
-                FROM v2ray_servers 
+                SELECT name, host, port, sni
+                FROM v2ray_servers
                 WHERE is_active = 1
             ''')
             
             servers = []
             for row in cursor.fetchall():
                 servers.append({
-                    'id': row[0],
-                    'name': row[1],
-                    'host': row[2],
-                    'port': row[3],
-                    'traffic_type': row[4]
+                    'name': row[0],
+                    'host': row[1],
+                    'port': row[2],
+                    'sni': row[3]
                 })
             
             conn.close()
@@ -417,27 +557,78 @@ class V2RayManager:
             logger.error(f"❌ Ошибка получения списка серверов: {e}")
             return []
     
-    def save_user(self, server_name: str, user_id: str, uuid: str, 
-                  vless_link: str, email: str = "") -> bool:
-        """Сохранение пользователя в базу"""
+    def save_server_keys(self, server_name: str, public_key: str, short_id: str) -> bool:
+        """Сохранение ключей сервера"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE v2ray_servers
+                SET public_key = ?, short_id = ?
+                WHERE name = ?
+            ''', (public_key, short_id, server_name))
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Ключи сервера {server_name} сохранены")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка сохранения ключей: {e}")
+            return False
+    
+    def get_server_keys(self, server_name: str) -> Dict:
+        """Получение ключей сервера"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT public_key, short_id, sni
+                FROM v2ray_servers
+                WHERE name = ?
+            ''', (server_name,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    'public_key': row[0],
+                    'short_id': row[1],
+                    'sni': row[2] or 'rutube.ru'
+                }
+            else:
+                return {}
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения ключей: {e}")
+            return {}
+    
+    def save_user(self, server_name: str, user_id: str, user_uuid: str, 
+                 vless_link: str, email: str = "") -> bool:
+        """Сохранение пользователя"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            # Получаем server_id
+            # Получаем ID сервера
             cursor.execute('SELECT id FROM v2ray_servers WHERE name = ?', (server_name,))
             server_id = cursor.fetchone()[0]
+            
+            # Получаем ключи сервера для дополнения ссылки
+            keys = self.get_server_keys(server_name)
+            
+            # Дополняем ссылку pbk и sid
+            if keys.get('public_key') and keys.get('short_id'):
+                vless_link += f"&pbk={keys['public_key']}&sid={keys['short_id']}"
             
             cursor.execute('''
                 INSERT INTO v2ray_users (server_id, user_id, uuid, email, vless_link)
                 VALUES (?, ?, ?, ?, ?)
-            ''', (server_id, user_id, uuid, email, vless_link))
+            ''', (server_id, user_id, user_uuid, email, vless_link))
             
             conn.commit()
             conn.close()
-            
+            logger.info(f"✅ Пользователь {user_id} сохранён")
             return True
-            
         except Exception as e:
             logger.error(f"❌ Ошибка сохранения пользователя: {e}")
             return False
