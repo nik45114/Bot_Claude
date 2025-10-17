@@ -35,8 +35,14 @@ try:
     from v2ray_commands import V2RayCommands
     from club_manager import ClubManager
     from club_commands import ClubCommands, WAITING_REPORT
-except ImportError:
-    print("❌ Не найдены модули v4.10!")
+    from cash_manager import CashManager
+    from cash_commands import CashCommands, CASH_SELECT_CLUB, CASH_SELECT_TYPE, CASH_ENTER_AMOUNT, CASH_ENTER_DESCRIPTION, CASH_ENTER_CATEGORY
+    from product_manager import ProductManager
+    from product_commands import ProductCommands, PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY
+    from issue_manager import IssueManager
+    from issue_commands import IssueCommands, ISSUE_SELECT_CLUB, ISSUE_ENTER_DESCRIPTION, ISSUE_EDIT_DESCRIPTION
+except ImportError as e:
+    print(f"❌ Не найдены модули v4.10: {e}")
     sys.exit(1)
 
 CONFIG_PATH = 'config.json'
@@ -455,11 +461,24 @@ class ClubAssistantBot:
         # V2Ray Manager (только для владельца)
         self.v2ray_manager = V2RayManager(DB_PATH)
         owner_id = config.get('owner_id', config['admin_ids'][0] if config.get('admin_ids') else 0)
+        self.owner_id = owner_id  # Сохраняем для использования в других модулях
         self.v2ray_commands = V2RayCommands(self.v2ray_manager, self.admin_manager, owner_id)
         
         # Club Manager (только для владельца)
         self.club_manager = ClubManager(DB_PATH)
         self.club_commands = ClubCommands(self.club_manager, owner_id)
+        
+        # Cash Manager - финансовый мониторинг (только для владельца)
+        self.cash_manager = CashManager(DB_PATH)
+        self.cash_commands = None  # Будет инициализирован позже с bot_app
+        
+        # Product Manager - управление товарами (для владельца и админов)
+        self.product_manager = ProductManager(DB_PATH)
+        self.product_commands = None  # Будет инициализирован позже
+        
+        # Issue Manager - отслеживание проблем (для владельца и админов)
+        self.issue_manager = IssueManager(DB_PATH)
+        self.issue_commands = None  # Будет инициализирован позже с bot_app
         
         openai.api_key = config['openai_api_key']
         
@@ -1070,6 +1089,12 @@ class ClubAssistantBot:
         if self.admin_manager.is_admin(user_id):
             keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
             keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
+            keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
+            keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
+        
+        # Финансовый мониторинг только для владельца
+        if user_id == self.owner_id:
+            keyboard.append([InlineKeyboardButton("💰 Финансовый мониторинг", callback_data="cash_menu")])
         
         return InlineKeyboardMarkup(keyboard)
     
@@ -1187,6 +1212,93 @@ class ClubAssistantBot:
             reply_markup = self._build_v2ray_menu_keyboard()
             await query.edit_message_text(text, reply_markup=reply_markup)
             return
+        
+        # === НОВЫЕ МОДУЛИ ===
+        
+        # Финансовый мониторинг
+        if data == "cash_menu":
+            await self.cash_commands.show_cash_menu(update, context)
+            return
+        
+        if data == "cash_balances":
+            await self.cash_commands.show_balances(update, context)
+            return
+        
+        if data == "cash_movements":
+            await self.cash_commands.show_movements(update, context)
+            return
+        
+        if data.startswith("cash_movements_"):
+            await self.cash_commands.show_movements_club(update, context)
+            return
+        
+        if data in ("cash_add_income", "cash_add_expense"):
+            # Эти обрабатываются через conversation handler
+            return
+        
+        if data == "cash_monthly":
+            await self.cash_commands.show_monthly_summary(update, context)
+            return
+        
+        if data.startswith("cash_month_"):
+            await self.cash_commands.show_monthly_club(update, context)
+            return
+        
+        # Управление товарами
+        if data == "product_menu":
+            await self.product_commands.show_product_menu(update, context)
+            return
+        
+        if data == "product_my_debt":
+            await self.product_commands.show_my_debt(update, context)
+            return
+        
+        if data == "product_all_debts":
+            await self.product_commands.show_all_debts(update, context)
+            return
+        
+        if data == "product_report":
+            await self.product_commands.show_products_report(update, context)
+            return
+        
+        if data == "product_clear_settled":
+            await self.product_commands.clear_settled_products(update, context)
+            return
+        
+        if data.startswith("product_clear_") and data != "product_clear_settled":
+            await self.product_commands.clear_admin_debt(update, context)
+            return
+        
+        # Проблемы клуба
+        if data == "issue_menu":
+            await self.issue_commands.show_issue_menu(update, context)
+            return
+        
+        if data == "issue_list":
+            await self.issue_commands.show_issues_list(update, context)
+            return
+        
+        if data.startswith("issue_filter_"):
+            await self.issue_commands.show_filtered_issues(update, context)
+            return
+        
+        if data == "issue_current":
+            await self.issue_commands.show_current_issues(update, context)
+            return
+        
+        if data.startswith("issue_manage_"):
+            await self.issue_commands.manage_issue(update, context)
+            return
+        
+        if data.startswith("issue_resolve_"):
+            await self.issue_commands.resolve_issue(update, context)
+            return
+        
+        if data.startswith("issue_delete_"):
+            await self.issue_commands.delete_issue(update, context)
+            return
+        
+        # === КОНЕЦ НОВЫХ МОДУЛЕЙ ===
         
         # Админ - обновление бота через кнопку
         if data == "admin_update":
@@ -1810,6 +1922,11 @@ class ClubAssistantBot:
         bot = await application.bot.get_me()
         self.bot_username = bot.username
         logger.info(f"✅ Bot: @{self.bot_username}")
+        
+        # Инициализируем команды которым нужен bot_app
+        self.cash_commands = CashCommands(self.cash_manager, self.owner_id)
+        self.product_commands = ProductCommands(self.product_manager, self.admin_manager, self.owner_id)
+        self.issue_commands = IssueCommands(self.issue_manager, self.kb, self.admin_manager, self.owner_id, application)
     
     def run(self):
         app = Application.builder().token(self.config['telegram_token']).build()
@@ -1863,6 +1980,81 @@ class ClubAssistantBot:
             fallbacks=[CommandHandler("cancel", self.club_commands.cmd_cancel)]
         )
         app.add_handler(report_handler)
+        
+        # === НОВЫЕ CONVERSATION HANDLERS ===
+        
+        # ConversationHandler для финансового мониторинга
+        cash_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.cash_commands.start_add_movement, pattern="^cash_add_(income|expense)$")
+            ],
+            states={
+                CASH_SELECT_CLUB: [CallbackQueryHandler(self.cash_commands.select_club, pattern="^cash_club_")],
+                CASH_SELECT_TYPE: [CallbackQueryHandler(self.cash_commands.select_type, pattern="^cash_type_")],
+                CASH_ENTER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.cash_commands.enter_amount)],
+                CASH_ENTER_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.cash_commands.enter_description)],
+                CASH_ENTER_CATEGORY: [CallbackQueryHandler(self.cash_commands.select_category, pattern="^cash_cat_")]
+            },
+            fallbacks=[CallbackQueryHandler(self.cash_commands.cancel, pattern="^cash_menu$")]
+        )
+        app.add_handler(cash_handler)
+        
+        # ConversationHandler для добавления товара
+        product_add_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.product_commands.start_add_product, pattern="^product_add$")
+            ],
+            states={
+                PRODUCT_ENTER_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.product_commands.enter_product_name)],
+                PRODUCT_ENTER_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.product_commands.enter_product_price)]
+            },
+            fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
+        )
+        app.add_handler(product_add_handler)
+        
+        # ConversationHandler для взятия товара админом
+        product_take_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.product_commands.start_take_product, pattern="^product_take$")
+            ],
+            states={
+                PRODUCT_SELECT: [CallbackQueryHandler(self.product_commands.select_product, pattern="^product_select_")],
+                PRODUCT_ENTER_QUANTITY: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.product_commands.enter_quantity)]
+            },
+            fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
+        )
+        app.add_handler(product_take_handler)
+        
+        # ConversationHandler для обнуления долга (кнопка выбора админа)
+        product_clear_debt_handler = CallbackQueryHandler(self.product_commands.start_clear_debt, pattern="^product_clear_debt$")
+        app.add_handler(product_clear_debt_handler)
+        
+        # ConversationHandler для сообщения о проблеме
+        issue_report_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.issue_commands.start_report_issue, pattern="^issue_report$")
+            ],
+            states={
+                ISSUE_SELECT_CLUB: [CallbackQueryHandler(self.issue_commands.select_club_for_issue, pattern="^issue_club_")],
+                ISSUE_ENTER_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.issue_commands.enter_issue_description)]
+            },
+            fallbacks=[CallbackQueryHandler(self.issue_commands.cancel, pattern="^issue_menu$")]
+        )
+        app.add_handler(issue_report_handler)
+        
+        # ConversationHandler для редактирования проблемы
+        issue_edit_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.issue_commands.start_edit_issue, pattern="^issue_edit_")
+            ],
+            states={
+                ISSUE_EDIT_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.issue_commands.edit_issue_description)]
+            },
+            fallbacks=[CallbackQueryHandler(self.issue_commands.cancel, pattern="^issue_current$")]
+        )
+        app.add_handler(issue_edit_handler)
+        
+        # === КОНЕЦ НОВЫХ HANDLERS ===
         
         app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))

@@ -669,7 +669,12 @@ class V2RayManager:
     
     def save_user(self, server_name: str, user_id: str, user_uuid: str, 
                  vless_link: str, email: str = "") -> bool:
-        """Сохранение пользователя"""
+        """
+        Сохранение пользователя (УСТАРЕВШИЙ МЕТОД - используйте add_user)
+        
+        ВАЖНО: vless_link должен уже содержать все необходимые параметры,
+        включая pbk и sid. Этот метод больше не добавляет ключи.
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -678,13 +683,8 @@ class V2RayManager:
             cursor.execute('SELECT id FROM v2ray_servers WHERE name = ?', (server_name,))
             server_id = cursor.fetchone()[0]
             
-            # Получаем ключи сервера для дополнения ссылки
-            keys = self.get_server_keys(server_name)
-            
-            # Дополняем ссылку pbk и sid
-            if keys.get('public_key') and keys.get('short_id'):
-                vless_link += f"&pbk={keys['public_key']}&sid={keys['short_id']}"
-            
+            # Сохраняем пользователя с уже готовой ссылкой
+            # Ключи должны быть добавлены до вызова этого метода
             cursor.execute('''
                 INSERT INTO v2ray_users (server_id, user_id, uuid, email, vless_link)
                 VALUES (?, ?, ?, ?, ?)
@@ -802,22 +802,23 @@ class V2RayManager:
             if not short_id:
                 logger.warning(f"⚠️ Short ID not found for {server_name}!")
             
-            params = {
-                'security': 'reality',
-                'sni': sni,
-                'fp': 'chrome',
-                'type': 'tcp',
-                'flow': 'xtls-rprx-vision'
-            }
+            # Формируем параметры в правильном порядке для VLESS REALITY
+            params = [
+                'encryption=none',
+                'security=reality',
+                f'sni={sni}',
+                'fp=chrome',
+                'type=tcp',
+                'flow=xtls-rprx-vision'
+            ]
             
-            # Add REALITY keys only if they exist
-            # These are critical for REALITY protocol - if missing, link won't work
+            # Add REALITY keys - КРИТИЧЕСКИ ВАЖНО для работы REALITY
             if public_key:
-                params['pbk'] = public_key
+                params.append(f'pbk={public_key}')
             if short_id:
-                params['sid'] = short_id
+                params.append(f'sid={short_id}')
             
-            params_str = '&'.join([f"{k}={v}" for k, v in params.items()])
+            params_str = '&'.join(params)
             comment_encoded = urllib.parse.quote(comment)
             
             vless = f"vless://{uuid}@{host}:{port}?{params_str}#{comment_encoded}"
