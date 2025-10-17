@@ -802,22 +802,23 @@ class V2RayManager:
             if not short_id:
                 logger.warning(f"⚠️ Short ID not found for {server_name}!")
             
-            params = {
-                'security': 'reality',
-                'sni': sni,
-                'fp': 'chrome',
-                'type': 'tcp',
-                'flow': 'xtls-rprx-vision'
-            }
+            # Формируем параметры в правильном порядке для VLESS REALITY
+            params = [
+                'encryption=none',
+                'security=reality',
+                f'sni={sni}',
+                'fp=chrome',
+                'type=tcp',
+                'flow=xtls-rprx-vision'
+            ]
             
-            # Add REALITY keys only if they exist
-            # These are critical for REALITY protocol - if missing, link won't work
+            # Add REALITY keys - КРИТИЧЕСКИ ВАЖНО для работы REALITY
             if public_key:
-                params['pbk'] = public_key
+                params.append(f'pbk={public_key}')
             if short_id:
-                params['sid'] = short_id
+                params.append(f'sid={short_id}')
             
-            params_str = '&'.join([f"{k}={v}" for k, v in params.items()])
+            params_str = '&'.join(params)
             comment_encoded = urllib.parse.quote(comment)
             
             vless = f"vless://{uuid}@{host}:{port}?{params_str}#{comment_encoded}"
