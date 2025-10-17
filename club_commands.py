@@ -12,12 +12,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
-WAITING_REPORT = 0
-WAITING_CASH_FACT = 1
-WAITING_CASH_SAFE = 2
-WAITING_CASHLESS = 3
-WAITING_QR = 4
-WAITING_JOYSTICKS = 5
+WAITING_REPORT = 1
+WAITING_CASH_FACT = 2
+WAITING_CASH_SAFE = 3
+WAITING_CASHLESS = 4
+WAITING_QR = 5
+WAITING_JOYSTICKS = 6
 
 
 class ClubCommands:
