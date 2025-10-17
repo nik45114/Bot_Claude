@@ -12,6 +12,7 @@ import uuid
 import base64
 import subprocess
 import logging
+import urllib.parse
 from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -239,6 +240,7 @@ fi
             # Сохраняем ключи для клиента (они понадобятся для генерации ссылок)
             config['_client_keys'] = {
                 'public_key': keys['public_key'],
+                'private_key': keys['private_key'],
                 'short_id': keys['short_id']
             }
             
@@ -251,6 +253,9 @@ fi
     def deploy_config(self, config: Dict) -> bool:
         """Развёртывание конфигурации на сервере"""
         try:
+            # Сохраняем ключи для клиента перед удалением
+            client_keys = config.get('_client_keys', {})
+            
             # Убираем служебные ключи перед сохранением
             config_to_save = config.copy()
             if '_client_keys' in config_to_save:
@@ -262,6 +267,21 @@ fi
             sftp = self.ssh_client.open_sftp()
             with sftp.file('/usr/local/etc/xray/config.json', 'w') as f:
                 f.write(config_json)
+            
+            # Сохраняем ключи в отдельный файл keys.json
+            if client_keys:
+                keys_json = json.dumps(client_keys, indent=2)
+                try:
+                    # Создаем директорию, если не существует
+                    self._exec_command('mkdir -p /root/Xray-core')
+                    with sftp.file('/root/Xray-core/keys.json', 'w') as f:
+                        f.write(keys_json)
+                    # Устанавливаем права доступа
+                    self._exec_command('chmod 600 /root/Xray-core/keys.json')
+                    logger.info("✅ Ключи сохранены в /root/Xray-core/keys.json")
+                except Exception as e:
+                    logger.warning(f"⚠️ Не удалось сохранить keys.json: {e}")
+            
             sftp.close()
             
             # Перезапускаем Xray
@@ -476,11 +496,20 @@ class V2RayManager:
                 password TEXT NOT NULL,
                 sni TEXT DEFAULT 'rutube.ru',
                 public_key TEXT,
+                private_key TEXT,
                 short_id TEXT,
                 is_active BOOLEAN DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        
+        # Проверяем и добавляем колонку private_key если её нет (для существующих БД)
+        cursor.execute("PRAGMA table_info(v2ray_servers)")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        if 'private_key' not in columns:
+            logger.info("🔧 Adding private_key column to v2ray_servers table")
+            cursor.execute('ALTER TABLE v2ray_servers ADD COLUMN private_key TEXT')
         
         # Таблица пользователей
         cursor.execute('''
@@ -593,16 +622,16 @@ class V2RayManager:
             logger.error(f"❌ Ошибка получения списка серверов: {e}")
             return []
     
-    def save_server_keys(self, server_name: str, public_key: str, short_id: str) -> bool:
+    def save_server_keys(self, server_name: str, public_key: str, short_id: str, private_key: str = '') -> bool:
         """Сохранение ключей сервера"""
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE v2ray_servers
-                SET public_key = ?, short_id = ?
+                SET public_key = ?, private_key = ?, short_id = ?
                 WHERE name = ?
-            ''', (public_key, short_id, server_name))
+            ''', (public_key, private_key, short_id, server_name))
             conn.commit()
             conn.close()
             logger.info(f"✅ Ключи сервера {server_name} сохранены")
@@ -731,21 +760,12 @@ class V2RayManager:
             
             logger.info(f"✅ User saved to database")
             
-            # Генерируем VLESS ссылку
-            # REALITY protocol always uses port 443 to mimic HTTPS traffic
-            # This is hardcoded throughout the system (see create_reality_config)
-            vless_link = self._generate_vless_link(
-                server_info['host'],
-                443,
-                user_uuid,
-                sni,
-                comment
-            )
+            # Генерируем VLESS ссылку с ключами
+            vless_link = self._generate_vless_link(server_name, user_uuid, comment)
             
-            # Дополняем ключами
-            keys = self.get_server_keys(server_name)
-            if keys.get('public_key') and keys.get('short_id'):
-                vless_link += f"&pbk={keys['public_key']}&sid={keys['short_id']}"
+            if not vless_link:
+                logger.error(f"❌ Failed to generate VLESS link")
+                return None
             
             logger.info(f"✅ User added successfully")
             
@@ -760,24 +780,57 @@ class V2RayManager:
             logger.error(f"❌ add_user error: {e}", exc_info=True)
             return None
     
-    def _generate_vless_link(self, host: str, port: int, uuid: str, sni: str, comment: str) -> str:
-        """Генерация VLESS ссылки"""
-        import urllib.parse
-        
-        params = {
-            'security': 'reality',
-            'sni': sni,
-            'fp': 'chrome',
-            'type': 'tcp',
-            'flow': 'xtls-rprx-vision'
-        }
-        
-        params_str = '&'.join([f"{k}={v}" for k, v in params.items()])
-        comment_encoded = urllib.parse.quote(comment)
-        
-        vless = f"vless://{uuid}@{host}:{port}?{params_str}#{comment_encoded}"
-        
-        return vless
+    def _generate_vless_link(self, server_name: str, uuid: str, comment: str = "") -> Optional[str]:
+        """Генерация VLESS ссылки с REALITY ключами"""
+        try:
+            # Получаем информацию о сервере
+            server = self.get_server_info(server_name)
+            
+            if not server:
+                logger.error(f"❌ Server {server_name} not found")
+                return None
+            
+            host = server['host']
+            port = 443  # REALITY always uses port 443
+            sni = server.get('sni', 'rutube.ru')
+            public_key = server.get('public_key', '')
+            short_id = server.get('short_id', '')
+            
+            if not public_key:
+                logger.warning(f"⚠️ Public key not found for {server_name}!")
+            
+            if not short_id:
+                logger.warning(f"⚠️ Short ID not found for {server_name}!")
+            
+            params = {
+                'security': 'reality',
+                'sni': sni,
+                'fp': 'chrome',
+                'type': 'tcp',
+                'flow': 'xtls-rprx-vision'
+            }
+            
+            # Add REALITY keys only if they exist
+            # These are critical for REALITY protocol - if missing, link won't work
+            if public_key:
+                params['pbk'] = public_key
+            if short_id:
+                params['sid'] = short_id
+            
+            params_str = '&'.join([f"{k}={v}" for k, v in params.items()])
+            comment_encoded = urllib.parse.quote(comment)
+            
+            vless = f"vless://{uuid}@{host}:{port}?{params_str}#{comment_encoded}"
+            
+            logger.info(f"✅ Generated VLESS link with REALITY keys")
+            logger.info(f"  • pbk: {public_key[:20] if public_key else 'MISSING'}...")
+            logger.info(f"  • sid: {short_id if short_id else 'MISSING'}")
+            
+            return vless
+            
+        except Exception as e:
+            logger.error(f"❌ _generate_vless_link error: {e}", exc_info=True)
+            return None
     
     def get_server_info(self, server_name: str) -> Optional[Dict]:
         """Получение полной информации о сервере"""
@@ -785,7 +838,7 @@ class V2RayManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT name, host, port, username, password, sni
+                SELECT name, host, port, username, password, sni, public_key, private_key, short_id
                 FROM v2ray_servers
                 WHERE name = ? AND is_active = 1
             ''', (server_name,))
@@ -800,7 +853,10 @@ class V2RayManager:
                     'port': row[2],
                     'username': row[3],
                     'password': row[4],
-                    'sni': row[5] or 'rutube.ru'
+                    'sni': row[5] or 'rutube.ru',
+                    'public_key': row[6],
+                    'private_key': row[7],
+                    'short_id': row[8]
                 }
             else:
                 return None
@@ -849,3 +905,82 @@ class V2RayManager:
         except Exception as e:
             logger.error(f"❌ delete_user error: {e}")
             return False
+    
+    def check_xray_status(self, server_name: str) -> bool:
+        """Проверка запущен ли Xray"""
+        try:
+            server = self.get_server_info(server_name)
+            if not server:
+                return False
+            
+            ssh = self._connect_ssh(server)
+            if not ssh:
+                return False
+            
+            stdin, stdout, stderr = ssh.exec_command('systemctl is-active xray')
+            status = stdout.read().decode().strip()
+            ssh.close()
+            
+            return status == 'active'
+        except Exception as e:
+            logger.error(f"❌ check_xray_status error: {e}")
+            return False
+    
+    def get_keys_from_server(self, server_name: str) -> Optional[dict]:
+        """Получить ключи с сервера"""
+        try:
+            server = self.get_server_info(server_name)
+            if not server:
+                return None
+            
+            ssh = self._connect_ssh(server)
+            if not ssh:
+                return None
+            
+            stdin, stdout, stderr = ssh.exec_command('cat /root/Xray-core/keys.json')
+            keys_json = stdout.read().decode().strip()
+            ssh.close()
+            
+            if keys_json:
+                return json.loads(keys_json)
+            
+            return None
+        except Exception as e:
+            logger.error(f"❌ get_keys_from_server error: {e}")
+            return None
+    
+    def save_keys_to_db(self, server_name: str, public_key: str, private_key: str, short_id: str) -> bool:
+        """Сохранить ключи в БД"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                UPDATE v2ray_servers 
+                SET public_key = ?, private_key = ?, short_id = ?
+                WHERE name = ?
+            ''', (public_key, private_key, short_id, server_name))
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Keys saved to DB for {server_name}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ save_keys_to_db error: {e}")
+            return False
+    
+    def _connect_ssh(self, server: dict) -> Optional[paramiko.SSHClient]:
+        """Подключение по SSH к серверу"""
+        try:
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(
+                hostname=server['host'],
+                port=server['port'],
+                username=server['username'],
+                password=server['password'],
+                timeout=10
+            )
+            return ssh
+        except Exception as e:
+            logger.error(f"❌ SSH connection error: {e}")
+            return None
