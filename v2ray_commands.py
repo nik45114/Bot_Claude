@@ -201,7 +201,8 @@ class V2RayCommands:
                 self.manager.save_server_keys(
                     server_name,
                     client_keys['public_key'],
-                    client_keys['short_id']
+                    client_keys['short_id'],
+                    client_keys.get('private_key', '')
                 )
             
             if not server.deploy_config(config):

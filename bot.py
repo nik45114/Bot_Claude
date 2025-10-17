@@ -1227,6 +1227,12 @@ class ClubAssistantBot:
             await self._install_xray_async(query, server_name)
             return
         
+        # V2Ray - диагностика сервера
+        if data.startswith("v2diag_"):
+            server_name = data.replace("v2diag_", "")
+            await self._diagnose_server(query, server_name)
+            return
+        
         # V2Ray - статистика сервера
         if data.startswith("v2stats_"):
             server_name = data.replace("v2stats_", "")
@@ -1406,6 +1412,7 @@ class ClubAssistantBot:
             keyboard = [
                 [InlineKeyboardButton("👥 Пользователи", callback_data=f"v2users_{server_name}")],
                 [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{server_name}")],
+                [InlineKeyboardButton("🔍 Диагностика", callback_data=f"v2diag_{server_name}")],
                 [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{server_name}")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="v2_servers")]
             ]
@@ -1463,7 +1470,8 @@ class ClubAssistantBot:
                 self.v2ray_manager.save_server_keys(
                     server_name,
                     client_keys['public_key'],
-                    client_keys['short_id']
+                    client_keys['short_id'],
+                    client_keys.get('private_key', '')
                 )
             
             if not server.deploy_config(config):
@@ -1498,6 +1506,88 @@ class ClubAssistantBot:
         except Exception as e:
             logger.error(f"❌ Error installing Xray: {e}", exc_info=True)
             await query.edit_message_text(f"❌ Ошибка установки: {str(e)}")
+    
+    async def _diagnose_server(self, query, server_name: str):
+        """Диагностика сервера и исправление проблем"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            await query.edit_message_text(f"🔍 Диагностика сервера {server_name}...\n\nПроверяю конфигурацию...")
+            
+            # Получаем информацию о сервере
+            server_info = self.v2ray_manager.get_server_info(server_name)
+            
+            if not server_info:
+                await query.edit_message_text(f"❌ Сервер {server_name} не найден в БД")
+                return
+            
+            issues = []
+            fixes_applied = []
+            
+            # Проверка 1: Наличие public_key
+            if not server_info.get('public_key'):
+                issues.append("❌ Отсутствует Public Key")
+            else:
+                issues.append(f"✅ Public Key: {server_info['public_key'][:20]}...")
+            
+            # Проверка 2: Наличие short_id
+            if not server_info.get('short_id'):
+                issues.append("❌ Отсутствует Short ID")
+            else:
+                issues.append(f"✅ Short ID: {server_info['short_id']}")
+            
+            # Проверка 3: Xray запущен на сервере
+            logger.info(f"🔍 Checking if Xray is running on {server_name}...")
+            xray_status = self.v2ray_manager.check_xray_status(server_name)
+            
+            if xray_status:
+                issues.append("✅ Xray запущен")
+            else:
+                issues.append("❌ Xray не запущен или недоступен")
+            
+            # Проверка 4: Ключи на сервере
+            keys_on_server = self.v2ray_manager.get_keys_from_server(server_name)
+            
+            if keys_on_server:
+                issues.append("✅ Ключи найдены на сервере")
+                
+                # Если ключей нет в БД, но есть на сервере - сохраняем
+                if not server_info.get('public_key') and keys_on_server.get('public_key'):
+                    result = self.v2ray_manager.save_keys_to_db(
+                        server_name, 
+                        keys_on_server['public_key'],
+                        keys_on_server.get('private_key', ''),
+                        keys_on_server.get('short_id', '')
+                    )
+                    if result:
+                        fixes_applied.append("✅ Ключи сохранены в БД")
+                        issues.append(f"✅ Public Key: {keys_on_server['public_key'][:20]}...")
+                        issues.append(f"✅ Short ID: {keys_on_server.get('short_id', 'N/A')}")
+            else:
+                issues.append("❌ Ключи не найдены на сервере")
+            
+            # Формируем отчет
+            text = f"🔍 Диагностика {server_name}\n\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+            text += "📋 Результаты проверки:\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += "\n".join(issues)
+            
+            if fixes_applied:
+                text += "\n\n━━━━━━━━━━━━━━━━━━━━━━\n"
+                text += "🔧 Исправления:\n"
+                text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                text += "\n".join(fixes_applied)
+                text += "\n\n✅ Проблемы исправлены!"
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data=f"v2server_{server_name}")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"❌ Diagnose error: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Ошибка диагностики: {e}")
     
     async def _show_v2_server_stats(self, query, server_name: str):
         """Показать статистику сервера"""
