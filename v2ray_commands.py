@@ -30,34 +30,43 @@ class V2RayCommands:
             await update.message.reply_text("❌ Доступ запрещён")
             return
         
-        text = """🔐 V2Ray Manager (REALITY)
+        text = """🔐 *V2Ray Manager (REALITY)*
 
-Команды:
+━━━━━━━━━━━━━━━━━━━━━━
 
-📡 Серверы:
-/v2add <имя> <host> <user> <pass> [sni] - добавить сервер
-/v2list - список серверов
-/v2setup <имя> - установить Xray
-/v2stats <имя> - статистика сервера
+📡 *Управление серверами:*
+• `/v2add` - добавить сервер
+• `/v2list` - список серверов
+• `/v2setup` - установить Xray
+• `/v2stats` - статистика сервера
 
-👤 Пользователи:
-/v2user <сервер> <user_id> [email] - добавить пользователя
-/v2remove <сервер> <uuid> - удалить пользователя
+👤 *Управление пользователями:*
+• `/v2user` - добавить пользователя
+• `/v2remove` - удалить пользователя
 
-⚙️ Настройки:
-/v2sni <сервер> <сайт> - изменить маскировку
+⚙️ *Настройки:*
+• `/v2sni` - изменить маскировку
 
-🌐 REALITY маскировка:
-По умолчанию: rutube.ru
-Можно: youtube.com, yandex.ru, google.com
+━━━━━━━━━━━━━━━━━━━━━━
 
-Пример:
+💻 *Системные требования:*
+• OS: Debian/Ubuntu Linux
+• Root доступ по SSH
+• Открытый порт 443
+
+🌐 *REALITY маскировка:*
+• По умолчанию: `rutube.ru`
+• Доступно: `youtube.com`, `yandex.ru`, `google.com`
+
+📝 *Пример использования:*
+```
 /v2add main 45.144.54.117 root MyPass123
 /v2setup main
 /v2user main @username Вася
-/v2sni main youtube.com"""
+/v2sni main youtube.com
+```"""
 
-        await update.message.reply_text(text)
+        await update.message.reply_text(text, parse_mode='Markdown')
     
     async def cmd_v2add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Добавление сервера: /v2add <имя> <host> <user> <pass> [sni]"""
@@ -83,13 +92,15 @@ class V2RayCommands:
             await update.message.reply_text("⏳ Добавляю сервер...")
             
             if self.manager.add_server(name, host, username, password, sni=sni):
-                await update.message.reply_text(
-                    f"✅ Сервер '{name}' добавлен!\n\n"
-                    f"🖥 Host: {host}\n"
-                    f"👤 User: {username}\n"
-                    f"🌐 SNI: {sni}\n\n"
-                    f"Теперь выполни: /v2setup {name}"
-                )
+                text = f"✅ *Сервер '{name}' добавлен!*\n\n"
+                text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                text += f"🖥 *Host:* `{host}`\n"
+                text += f"👤 *User:* `{username}`\n"
+                text += f"🌐 *SNI:* `{sni}`\n\n"
+                text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                text += f"📝 *Следующий шаг:*\n"
+                text += f"`/v2setup {name}`"
+                await update.message.reply_text(text, parse_mode='Markdown')
             else:
                 await update.message.reply_text("❌ Ошибка добавления сервера")
             
@@ -107,15 +118,18 @@ class V2RayCommands:
             await update.message.reply_text("📭 Нет серверов")
             return
         
-        text = "📡 Серверы V2Ray (REALITY):\n\n"
+        text = "📡 *Серверы V2Ray (REALITY):*\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        for srv in servers:
-            text += f"🔹 {srv['name']}\n"
-            text += f"   Host: {srv['host']}\n"
-            text += f"   Port: {srv['port']}\n"
-            text += f"   SNI: {srv['sni']}\n\n"
+        for i, srv in enumerate(servers, 1):
+            text += f"🔹 *{srv['name']}*\n"
+            text += f"   🖥 Host: `{srv['host']}`\n"
+            text += f"   🔌 Port: `{srv['port']}`\n"
+            text += f"   🌐 SNI: `{srv['sni']}`\n"
+            if i < len(servers):
+                text += "\n"
         
-        await update.message.reply_text(text)
+        await update.message.reply_text(text, parse_mode='Markdown')
     
     async def cmd_v2setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Установка Xray на сервер: /v2setup <имя>"""
@@ -177,13 +191,15 @@ class V2RayCommands:
             
             server.disconnect()
             
-            await update.message.reply_text(
-                f"✅ Xray установлен на {server_name}!\n\n"
-                f"🔐 Протокол: REALITY\n"
-                f"🌐 Маскировка: {sni}\n\n"
-                f"Теперь можешь добавлять пользователей:\n"
-                f"/v2user {server_name} <user_id> [email]"
-            )
+            text = f"✅ *Xray установлен на {server_name}!*\n\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += f"🔐 *Протокол:* `REALITY`\n"
+            text += f"🌐 *Маскировка:* `{sni}`\n\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += "📝 *Добавить пользователя:*\n"
+            text += f"`/v2user {server_name} <user_id> [email]`"
+            
+            await update.message.reply_text(text, parse_mode='Markdown')
             
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")
@@ -237,12 +253,15 @@ class V2RayCommands:
             # Сохраняем в базу
             self.manager.save_user(server_name, user_id, user_uuid, vless_link, email)
             
-            text = f"✅ Пользователь добавлен!\n\n"
-            text += f"👤 ID: {user_id}\n"
-            text += f"📧 Email: {email or 'не указан'}\n"
-            text += f"🔑 UUID: {user_uuid}\n"
-            text += f"🌐 SNI: {sni}\n\n"
-            text += f"🔗 VLESS ссылка (REALITY):\n`{vless_link}`"
+            text = "✅ *Пользователь добавлен!*\n\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += f"👤 *ID:* `{user_id}`\n"
+            text += f"📧 *Email:* {email or 'не указан'}\n"
+            text += f"🔑 *UUID:* `{user_uuid}`\n"
+            text += f"🌐 *SNI:* `{sni}`\n\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += "🔗 *VLESS ссылка (REALITY):*\n"
+            text += f"`{vless_link}`"
             
             await update.message.reply_text(text, parse_mode='Markdown')
             
@@ -282,16 +301,18 @@ class V2RayCommands:
                 return
             
             status_emoji = "🟢" if stats['running'] else "🔴"
+            status_text = "Работает" if stats['running'] else "Остановлен"
             
-            text = f"📊 Статистика {server_name}\n\n"
-            text += f"{status_emoji} Статус: {'Работает' if stats['running'] else 'Остановлен'}\n"
-            text += f"🖥 Host: {stats['host']}\n"
-            text += f"🔌 Port: {stats['port']}\n"
-            text += f"🔐 Protocol: {stats['protocol']}\n"
-            text += f"🌐 SNI: {stats['sni']}\n"
-            text += f"👥 Пользователей: {stats['users']}"
+            text = f"📊 *Статистика {server_name}*\n\n"
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += f"{status_emoji} *Статус:* {status_text}\n"
+            text += f"🖥 *Host:* `{stats['host']}`\n"
+            text += f"🔌 *Port:* `{stats['port']}`\n"
+            text += f"🔐 *Protocol:* `{stats['protocol']}`\n"
+            text += f"🌐 *SNI:* `{stats['sni']}`\n"
+            text += f"👥 *Пользователей:* `{stats['users']}`"
             
-            await update.message.reply_text(text)
+            await update.message.reply_text(text, parse_mode='Markdown')
             
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")

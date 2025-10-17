@@ -63,10 +63,34 @@ class V2RayServer:
             logger.error(f"❌ Ошибка выполнения команды: {e}")
             return 1, "", str(e)
     
-    def install_v2ray(self) -> bool:
-        """Установка Xray на сервер"""
+    def install_v2ray(self, force: bool = False) -> bool:
+        """Установка Xray на сервер
+        
+        Args:
+            force: Принудительная переустановка даже если Xray уже установлен
+            
+        Returns:
+            bool: True если установка успешна или Xray уже установлен
+        """
         try:
-            logger.info("📥 Устанавливаю Xray...")
+            # Проверяем, установлен ли уже Xray
+            logger.info("🔍 Проверяю наличие Xray на сервере...")
+            exit_code, out, err = self._exec_command('command -v xray')
+            
+            xray_exists = (exit_code == 0 and out.strip())
+            
+            if xray_exists and not force:
+                logger.info("✅ Xray уже установлен на сервере")
+                # Получаем версию
+                version_code, version_out, _ = self._exec_command('xray version | head -1')
+                if version_code == 0:
+                    logger.info(f"📌 Версия: {version_out.strip()}")
+                return True
+            
+            if xray_exists and force:
+                logger.info("🔄 Xray установлен, выполняю принудительную переустановку...")
+            else:
+                logger.info("📥 Устанавливаю Xray...")
             
             # Установка Xray
             install_script = '''
