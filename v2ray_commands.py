@@ -223,68 +223,64 @@ class V2RayCommands:
             await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_v2user(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Добавление пользователя: /v2user <сервер> <user_id> [email]"""
+        """Добавление пользователя на сервер"""
         if not self.is_owner(update.effective_user.id):
             return
         
         try:
-            if len(context.args) < 2:
+            logger.info(f"🔍 v2user called with args: {context.args}")
+            
+            if len(context.args) < 3:
                 await update.message.reply_text(
-                    "Использование: /v2user <сервер> <user_id> [email]\n\n"
-                    "Пример: /v2user main @username Вася"
+                    "Использование: /v2user <сервер> <user_id> <комментарий>\n\n"
+                    "Пример:\n"
+                    "/v2user ger 1 Nikita\n"
+                    "/v2user fr 2 \"Vasya Pupkin\""
                 )
                 return
             
             server_name = context.args[0]
             user_id = context.args[1]
-            email = ' '.join(context.args[2:]) if len(context.args) > 2 else ""
+            comment = ' '.join(context.args[2:])  # Все остальное - комментарий
+            
+            logger.info(f"📝 Parsed: server={server_name}, user_id={user_id}, comment={comment}")
             
             await update.message.reply_text(f"⏳ Добавляю пользователя на {server_name}...")
             
-            server = self.manager.get_server(server_name)
+            # Добавляем пользователя
+            logger.info(f"🔄 Calling manager.add_user...")
+            result = self.manager.add_user(server_name, user_id, comment)
+            logger.info(f"📤 manager.add_user returned: {result}")
             
-            if not server:
-                await update.message.reply_text(f"❌ Сервер {server_name} не найден")
-                return
-            
-            # Получаем SNI из базы
-            server_keys = self.manager.get_server_keys(server_name)
-            sni = server_keys.get('sni', 'rutube.ru')
-            
-            if not server.connect():
-                await update.message.reply_text("❌ Не удалось подключиться")
-                return
-            
-            vless_link = server.add_user_reality(user_id, email, sni)
-            
-            server.disconnect()
-            
-            if not vless_link:
-                await update.message.reply_text("❌ Ошибка добавления пользователя")
-                return
-            
-            # Извлекаем UUID из ссылки
-            import re
-            uuid_match = re.search(r'vless://([^@]+)@', vless_link)
-            user_uuid = uuid_match.group(1) if uuid_match else ""
-            
-            # Сохраняем в базу
-            self.manager.save_user(server_name, user_id, user_uuid, vless_link, email)
-            
-            text = f"✅ Пользователь добавлен!\n\n"
-            text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-            text += f"👤 ID: {user_id}\n"
-            text += f"📧 Email: {email or 'не указан'}\n"
-            text += f"🔑 UUID: `{user_uuid}`\n"
-            text += f"🌐 SNI: {sni}\n"
-            text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-            text += f"🔗 VLESS ссылка (REALITY):\n"
-            text += f"```\n{vless_link}\n```\n\n"
-            text += f"💡 Скопируйте ссылку в V2Ray клиент"
-            
-            await update.message.reply_text(text, parse_mode='Markdown')
-            
+            if result and 'vless' in result:
+                keyboard = [
+                    [InlineKeyboardButton("👥 Список пользователей", callback_data=f"v2users_{server_name}")],
+                    [InlineKeyboardButton("🔄 Изменить SNI", callback_data=f"v2changesni_{server_name}_{user_id}")],
+                    [InlineKeyboardButton("◀️ Назад", callback_data=f"v2server_{server_name}")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
+                await update.message.reply_text(
+                    f"✅ Пользователь добавлен!\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"👤 ID: {user_id}\n"
+                    f"📝 Комментарий: {comment}\n"
+                    f"🖥️ Сервер: {server_name}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"🔐 VLESS ссылка:\n"
+                    f"<code>{result['vless']}</code>",
+                    parse_mode='HTML',
+                    reply_markup=reply_markup
+                )
+            else:
+                logger.error(f"❌ manager.add_user failed or returned invalid data")
+                await update.message.reply_text(
+                    "❌ Ошибка добавления пользователя\n\n"
+                    "Проверьте логи: journalctl -u club_assistant -n 100 --no-pager"
+                )
+        
         except Exception as e:
+            logger.error(f"❌ cmd_v2user error: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_v2stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
