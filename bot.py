@@ -1923,12 +1923,34 @@ class ClubAssistantBot:
         self.bot_username = bot.username
         logger.info(f"✅ Bot: @{self.bot_username}")
         
-        # Инициализируем команды которым нужен bot_app
-        self.cash_commands = CashCommands(self.cash_manager, self.owner_id)
-        self.product_commands = ProductCommands(self.product_manager, self.admin_manager, self.owner_id)
+        # Инициализируем IssueCommands которому нужен bot_app
         self.issue_commands = IssueCommands(self.issue_manager, self.kb, self.admin_manager, self.owner_id, application)
     
     def run(self):
+        """Запуск бота"""
+        logger.info("🤖 Запуск бота...")
+        
+        # 1. Инициализация команд ПЕРЕД созданием Application
+        # CashCommands и ProductCommands не требуют bot_app, инициализируем их сразу
+        logger.info("Инициализация команд...")
+        
+        try:
+            self.cash_commands = CashCommands(self.cash_manager, self.owner_id)
+            logger.info("✅ CashCommands инициализированы")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при инициализации CashCommands: {e}")
+            raise
+        
+        try:
+            self.product_commands = ProductCommands(self.product_manager, self.admin_manager, self.owner_id)
+            logger.info("✅ ProductCommands инициализированы")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при инициализации ProductCommands: {e}")
+            raise
+        
+        # IssueCommands будет инициализирован в post_init (требует bot_app)
+        
+        # 2. Создание Application
         app = Application.builder().token(self.config['telegram_token']).build()
         
         app.post_init = self.post_init
