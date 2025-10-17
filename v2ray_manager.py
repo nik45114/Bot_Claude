@@ -12,6 +12,7 @@ import uuid
 import base64
 import subprocess
 import logging
+import urllib.parse
 from typing import List, Dict, Optional
 
 logger = logging.getLogger(__name__)
@@ -271,7 +272,7 @@ fi
             if client_keys:
                 keys_json = json.dumps(client_keys, indent=2)
                 try:
-                    # Создаем директорию если не существует
+                    # Создаем директорию, если не существует
                     self._exec_command('mkdir -p /root/Xray-core')
                     with sftp.file('/root/Xray-core/keys.json', 'w') as f:
                         f.write(keys_json)
@@ -779,7 +780,7 @@ class V2RayManager:
             logger.error(f"❌ add_user error: {e}", exc_info=True)
             return None
     
-    def _generate_vless_link(self, server_name: str, uuid: str, comment: str = "") -> str:
+    def _generate_vless_link(self, server_name: str, uuid: str, comment: str = "") -> Optional[str]:
         """Генерация VLESS ссылки с REALITY ключами"""
         try:
             # Получаем информацию о сервере
@@ -801,20 +802,20 @@ class V2RayManager:
             if not short_id:
                 logger.warning(f"⚠️ Short ID not found for {server_name}!")
             
-            import urllib.parse
-            
             params = {
                 'security': 'reality',
                 'sni': sni,
                 'fp': 'chrome',
-                'pbk': public_key,      # Public Key
-                'sid': short_id,         # Short ID
                 'type': 'tcp',
                 'flow': 'xtls-rprx-vision'
             }
             
-            # Убираем пустые параметры
-            params = {k: v for k, v in params.items() if v}
+            # Add REALITY keys only if they exist
+            # These are critical for REALITY protocol - if missing, link won't work
+            if public_key:
+                params['pbk'] = public_key
+            if short_id:
+                params['sid'] = short_id
             
             params_str = '&'.join([f"{k}={v}" for k, v in params.items()])
             comment_encoded = urllib.parse.quote(comment)
@@ -925,7 +926,7 @@ class V2RayManager:
             logger.error(f"❌ check_xray_status error: {e}")
             return False
     
-    def get_keys_from_server(self, server_name: str) -> dict:
+    def get_keys_from_server(self, server_name: str) -> Optional[dict]:
         """Получить ключи с сервера"""
         try:
             server = self.get_server_info(server_name)
@@ -941,7 +942,6 @@ class V2RayManager:
             ssh.close()
             
             if keys_json:
-                import json
                 return json.loads(keys_json)
             
             return None
