@@ -704,8 +704,6 @@ class V2RayManager:
                 logger.error(f"❌ Failed to connect to server")
                 return None
             
-            logger.info(f"✅ SSH connected")
-            
             # Используем существующий метод add_user_reality
             sni = server_info.get('sni', 'rutube.ru')
             vless_link_partial = server.add_user_reality(user_id, comment or user_id, sni)
@@ -734,9 +732,11 @@ class V2RayManager:
             logger.info(f"✅ User saved to database")
             
             # Генерируем VLESS ссылку
+            # REALITY protocol always uses port 443 to mimic HTTPS traffic
+            # This is hardcoded throughout the system (see create_reality_config)
             vless_link = self._generate_vless_link(
                 server_info['host'],
-                443,  # Port for VLESS connection is always 443 for REALITY
+                443,
                 user_uuid,
                 sni,
                 comment
