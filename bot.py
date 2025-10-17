@@ -1923,8 +1923,8 @@ class ClubAssistantBot:
         self.bot_username = bot.username
         logger.info(f"✅ Bot: @{self.bot_username}")
         
-        # Инициализируем IssueCommands которому нужен bot_app
-        self.issue_commands = IssueCommands(self.issue_manager, self.kb, self.admin_manager, self.owner_id, application)
+        # IssueCommands теперь инициализируется в run() сразу после создания Application
+        # self.issue_commands = IssueCommands(self.issue_manager, self.kb, self.admin_manager, self.owner_id, application)
     
     def run(self):
         """Запуск бота"""
@@ -1951,47 +1951,53 @@ class ClubAssistantBot:
         # IssueCommands будет инициализирован в post_init (требует bot_app)
         
         # 2. Создание Application
-        app = Application.builder().token(self.config['telegram_token']).build()
+        application = Application.builder().token(self.config['telegram_token']).build()
+        logger.info("✅ Application создан")
         
-        app.post_init = self.post_init
+        # 3. Инициализируем IssueCommands (требует application)
+        self.issue_commands = IssueCommands(self.issue_manager, self.kb, self.admin_manager, self.owner_id, application)
+        logger.info("✅ IssueCommands инициализированы")
         
-        app.add_handler(CommandHandler("start", self.cmd_start))
-        app.add_handler(CommandHandler("help", self.cmd_help))
-        app.add_handler(CommandHandler("stats", self.cmd_stats))
-        app.add_handler(CommandHandler("admin", self.cmd_admin))
-        app.add_handler(CommandHandler("learn", self.cmd_learn))
-        app.add_handler(CommandHandler("cleanup", self.cmd_cleanup))
-        app.add_handler(CommandHandler("fixdb", self.cmd_fixdb))
-        app.add_handler(CommandHandler("deletetrash", self.cmd_deletetrash))
-        app.add_handler(CommandHandler("viewrecord", self.cmd_viewrecord))
-        app.add_handler(CommandHandler("fixjson", self.cmd_fixjson))
-        app.add_handler(CommandHandler("import", self.cmd_import))
-        app.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
-        app.add_handler(CommandHandler("admins", self.cmd_admins))
-        app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
-        app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
-        app.add_handler(CommandHandler("update", self.cmd_update))
+        application.post_init = self.post_init
+        
+        # 4. Регистрируем обработчики
+        application.add_handler(CommandHandler("start", self.cmd_start))
+        application.add_handler(CommandHandler("help", self.cmd_help))
+        application.add_handler(CommandHandler("stats", self.cmd_stats))
+        application.add_handler(CommandHandler("admin", self.cmd_admin))
+        application.add_handler(CommandHandler("learn", self.cmd_learn))
+        application.add_handler(CommandHandler("cleanup", self.cmd_cleanup))
+        application.add_handler(CommandHandler("fixdb", self.cmd_fixdb))
+        application.add_handler(CommandHandler("deletetrash", self.cmd_deletetrash))
+        application.add_handler(CommandHandler("viewrecord", self.cmd_viewrecord))
+        application.add_handler(CommandHandler("fixjson", self.cmd_fixjson))
+        application.add_handler(CommandHandler("import", self.cmd_import))
+        application.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
+        application.add_handler(CommandHandler("admins", self.cmd_admins))
+        application.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
+        application.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
+        application.add_handler(CommandHandler("update", self.cmd_update))
         
         # Обработчик inline-кнопок
-        app.add_handler(CallbackQueryHandler(self.handle_callback))
+        application.add_handler(CallbackQueryHandler(self.handle_callback))
         
         # V2Ray команды
-        app.add_handler(CommandHandler("v2ray", self.v2ray_commands.cmd_v2ray))
-        app.add_handler(CommandHandler("v2add", self.v2ray_commands.cmd_v2add))
-        app.add_handler(CommandHandler("v2list", self.v2ray_commands.cmd_v2list))
-        app.add_handler(CommandHandler("v2setup", self.v2ray_commands.cmd_v2setup))
-        app.add_handler(CommandHandler("v2user", self.v2ray_commands.cmd_v2user))
-        app.add_handler(CommandHandler("v2stats", self.v2ray_commands.cmd_v2stats))
-        app.add_handler(CommandHandler("v2traffic", self.v2ray_commands.cmd_v2traffic))
-        app.add_handler(CommandHandler("v2remove", self.v2ray_commands.cmd_v2remove))
+        application.add_handler(CommandHandler("v2ray", self.v2ray_commands.cmd_v2ray))
+        application.add_handler(CommandHandler("v2add", self.v2ray_commands.cmd_v2add))
+        application.add_handler(CommandHandler("v2list", self.v2ray_commands.cmd_v2list))
+        application.add_handler(CommandHandler("v2setup", self.v2ray_commands.cmd_v2setup))
+        application.add_handler(CommandHandler("v2user", self.v2ray_commands.cmd_v2user))
+        application.add_handler(CommandHandler("v2stats", self.v2ray_commands.cmd_v2stats))
+        application.add_handler(CommandHandler("v2traffic", self.v2ray_commands.cmd_v2traffic))
+        application.add_handler(CommandHandler("v2remove", self.v2ray_commands.cmd_v2remove))
         
         # Club команды
-        app.add_handler(CommandHandler("clubs", self.club_commands.cmd_clubs))
-        app.add_handler(CommandHandler("clubadd", self.club_commands.cmd_clubadd))
-        app.add_handler(CommandHandler("clublist", self.club_commands.cmd_clublist))
-        app.add_handler(CommandHandler("lastreport", self.club_commands.cmd_lastreport))
-        app.add_handler(CommandHandler("clubstats", self.club_commands.cmd_clubstats))
-        app.add_handler(CommandHandler("issues", self.club_commands.cmd_issues))
+        application.add_handler(CommandHandler("clubs", self.club_commands.cmd_clubs))
+        application.add_handler(CommandHandler("clubadd", self.club_commands.cmd_clubadd))
+        application.add_handler(CommandHandler("clublist", self.club_commands.cmd_clublist))
+        application.add_handler(CommandHandler("lastreport", self.club_commands.cmd_lastreport))
+        application.add_handler(CommandHandler("clubstats", self.club_commands.cmd_clubstats))
+        application.add_handler(CommandHandler("issues", self.club_commands.cmd_issues))
         
         # ConversationHandler для отчётов
         report_handler = ConversationHandler(
@@ -2001,7 +2007,7 @@ class ClubAssistantBot:
             },
             fallbacks=[CommandHandler("cancel", self.club_commands.cmd_cancel)]
         )
-        app.add_handler(report_handler)
+        application.add_handler(report_handler)
         
         # === НОВЫЕ CONVERSATION HANDLERS ===
         
@@ -2019,7 +2025,7 @@ class ClubAssistantBot:
             },
             fallbacks=[CallbackQueryHandler(self.cash_commands.cancel, pattern="^cash_menu$")]
         )
-        app.add_handler(cash_handler)
+        application.add_handler(cash_handler)
         
         # ConversationHandler для добавления товара
         product_add_handler = ConversationHandler(
@@ -2032,7 +2038,7 @@ class ClubAssistantBot:
             },
             fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
         )
-        app.add_handler(product_add_handler)
+        application.add_handler(product_add_handler)
         
         # ConversationHandler для взятия товара админом
         product_take_handler = ConversationHandler(
@@ -2045,11 +2051,11 @@ class ClubAssistantBot:
             },
             fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
         )
-        app.add_handler(product_take_handler)
+        application.add_handler(product_take_handler)
         
         # ConversationHandler для обнуления долга (кнопка выбора админа)
         product_clear_debt_handler = CallbackQueryHandler(self.product_commands.start_clear_debt, pattern="^product_clear_debt$")
-        app.add_handler(product_clear_debt_handler)
+        application.add_handler(product_clear_debt_handler)
         
         # ConversationHandler для сообщения о проблеме
         issue_report_handler = ConversationHandler(
@@ -2062,7 +2068,7 @@ class ClubAssistantBot:
             },
             fallbacks=[CallbackQueryHandler(self.issue_commands.cancel, pattern="^issue_menu$")]
         )
-        app.add_handler(issue_report_handler)
+        application.add_handler(issue_report_handler)
         
         # ConversationHandler для редактирования проблемы
         issue_edit_handler = ConversationHandler(
@@ -2074,16 +2080,16 @@ class ClubAssistantBot:
             },
             fallbacks=[CallbackQueryHandler(self.issue_commands.cancel, pattern="^issue_current$")]
         )
-        app.add_handler(issue_edit_handler)
+        application.add_handler(issue_edit_handler)
         
         # === КОНЕЦ НОВЫХ HANDLERS ===
         
-        app.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
-        app.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
-        app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
+        application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
+        application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
         
         logger.info(f"🤖 Бот v{VERSION} запущен!")
-        app.run_polling(allowed_updates=Update.ALL_TYPES)
+        application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 def load_config():
