@@ -669,7 +669,12 @@ class V2RayManager:
     
     def save_user(self, server_name: str, user_id: str, user_uuid: str, 
                  vless_link: str, email: str = "") -> bool:
-        """Сохранение пользователя"""
+        """
+        Сохранение пользователя (УСТАРЕВШИЙ МЕТОД - используйте add_user)
+        
+        ВАЖНО: vless_link должен уже содержать все необходимые параметры,
+        включая pbk и sid. Этот метод больше не добавляет ключи.
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -678,13 +683,8 @@ class V2RayManager:
             cursor.execute('SELECT id FROM v2ray_servers WHERE name = ?', (server_name,))
             server_id = cursor.fetchone()[0]
             
-            # Получаем ключи сервера для дополнения ссылки
-            keys = self.get_server_keys(server_name)
-            
-            # Дополняем ссылку pbk и sid
-            if keys.get('public_key') and keys.get('short_id'):
-                vless_link += f"&pbk={keys['public_key']}&sid={keys['short_id']}"
-            
+            # Сохраняем пользователя с уже готовой ссылкой
+            # Ключи должны быть добавлены до вызова этого метода
             cursor.execute('''
                 INSERT INTO v2ray_users (server_id, user_id, uuid, email, vless_link)
                 VALUES (?, ?, ?, ?, ?)

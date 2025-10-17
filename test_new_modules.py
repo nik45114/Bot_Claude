@@ -7,9 +7,10 @@
 import sys
 import sqlite3
 import os
+import tempfile
 
-# Временная БД для тестов
-TEST_DB = '/tmp/test_bot.db'
+# Временная БД для тестов - используем tempfile для кроссплатформенности
+TEST_DB = os.path.join(tempfile.gettempdir(), 'test_bot.db')
 
 def test_cash_manager():
     """Тест финансового менеджера"""
