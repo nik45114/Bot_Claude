@@ -1232,6 +1232,48 @@ class ClubAssistantBot:
             server_name = data.replace("v2stats_", "")
             await self._show_v2_server_stats(query, server_name)
             return
+        
+        # Список пользователей сервера
+        if data.startswith("v2users_"):
+            server_name = data.replace("v2users_", "")
+            await self._show_server_users(query, server_name)
+            return
+        
+        # Добавление пользователя через кнопку
+        if data.startswith("v2adduser_"):
+            server_name = data.replace("v2adduser_", "")
+            await query.edit_message_text(
+                f"➕ Добавление пользователя на {server_name}\n\n"
+                f"Используйте команду:\n"
+                f"/v2user {server_name} <ID> <комментарий>\n\n"
+                f"Пример:\n"
+                f"/v2user {server_name} 1 Nikita"
+            )
+            return
+        
+        # Удаление пользователя
+        if data.startswith("v2deluser_"):
+            parts = data.replace("v2deluser_", "").split("_")
+            server_name = parts[0]
+            uuid = parts[1]
+            await self._delete_user(query, server_name, uuid)
+            return
+        
+        # Изменение SNI
+        if data.startswith("v2changesni_"):
+            parts = data.replace("v2changesni_", "").split("_")
+            server_name = parts[0]
+            user_id = parts[1]
+            
+            # Сохраняем в контексте
+            context.user_data['change_sni'] = {'server': server_name, 'user_id': user_id}
+            
+            await query.edit_message_text(
+                f"🌐 Изменение SNI для пользователя {user_id}\n\n"
+                f"Текущий SNI: rutube.ru\n\n"
+                f"Введите новый SNI (например: youtube.com, yandex.ru):"
+            )
+            return
     
     async def _show_v2_servers_menu(self, query):
         """Меню управления серверами"""
@@ -1362,6 +1404,7 @@ class ClubAssistantBot:
                 text += "\n⚠️ Xray не установлен"
             
             keyboard = [
+                [InlineKeyboardButton("👥 Пользователи", callback_data=f"v2users_{server_name}")],
                 [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{server_name}")],
                 [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{server_name}")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="v2_servers")]
@@ -1511,6 +1554,71 @@ class ClubAssistantBot:
         except Exception as e:
             logger.error(f"❌ Error getting stats: {e}", exc_info=True)
             await query.edit_message_text(f"❌ Ошибка: {str(e)}")
+    
+    async def _show_server_users(self, query, server_name: str):
+        """Показать список пользователей сервера"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            users = self.v2ray_manager.get_server_users(server_name)
+            
+            text = f"👥 Пользователи сервера {server_name}\n\n"
+            
+            if users:
+                text += f"Всего: {len(users)}\n\n"
+                for user in users:
+                    text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    text += f"👤 {user['comment']}\n"
+                    text += f"🆔 ID: {user['user_id']}\n"
+                    text += f"🔑 UUID: {user['uuid'][:8]}...\n"
+                    text += f"🌐 SNI: {user.get('sni', 'rutube.ru')}\n"
+            else:
+                text += "Нет пользователей\n"
+            
+            keyboard = []
+            
+            for user in users[:10]:  # Максимум 10 кнопок
+                keyboard.append([
+                    InlineKeyboardButton(
+                        f"🗑️ {user['comment']}", 
+                        callback_data=f"v2deluser_{server_name}_{user['uuid']}"
+                    )
+                ])
+            
+            keyboard.append([
+                InlineKeyboardButton("➕ Добавить", callback_data=f"v2adduser_{server_name}"),
+                InlineKeyboardButton("◀️ Назад", callback_data=f"v2server_{server_name}")
+            ])
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"❌ Error showing server users: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
+    async def _delete_user(self, query, server_name: str, uuid: str):
+        """Удалить пользователя"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            result = self.v2ray_manager.delete_user(server_name, uuid)
+            
+            if result:
+                text = f"✅ Пользователь удалён"
+            else:
+                text = f"❌ Ошибка удаления пользователя"
+            
+            keyboard = [[InlineKeyboardButton("◀️ К списку", callback_data=f"v2users_{server_name}")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"❌ Error deleting user: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
     
     def _should_respond(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         message = update.message

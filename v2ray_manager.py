@@ -486,14 +486,14 @@ class V2RayManager:
         cursor.execute('''
             CREATE TABLE IF NOT EXISTS v2ray_users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
-                server_id INTEGER NOT NULL,
+                server_name TEXT NOT NULL,
                 user_id TEXT NOT NULL,
-                uuid TEXT NOT NULL,
-                email TEXT,
-                vless_link TEXT,
+                uuid TEXT NOT NULL UNIQUE,
+                comment TEXT DEFAULT '',
+                sni TEXT DEFAULT 'rutube.ru',
                 is_active BOOLEAN DEFAULT 1,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                FOREIGN KEY (server_id) REFERENCES v2ray_servers(id)
+                FOREIGN KEY (server_name) REFERENCES v2ray_servers(name)
             )
         ''')
         
@@ -666,4 +666,211 @@ class V2RayManager:
             return True
         except Exception as e:
             logger.error(f"❌ Ошибка сохранения пользователя: {e}")
+            return False
+    
+    def add_user(self, server_name: str, user_id: str, comment: str = "") -> dict:
+        """Добавление пользователя на сервер"""
+        try:
+            logger.info(f"🔍 add_user called:")
+            logger.info(f"  • server_name: {server_name}")
+            logger.info(f"  • user_id: {user_id}")
+            logger.info(f"  • comment: {comment}")
+            
+            # Получаем информацию о сервере
+            logger.info(f"📂 Getting server info...")
+            server_info = self.get_server_info(server_name)
+            
+            if not server_info:
+                logger.error(f"❌ Server {server_name} not found")
+                return None
+            
+            logger.info(f"✅ Server found: {server_info['host']}")
+            
+            # Генерируем UUID
+            user_uuid = str(uuid.uuid4())
+            logger.info(f"🔑 Generated UUID: {user_uuid}")
+            
+            # Подключаемся к серверу через SSH
+            logger.info(f"🔌 Connecting to {server_info['host']}...")
+            ssh = self._connect_ssh(server_info)
+            
+            if not ssh:
+                logger.error(f"❌ SSH connection failed")
+                return None
+            
+            logger.info(f"✅ SSH connected")
+            
+            # Добавляем пользователя в конфиг Xray через существующий метод
+            logger.info(f"📝 Adding user to Xray config...")
+            server = V2RayServer(
+                server_info['host'],
+                server_info['username'],
+                server_info['password'],
+                server_info['port']
+            )
+            
+            if not server.connect():
+                logger.error(f"❌ Failed to connect to server")
+                return None
+            
+            # Используем существующий метод add_user_reality
+            sni = server_info.get('sni', 'rutube.ru')
+            vless_link_partial = server.add_user_reality(user_id, comment or user_id, sni)
+            
+            server.disconnect()
+            
+            if not vless_link_partial:
+                logger.error(f"❌ Failed to add user to Xray")
+                return None
+            
+            logger.info(f"✅ User added to Xray config")
+            
+            # Сохраняем в БД
+            logger.info(f"💾 Saving to database...")
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO v2ray_users (server_name, user_id, uuid, comment, sni)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (server_name, user_id, user_uuid, comment, sni))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ User saved to database")
+            
+            # Генерируем VLESS ссылку
+            vless_link = self._generate_vless_link(
+                server_info['host'],
+                server_info.get('port', 443),
+                user_uuid,
+                sni,
+                comment
+            )
+            
+            # Дополняем ключами
+            keys = self.get_server_keys(server_name)
+            if keys.get('public_key') and keys.get('short_id'):
+                vless_link += f"&pbk={keys['public_key']}&sid={keys['short_id']}"
+            
+            logger.info(f"✅ User added successfully")
+            
+            return {
+                'uuid': user_uuid,
+                'vless': vless_link,
+                'sni': sni,
+                'comment': comment
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ add_user error: {e}", exc_info=True)
+            return None
+    
+    def _generate_vless_link(self, host: str, port: int, uuid: str, sni: str, comment: str) -> str:
+        """Генерация VLESS ссылки"""
+        import urllib.parse
+        
+        params = {
+            'security': 'reality',
+            'sni': sni,
+            'fp': 'chrome',
+            'type': 'tcp',
+            'flow': 'xtls-rprx-vision'
+        }
+        
+        params_str = '&'.join([f"{k}={v}" for k, v in params.items()])
+        comment_encoded = urllib.parse.quote(comment)
+        
+        vless = f"vless://{uuid}@{host}:{port}?{params_str}#{comment_encoded}"
+        
+        return vless
+    
+    def get_server_info(self, server_name: str) -> Optional[Dict]:
+        """Получение полной информации о сервере"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT name, host, port, username, password, sni
+                FROM v2ray_servers
+                WHERE name = ? AND is_active = 1
+            ''', (server_name,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    'name': row[0],
+                    'host': row[1],
+                    'port': row[2],
+                    'username': row[3],
+                    'password': row[4],
+                    'sni': row[5] or 'rutube.ru'
+                }
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения информации о сервере: {e}")
+            return None
+    
+    def _connect_ssh(self, server_info: Dict):
+        """Подключение к серверу по SSH"""
+        try:
+            import paramiko
+            ssh = paramiko.SSHClient()
+            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+            ssh.connect(
+                hostname=server_info['host'],
+                port=server_info.get('port', 22),
+                username=server_info['username'],
+                password=server_info['password'],
+                timeout=10
+            )
+            return ssh
+        except Exception as e:
+            logger.error(f"❌ SSH connection error: {e}")
+            return None
+    
+    def get_server_users(self, server_name: str) -> list:
+        """Получить список пользователей сервера"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT * FROM v2ray_users
+                WHERE server_name = ? AND is_active = 1
+                ORDER BY created_at DESC
+            ''', (server_name,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"❌ get_server_users error: {e}")
+            return []
+    
+    def delete_user(self, server_name: str, uuid: str) -> bool:
+        """Удалить пользователя"""
+        try:
+            logger.info(f"🗑️ Deleting user {uuid} from {server_name}")
+            
+            # Удаляем из БД
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('DELETE FROM v2ray_users WHERE server_name = ? AND uuid = ?', (server_name, uuid))
+            conn.commit()
+            conn.close()
+            
+            # TODO: Удалить из конфига Xray через SSH
+            
+            logger.info(f"✅ User deleted")
+            return True
+        except Exception as e:
+            logger.error(f"❌ delete_user error: {e}")
             return False
