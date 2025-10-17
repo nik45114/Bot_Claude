@@ -1948,8 +1948,6 @@ class ClubAssistantBot:
             logger.error(f"❌ Ошибка при инициализации ProductCommands: {e}")
             raise
         
-        # IssueCommands будет инициализирован в post_init (требует bot_app)
-        
         # 2. Создание Application
         application = Application.builder().token(self.config['telegram_token']).build()
         logger.info("✅ Application создан")
