@@ -38,7 +38,7 @@ try:
     from cash_manager import CashManager
     from cash_commands import CashCommands, CASH_SELECT_CLUB, CASH_SELECT_TYPE, CASH_ENTER_AMOUNT, CASH_ENTER_DESCRIPTION, CASH_ENTER_CATEGORY
     from product_manager import ProductManager
-    from product_commands import ProductCommands, PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY
+    from product_commands import ProductCommands, PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY, PRODUCT_EDIT_PRICE
     from issue_manager import IssueManager
     from issue_commands import IssueCommands, ISSUE_SELECT_CLUB, ISSUE_ENTER_DESCRIPTION, ISSUE_EDIT_DESCRIPTION
 except ImportError as e:
@@ -1265,6 +1265,14 @@ class ClubAssistantBot:
             await self.product_commands.clear_settled_products(update, context)
             return
         
+        if data == "product_clear_all_confirm":
+            await self.product_commands.clear_all_debts_confirm(update, context)
+            return
+        
+        if data == "product_clear_all_execute":
+            await self.product_commands.clear_all_debts_execute(update, context)
+            return
+        
         if data.startswith("product_clear_") and data != "product_clear_settled":
             await self.product_commands.clear_admin_debt(update, context)
             return
@@ -2103,6 +2111,19 @@ class ClubAssistantBot:
         # ConversationHandler для обнуления долга (кнопка выбора админа)
         product_clear_debt_handler = CallbackQueryHandler(self.product_commands.start_clear_debt, pattern="^product_clear_debt$")
         application.add_handler(product_clear_debt_handler)
+        
+        # ConversationHandler для изменения цены товара
+        product_edit_price_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.product_commands.start_edit_price, pattern="^product_edit_price$")
+            ],
+            states={
+                PRODUCT_EDIT_PRICE: [CallbackQueryHandler(self.product_commands.select_product_for_price_edit, pattern="^product_price_")],
+                PRODUCT_ENTER_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.product_commands.enter_new_product_price)]
+            },
+            fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
+        )
+        application.add_handler(product_edit_price_handler)
         
         # ConversationHandler для сообщения о проблеме
         issue_report_handler = ConversationHandler(

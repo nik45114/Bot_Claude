@@ -736,12 +736,8 @@ class V2RayManager:
             
             logger.info(f"✅ Server found: {server_info['host']}")
             
-            # Генерируем UUID
-            user_uuid = str(uuid.uuid4())
-            logger.info(f"🔑 Generated UUID: {user_uuid}")
-            
-            # Добавляем пользователя в конфиг Xray через существующий метод
-            logger.info(f"📝 Adding user to Xray config...")
+            # Подключаемся к серверу
+            logger.info(f"📝 Connecting to server...")
             server = V2RayServer(
                 server_info['host'],
                 server_info['username'],
@@ -753,15 +749,55 @@ class V2RayManager:
                 logger.error(f"❌ Failed to connect to server")
                 return None
             
-            # Используем существующий метод add_user_reality
+            # Генерируем UUID НА СЕРВЕРЕ
+            logger.info("🔑 Generating UUID on server...")
+            exit_code, user_uuid, err = server._exec_command('/usr/local/bin/xray uuid')
+            user_uuid = user_uuid.strip()
+            
+            # Если не сработало, пробуем другой путь
+            if not user_uuid or exit_code != 0:
+                logger.info("⚠️ /usr/local/bin/xray not found, trying ./xray...")
+                exit_code, user_uuid, err = server._exec_command('./xray uuid')
+                user_uuid = user_uuid.strip()
+            
+            # Если всё равно не сработало, пробуем python
+            if not user_uuid or exit_code != 0:
+                logger.info("⚠️ xray uuid failed, using python fallback...")
+                exit_code, user_uuid, err = server._exec_command('python3 -c "import uuid; print(uuid.uuid4())"')
+                user_uuid = user_uuid.strip()
+            
+            if not user_uuid:
+                logger.error("❌ Failed to generate UUID on server")
+                server.disconnect()
+                return None
+            
+            logger.info(f"✅ UUID generated on server: {user_uuid}")
+            
+            # Читаем текущую конфигурацию
+            sftp = server.ssh_client.open_sftp()
+            with sftp.file('/usr/local/etc/xray/config.json', 'r') as f:
+                config = json.load(f)
+            
+            # Добавляем пользователя
             sni = server_info.get('sni', 'rutube.ru')
-            vless_link_partial = server.add_user_reality(user_id, comment or user_id, sni)
+            new_client = {
+                "id": user_uuid,
+                "email": comment or user_id,
+                "flow": "xtls-rprx-vision"
+            }
+            
+            config['inbounds'][0]['settings']['clients'].append(new_client)
+            
+            # Сохраняем обновлённую конфигурацию
+            with sftp.file('/usr/local/etc/xray/config.json', 'w') as f:
+                json.dump(config, f, indent=2)
+            
+            sftp.close()
+            
+            # Перезапускаем Xray
+            server._exec_command('systemctl restart xray')
             
             server.disconnect()
-            
-            if not vless_link_partial:
-                logger.error(f"❌ Failed to add user to Xray")
-                return None
             
             logger.info(f"✅ User added to Xray config")
             
