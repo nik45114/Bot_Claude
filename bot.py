@@ -1265,6 +1265,14 @@ class ClubAssistantBot:
             await self.product_commands.clear_settled_products(update, context)
             return
         
+        if data == "product_clear_all_confirm":
+            await self.product_commands.clear_all_debts_confirm(update, context)
+            return
+        
+        if data == "product_clear_all_execute":
+            await self.product_commands.clear_all_debts_execute(update, context)
+            return
+        
         if data.startswith("product_clear_") and data != "product_clear_settled":
             await self.product_commands.clear_admin_debt(update, context)
             return
@@ -2103,6 +2111,19 @@ class ClubAssistantBot:
         # ConversationHandler для обнуления долга (кнопка выбора админа)
         product_clear_debt_handler = CallbackQueryHandler(self.product_commands.start_clear_debt, pattern="^product_clear_debt$")
         application.add_handler(product_clear_debt_handler)
+        
+        # ConversationHandler для изменения цены товара
+        product_edit_price_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.product_commands.start_edit_price, pattern="^product_edit_price$")
+            ],
+            states={
+                PRODUCT_EDIT_PRICE: [CallbackQueryHandler(self.product_commands.select_product_for_price_edit, pattern="^product_price_")],
+                PRODUCT_ENTER_PRICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.product_commands.enter_new_product_price)]
+            },
+            fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
+        )
+        application.add_handler(product_edit_price_handler)
         
         # ConversationHandler для сообщения о проблеме
         issue_report_handler = ConversationHandler(

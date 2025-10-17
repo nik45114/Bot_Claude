@@ -340,6 +340,14 @@ class ProductCommands:
             return
         
         keyboard = []
+        
+        # Кнопка для обнуления ВСЕХ долгов
+        keyboard.append([InlineKeyboardButton(
+            "🔄 ОБНУЛИТЬ ВСЕ ДОЛГИ",
+            callback_data="product_clear_all_confirm"
+        )])
+        
+        # Кнопки для каждого админа
         for admin_id, data in debts.items():
             keyboard.append([InlineKeyboardButton(
                 f"{data['name']} - {data['total']:,.0f} ₽",
@@ -348,6 +356,55 @@ class ProductCommands:
         
         keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="product_menu")])
         reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "Выберите админа для обнуления долга или обнулите все:",
+            reply_markup=reply_markup
+        )
+    
+    async def clear_all_debts_confirm(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Подтверждение обнуления всех долгов"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(query.from_user.id):
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return
+        
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, обнулить ВСЕ долги", callback_data="product_clear_all_execute")],
+            [InlineKeyboardButton("❌ Отмена", callback_data="product_clear_debt")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "⚠️ ВНИМАНИЕ!\n\n"
+            "Вы собираетесь обнулить долги ВСЕХ администраторов.\n"
+            "Это действие нельзя отменить.\n\n"
+            "Продолжить?",
+            reply_markup=reply_markup
+        )
+    
+    async def clear_all_debts_execute(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выполнение обнуления всех долгов"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(query.from_user.id):
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return
+        
+        success = self.product_manager.clear_all_debts()
+        
+        if success:
+            text = "✅ Все долги обнулены!"
+        else:
+            text = "❌ Ошибка при обнулении долгов"
+        
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="product_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, reply_markup=reply_markup)
         
         await query.edit_message_text(
             "Выберите админа для обнуления долга:",
@@ -378,8 +435,104 @@ class ProductCommands:
         
         await query.edit_message_text(text, reply_markup=reply_markup)
     
+    async def start_edit_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начать изменение цены товара (только владелец)"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(query.from_user.id):
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return ConversationHandler.END
+        
+        products = self.product_manager.list_products()
+        
+        if not products:
+            await query.edit_message_text(
+                "❌ Нет товаров в базе",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Назад", callback_data="product_menu")
+                ]])
+            )
+            return ConversationHandler.END
+        
+        # Создаём кнопки с товарами
+        keyboard = []
+        for prod in products:
+            keyboard.append([InlineKeyboardButton(
+                f"{prod['name']} - {prod['cost_price']:,.0f} ₽",
+                callback_data=f"product_price_{prod['id']}"
+            )])
+        
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="product_menu")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "✏️ Выберите товар для изменения цены:",
+            reply_markup=reply_markup
+        )
+        
+        return PRODUCT_EDIT_PRICE
+    
+    async def select_product_for_price_edit(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выбор товара для изменения цены"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Извлекаем ID товара из callback_data
+        product_id = int(query.data.split('_')[-1])
+        context.user_data['edit_price_product_id'] = product_id
+        
+        product = self.product_manager.get_product(product_id)
+        
+        if not product:
+            await query.edit_message_text("❌ Товар не найден")
+            return ConversationHandler.END
+        
+        await query.edit_message_text(
+            f"Товар: {product['name']}\n"
+            f"Текущая цена: {product['cost_price']:,.0f} ₽\n\n"
+            "Введите новую себестоимость:"
+        )
+        
+        return PRODUCT_ENTER_PRICE
+    
+    async def enter_new_product_price(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ввод новой цены товара"""
+        try:
+            price = float(update.message.text.replace(',', '.').replace(' ', ''))
+            
+            if price <= 0:
+                await update.message.reply_text("❌ Цена должна быть больше 0")
+                return PRODUCT_ENTER_PRICE
+            
+            product_id = context.user_data['edit_price_product_id']
+            product = self.product_manager.get_product(product_id)
+            
+            success = self.product_manager.update_product_price(product_id, price)
+            
+            if success:
+                text = f"✅ Цена обновлена\n\n"
+                text += f"📦 {product['name']}\n"
+                text += f"Старая цена: {product['cost_price']:,.0f} ₽\n"
+                text += f"Новая цена: {price:,.0f} ₽"
+            else:
+                text = "❌ Ошибка обновления цены"
+            
+            keyboard = [[InlineKeyboardButton("◀️ В меню товаров", callback_data="product_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(text, reply_markup=reply_markup)
+            
+            context.user_data.clear()
+            return ConversationHandler.END
+            
+        except ValueError:
+            await update.message.reply_text("❌ Введите число")
+            return PRODUCT_ENTER_PRICE
+    
     async def cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Отмена операции"""
         context.user_data.clear()
         await self.show_product_menu(update, context)
         return ConversationHandler.END
+

@@ -328,6 +328,29 @@ class ProductManager:
             logger.error(f"❌ Error clearing admin debt: {e}")
             return False
     
+    def clear_all_debts(self) -> bool:
+        """Обнулить ВСЕ долги всех админов (пометить как погашенные)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE admin_products 
+                SET settled = TRUE
+                WHERE settled = FALSE
+            ''')
+            
+            affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ All debts cleared ({affected} records)")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error clearing all debts: {e}")
+            return False
+    
     def format_products_list(self) -> str:
         """Форматирование списка товаров"""
         products = self.list_products()
