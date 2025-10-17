@@ -1386,6 +1386,30 @@ def init_database():
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         UNIQUE(user_id, service))''')
     
+    cursor.execute('''CREATE TABLE IF NOT EXISTS club_reports (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        club_id INTEGER NOT NULL,
+        user_id INTEGER NOT NULL,
+        report_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        cash_fact REAL DEFAULT 0,
+        cash_in_safe REAL DEFAULT 0,
+        cashless_fact REAL DEFAULT 0,
+        qr_payment REAL DEFAULT 0,
+        cashless_new_register REAL DEFAULT 0,
+        cash_products REAL DEFAULT 0,
+        cash_in_box REAL DEFAULT 0,
+        joysticks_total INTEGER DEFAULT 0,
+        joysticks_in_repair INTEGER DEFAULT 0,
+        joysticks_need_repair INTEGER DEFAULT 0,
+        games_count INTEGER DEFAULT 0,
+        toilet_supplies BOOLEAN DEFAULT 0,
+        paper_towels BOOLEAN DEFAULT 0,
+        notes TEXT,
+        FOREIGN KEY (club_id) REFERENCES clubs(id),
+        FOREIGN KEY (user_id) REFERENCES admins(user_id))''')
+    
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_club_reports_date ON club_reports(club_id, report_date DESC)')
+    
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_knowledge_current ON knowledge(is_current)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_draft_status ON knowledge_drafts(status)')
     

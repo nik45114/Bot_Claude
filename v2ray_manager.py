@@ -504,19 +504,42 @@ class V2RayManager:
                    port: int = 22, sni: str = "rutube.ru") -> bool:
         """Добавление сервера"""
         try:
-            logger.info(f"Adding server: name={name}, host={host}, port={port}, sni={sni}")
+            logger.info(f"🔍 add_server called with:")
+            logger.info(f"  • name: {name}")
+            logger.info(f"  • host: {host}")
+            logger.info(f"  • port: {port}")
+            logger.info(f"  • username: {username}")
+            logger.info(f"  • sni: {sni}")
+            
+            logger.info(f"📂 Opening database: {self.db_path}")
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
+            
+            logger.info(f"📝 Executing INSERT query...")
             cursor.execute('''
                 INSERT INTO v2ray_servers (name, host, port, username, password, sni)
                 VALUES (?, ?, ?, ?, ?, ?)
             ''', (name, host, port, username, password, sni))
+            
+            logger.info(f"💾 Committing transaction...")
             conn.commit()
+            
+            logger.info(f"🔒 Closing connection...")
             conn.close()
-            logger.info(f"✅ Сервер {name} добавлен")
+            
+            logger.info(f"✅ Сервер {name} добавлен успешно")
             return True
+            
+        except sqlite3.IntegrityError as e:
+            logger.error(f"❌ Database integrity error: {e}")
+            logger.error(f"   Possible duplicate server name: {name}")
+            return False
+        except sqlite3.OperationalError as e:
+            logger.error(f"❌ Database operational error: {e}")
+            logger.error(f"   Check if database file exists: {self.db_path}")
+            return False
         except Exception as e:
-            logger.error(f"❌ Ошибка добавления сервера: {e}", exc_info=True)
+            logger.error(f"❌ Unexpected error in add_server: {e}", exc_info=True)
             return False
     
     def get_server(self, name: str) -> Optional[V2RayServer]:

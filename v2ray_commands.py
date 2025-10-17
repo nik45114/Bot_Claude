@@ -56,19 +56,24 @@ class V2RayCommands:
         await update.message.reply_text(text, reply_markup=reply_markup)
     
     async def cmd_v2add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Добавление сервера: /v2add <имя> <host> <user> <pass> [sni]"""
+        """Добавление сервера"""
         if not self.is_owner(update.effective_user.id):
+            logger.warning(f"Unauthorized v2add attempt by user {update.effective_user.id}")
             return
         
         try:
-            logger.info(f"v2add called with args: {context.args}")
+            logger.info(f"🔍 v2add called by {update.effective_user.id}")
+            logger.info(f"📋 Args received: {context.args}")
+            logger.info(f"📋 Args count: {len(context.args)}")
             
             if len(context.args) < 4:
                 await update.message.reply_text(
-                    "Использование: /v2add <имя> <host> <user> <pass> [sni]\n\n"
-                    "Пример:\n"
-                    "/v2add main 45.144.54.117 root MyPass123\n"
-                    "/v2add main 45.144.54.117 root MyPass123 youtube.com"
+                    "❌ Недостаточно параметров\n\n"
+                    "Использование:\n"
+                    "/v2add <имя> <host> <user> <pass> [sni]\n\n"
+                    "Примеры:\n"
+                    "/v2add ger 45.144.54.117 root MyPass123\n"
+                    "/v2add ger 45.144.54.117 root MyPass123 youtube.com"
                 )
                 return
             
@@ -78,21 +83,30 @@ class V2RayCommands:
             password = context.args[3]
             sni = context.args[4] if len(context.args) > 4 else "rutube.ru"
             
-            logger.info(f"Adding server: name={name}, host={host}, user={username}, sni={sni}")
+            logger.info(f"📝 Parsed params:")
+            logger.info(f"  • name: {name}")
+            logger.info(f"  • host: {host}")
+            logger.info(f"  • username: {username}")
+            logger.info(f"  • password: {'*' * len(password)}")
+            logger.info(f"  • sni: {sni}")
             
             await update.message.reply_text("⏳ Добавляю сервер...")
             
+            logger.info(f"🔄 Calling manager.add_server...")
             result = self.manager.add_server(name, host, username, password, sni=sni)
+            logger.info(f"📤 manager.add_server returned: {result}")
             
             if result:
-                # Успех - отправляем с кнопками
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                
                 keyboard = [
                     [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{name}")],
                     [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{name}")],
-                    [InlineKeyboardButton("◀️ Назад в меню", callback_data="v2ray_menu")]
+                    [InlineKeyboardButton("◀️ V2Ray меню", callback_data="v2ray")]
                 ]
                 reply_markup = InlineKeyboardMarkup(keyboard)
                 
+                logger.info(f"✅ Server {name} added successfully")
                 await update.message.reply_text(
                     f"✅ Сервер добавлен успешно!\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -104,12 +118,18 @@ class V2RayCommands:
                     reply_markup=reply_markup
                 )
             else:
-                logger.error("Manager.add_server returned False")
-                await update.message.reply_text("❌ Ошибка добавления сервера")
+                logger.error(f"❌ manager.add_server returned False for {name}")
+                await update.message.reply_text(
+                    "❌ Ошибка добавления сервера\n\n"
+                    "Проверьте логи: journalctl -u club_assistant -n 50"
+                )
         
         except Exception as e:
-            logger.error(f"❌ v2add error: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка: {e}")
+            logger.error(f"❌ Exception in cmd_v2add: {e}", exc_info=True)
+            await update.message.reply_text(
+                f"❌ Ошибка: {str(e)}\n\n"
+                f"Тип ошибки: {type(e).__name__}"
+            )
     
     async def cmd_v2list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Список серверов"""
