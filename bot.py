@@ -955,14 +955,94 @@ class ClubAssistantBot:
             await update.message.reply_text("✅ Отправил в личку")
     
     async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Автообновление бота из GitHub"""
         if not self.admin_manager.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещён")
             return
         
-        await update.message.reply_text("🔄 Обновляю...")
-        
-        subprocess.Popen(['bash', '/opt/club_assistant/update.sh'], 
-                        stdout=subprocess.DEVNULL, 
-                        stderr=subprocess.DEVNULL)
+        try:
+            logger.info(f"🔄 Update requested by user {update.effective_user.id}")
+            await update.message.reply_text("🔄 Проверяю наличие обновлений...")
+            
+            # Переходим в рабочую директорию
+            work_dir = '/opt/club_assistant'
+            
+            # Fetch обновлений
+            logger.info("📥 Fetching updates from GitHub...")
+            result = subprocess.run(
+                ['git', 'fetch', 'origin', 'main'],
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"❌ Git fetch failed: {result.stderr}")
+                await update.message.reply_text(f"❌ Ошибка при проверке обновлений:\n{result.stderr}")
+                return
+            
+            # Проверяем количество новых коммитов
+            logger.info("🔍 Checking for new commits...")
+            result = subprocess.run(
+                ['git', 'rev-list', '--count', 'HEAD..origin/main'],
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=10
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"❌ Git rev-list failed: {result.stderr}")
+                await update.message.reply_text("❌ Ошибка при подсчёте коммитов")
+                return
+            
+            commits_count = int(result.stdout.strip())
+            logger.info(f"📊 Found {commits_count} new commits")
+            
+            if commits_count == 0:
+                await update.message.reply_text("✅ Бот уже использует последнюю версию")
+                return
+            
+            await update.message.reply_text(f"📦 Найдено обновлений: {commits_count}\n⏳ Применяю обновления...")
+            
+            # Pull обновлений
+            logger.info("📥 Pulling updates...")
+            result = subprocess.run(
+                ['git', 'pull', 'origin', 'main'],
+                cwd=work_dir,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                logger.error(f"❌ Git pull failed: {result.stderr}")
+                await update.message.reply_text(f"❌ Ошибка при загрузке обновлений:\n{result.stderr}")
+                return
+            
+            logger.info("✅ Updates pulled successfully")
+            await update.message.reply_text("✅ Обновления загружены\n🔄 Перезапускаю бота...")
+            
+            # Перезапуск сервиса
+            logger.info("🔄 Restarting service...")
+            subprocess.Popen(
+                ['systemctl', 'restart', 'club_assistant.service'],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL
+            )
+            
+            logger.info("✅ Update completed successfully")
+            
+        except subprocess.TimeoutExpired:
+            logger.error("❌ Git command timeout")
+            await update.message.reply_text("❌ Превышено время ожидания операции")
+        except ValueError as e:
+            logger.error(f"❌ Invalid commits count: {e}")
+            await update.message.reply_text("❌ Ошибка при обработке количества коммитов")
+        except Exception as e:
+            logger.error(f"❌ Update failed: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка обновления:\n{str(e)}")
     
     def _build_main_menu_keyboard(self, user_id: int) -> InlineKeyboardMarkup:
         """Построить клавиатуру главного меню"""
@@ -1073,7 +1153,10 @@ class ClubAssistantBot:
 /viewrecord <id> - посмотреть запись
 /addadmin <id>"""
             
-            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
+            keyboard = [
+                [InlineKeyboardButton("🔄 Обновить бота", callback_data="admin_update")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
+            ]
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             return
         
@@ -1088,6 +1171,99 @@ class ClubAssistantBot:
             await query.edit_message_text(text, reply_markup=reply_markup)
             return
         
+        # Админ - обновление бота через кнопку
+        if data == "admin_update":
+            if not self.admin_manager.is_admin(query.from_user.id):
+                await query.answer("❌ Только для админов")
+                return
+            
+            logger.info(f"🔄 Bot update via button by user {query.from_user.id}")
+            await query.answer("🔄 Начинаю обновление...")
+            
+            try:
+                await query.edit_message_text("🔄 Проверяю наличие обновлений...")
+                
+                # Переходим в рабочую директорию
+                work_dir = '/opt/club_assistant'
+                
+                # Fetch обновлений
+                logger.info("📥 Fetching updates from GitHub...")
+                result = subprocess.run(
+                    ['git', 'fetch', 'origin', 'main'],
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode != 0:
+                    logger.error(f"❌ Git fetch failed: {result.stderr}")
+                    await query.edit_message_text(f"❌ Ошибка при проверке обновлений:\n{result.stderr}")
+                    return
+                
+                # Проверяем количество новых коммитов
+                logger.info("🔍 Checking for new commits...")
+                result = subprocess.run(
+                    ['git', 'rev-list', '--count', 'HEAD..origin/main'],
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=10
+                )
+                
+                if result.returncode != 0:
+                    logger.error(f"❌ Git rev-list failed: {result.stderr}")
+                    await query.edit_message_text("❌ Ошибка при подсчёте коммитов")
+                    return
+                
+                commits_count = int(result.stdout.strip())
+                logger.info(f"📊 Found {commits_count} new commits")
+                
+                if commits_count == 0:
+                    await query.edit_message_text("✅ Бот уже использует последнюю версию")
+                    return
+                
+                await query.edit_message_text(f"📦 Найдено обновлений: {commits_count}\n⏳ Применяю обновления...")
+                
+                # Pull обновлений
+                logger.info("📥 Pulling updates...")
+                result = subprocess.run(
+                    ['git', 'pull', 'origin', 'main'],
+                    cwd=work_dir,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode != 0:
+                    logger.error(f"❌ Git pull failed: {result.stderr}")
+                    await query.edit_message_text(f"❌ Ошибка при загрузке обновлений:\n{result.stderr}")
+                    return
+                
+                logger.info("✅ Updates pulled successfully")
+                await query.edit_message_text("✅ Обновления загружены\n🔄 Перезапускаю бота...")
+                
+                # Перезапуск сервиса
+                logger.info("🔄 Restarting service...")
+                subprocess.Popen(
+                    ['systemctl', 'restart', 'club_assistant.service'],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL
+                )
+                
+                logger.info("✅ Update completed successfully")
+                
+            except subprocess.TimeoutExpired:
+                logger.error("❌ Git command timeout")
+                await query.edit_message_text("❌ Превышено время ожидания операции")
+            except ValueError as e:
+                logger.error(f"❌ Invalid commits count: {e}")
+                await query.edit_message_text("❌ Ошибка при обработке количества коммитов")
+            except Exception as e:
+                logger.error(f"❌ Update failed: {e}", exc_info=True)
+                await query.edit_message_text(f"❌ Ошибка обновления:\n{str(e)}")
+            return
+        
         # V2Ray подменю
         if data == "v2_servers":
             await self._show_v2_servers_menu(query)
@@ -1099,6 +1275,24 @@ class ClubAssistantBot:
         
         if data == "v2_help":
             await self._show_v2_help_menu(query)
+            return
+        
+        # V2Ray - детали сервера
+        if data.startswith("v2server_"):
+            server_name = data.replace("v2server_", "")
+            await self._show_v2_server_details(query, server_name)
+            return
+        
+        # V2Ray - установка Xray
+        if data.startswith("v2setup_"):
+            server_name = data.replace("v2setup_", "")
+            await self._install_xray_async(query, server_name)
+            return
+        
+        # V2Ray - статистика сервера
+        if data.startswith("v2stats_"):
+            server_name = data.replace("v2stats_", "")
+            await self._show_v2_server_stats(query, server_name)
             return
     
     async def _show_v2_servers_menu(self, query):
@@ -1185,6 +1379,196 @@ class ClubAssistantBot:
         keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="v2ray")]]
         
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def _show_v2_server_details(self, query, server_name: str):
+        """Показать детали конкретного сервера"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            logger.info(f"📋 Showing details for server: {server_name}")
+            
+            servers = self.v2ray_manager.list_servers()
+            server_info = next((s for s in servers if s['name'] == server_name), None)
+            
+            if not server_info:
+                await query.answer("❌ Сервер не найден")
+                return
+            
+            # Получаем ключи сервера
+            server_keys = self.v2ray_manager.get_server_keys(server_name)
+            
+            text = f"""🖥️ Сервер: {server_name}
+            
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Информация:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📍 Host: {server_info['host']}
+🔌 Port: {server_info['port']}
+👤 User: {server_info['username']}
+🌐 SNI: {server_info.get('sni', 'rutube.ru')}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔐 REALITY ключи:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
+            
+            if server_keys:
+                text += f"\n🔑 Public Key: `{server_keys.get('public_key', 'не установлен')[:32]}...`"
+                text += f"\n🆔 Short ID: `{server_keys.get('short_id', 'не установлен')}`"
+            else:
+                text += "\n⚠️ Xray не установлен"
+            
+            keyboard = [
+                [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{server_name}")],
+                [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{server_name}")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="v2_servers")]
+            ]
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"❌ Error showing server details: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
+    async def _install_xray_async(self, query, server_name: str):
+        """Асинхронная установка Xray на сервер"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            logger.info(f"🔧 Installing Xray on server: {server_name}")
+            await query.answer("⏳ Начинаю установку...")
+            await query.edit_message_text(f"⏳ Подключаюсь к серверу {server_name}...")
+            
+            server = self.v2ray_manager.get_server(server_name)
+            
+            if not server:
+                await query.edit_message_text(f"❌ Сервер {server_name} не найден")
+                return
+            
+            if not server.connect():
+                await query.edit_message_text("❌ Не удалось подключиться к серверу")
+                return
+            
+            await query.edit_message_text("📥 Устанавливаю Xray (2-3 минуты)...\nПожалуйста, подождите...")
+            
+            if not server.install_v2ray():
+                await query.edit_message_text("❌ Ошибка установки Xray")
+                server.disconnect()
+                return
+            
+            await query.edit_message_text("⚙️ Создаю REALITY конфигурацию...")
+            
+            # Получаем SNI из базы
+            server_keys = self.v2ray_manager.get_server_keys(server_name)
+            sni = server_keys.get('sni', 'rutube.ru')
+            
+            config = server.create_reality_config(port=443, sni=sni)
+            
+            if not config:
+                await query.edit_message_text("❌ Ошибка создания конфигурации")
+                server.disconnect()
+                return
+            
+            # Сохраняем ключи в базу
+            client_keys = config.get('_client_keys', {})
+            if client_keys:
+                self.v2ray_manager.save_server_keys(
+                    server_name,
+                    client_keys['public_key'],
+                    client_keys['short_id']
+                )
+            
+            if not server.deploy_config(config):
+                await query.edit_message_text("❌ Ошибка применения конфигурации")
+                server.disconnect()
+                return
+            
+            server.disconnect()
+            
+            text = f"""✅ Xray успешно установлен на {server_name}!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔐 Настройки:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🔐 Протокол: REALITY
+🌐 Маскировка: {sni}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📝 Следующий шаг:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Добавьте пользователей:
+/v2user {server_name} <user_id> [email]"""
+            
+            keyboard = [
+                [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{server_name}")],
+                [InlineKeyboardButton("◀️ К серверу", callback_data=f"v2server_{server_name}")]
+            ]
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.info(f"✅ Xray installed successfully on {server_name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error installing Xray: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Ошибка установки: {str(e)}")
+    
+    async def _show_v2_server_stats(self, query, server_name: str):
+        """Показать статистику сервера"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            logger.info(f"📊 Getting stats for server: {server_name}")
+            await query.answer("⏳ Получаю статистику...")
+            await query.edit_message_text("⏳ Подключаюсь к серверу...")
+            
+            server = self.v2ray_manager.get_server(server_name)
+            
+            if not server:
+                await query.edit_message_text(f"❌ Сервер {server_name} не найден")
+                return
+            
+            if not server.connect():
+                await query.edit_message_text("❌ Не удалось подключиться")
+                return
+            
+            stats = server.get_stats()
+            
+            server.disconnect()
+            
+            if not stats:
+                await query.edit_message_text("❌ Ошибка получения статистики")
+                return
+            
+            status_emoji = "✅" if stats['running'] else "❌"
+            status_text = "🟢 Работает" if stats['running'] else "🔴 Остановлен"
+            
+            text = f"""📊 Статистика сервера: {server_name}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Состояние:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+{status_emoji} Статус: {status_text}
+📍 Host: {stats['host']}
+🔌 Port: {stats['port']}
+🔐 Protocol: {stats['protocol']}
+🌐 SNI: {stats['sni']}
+👥 Пользователей: {stats['users']}"""
+            
+            keyboard = [
+                [InlineKeyboardButton("🔄 Обновить", callback_data=f"v2stats_{server_name}")],
+                [InlineKeyboardButton("◀️ К серверу", callback_data=f"v2server_{server_name}")]
+            ]
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            logger.info(f"✅ Stats shown for {server_name}")
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting stats: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Ошибка: {str(e)}")
     
     def _should_respond(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         message = update.message
