@@ -5,7 +5,7 @@ Club Commands - Команды управления клубами
 Только для владельца
 """
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 import logging
 
@@ -13,6 +13,11 @@ logger = logging.getLogger(__name__)
 
 # Состояния для ConversationHandler
 WAITING_REPORT = 1
+WAITING_CASH_FACT = 2
+WAITING_CASH_SAFE = 3
+WAITING_CASHLESS = 4
+WAITING_QR = 5
+WAITING_JOYSTICKS = 6
 
 
 class ClubCommands:
@@ -28,30 +33,46 @@ class ClubCommands:
     
     async def cmd_clubs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Главное меню клубов"""
-        if not self.is_owner(update.effective_user.id):
-            await update.message.reply_text("❌ Доступ запрещён")
-            return
+        clubs = self.manager.list_clubs()
         
-        text = """🏢 Управление клубами
-
-Команды:
-
-📋 Клубы:
-/clubadd <название> <адрес> - добавить клуб
-/clublist - список клубов
-/clubstats <название> [дней] - статистика
-
-📊 Отчёты:
-/report <клуб> - начать отчёт смены
-/lastreport <клуб> - последний отчёт
-/issues [клуб] - проблемы
-
-Пример:
-/clubadd Центральный Ленина 123
-/report Центральный
-→ Отправь текст отчёта"""
+        text = "🏢 Управление клубами\n\n"
         
-        await update.message.reply_text(text)
+        if clubs:
+            text += f"📊 Всего клубов: {len(clubs)}\n\n"
+            for club in clubs:
+                status = "🟢 Активен" if club.get('is_active', True) else "🔴 Закрыт"
+                text += f"{status} {club['name']}\n"
+                text += f"   📍 {club.get('address', 'Адрес не указан')}\n\n"
+        else:
+            text += "Нет зарегистрированных клубов\n"
+        
+        keyboard = []
+        
+        # Кнопки для каждого клуба
+        for club in clubs[:10]:  # Максимум 10 клубов
+            keyboard.append([
+                InlineKeyboardButton(
+                    f"🏢 {club['name']}", 
+                    callback_data=f"club_view_{club['id']}"
+                )
+            ])
+        
+        # Управляющие кнопки
+        keyboard.append([
+            InlineKeyboardButton("📝 Создать отчет", callback_data="club_report_new"),
+            InlineKeyboardButton("📊 Мониторинг", callback_data="club_monitoring")
+        ])
+        
+        if self.is_owner(update.effective_user.id):
+            keyboard.append([
+                InlineKeyboardButton("➕ Добавить клуб", callback_data="club_add"),
+                InlineKeyboardButton("📋 Все отчеты", callback_data="club_reports_all")
+            ])
+        
+        keyboard.append([InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, reply_markup=reply_markup)
     
     async def cmd_clubadd(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Добавление клуба: /clubadd <название> <адрес>"""
@@ -337,3 +358,26 @@ QR 3 753
         
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    async def cmd_report_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начало создания отчета"""
+        clubs = self.manager.list_clubs()
+        
+        if not clubs:
+            await update.message.reply_text("❌ Нет клубов для отчета")
+            return ConversationHandler.END
+        
+        keyboard = []
+        for club in clubs:
+            keyboard.append([
+                InlineKeyboardButton(club['name'], callback_data=f"report_club_{club['id']}")
+            ])
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="cancel")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "📝 Создание отчета\n\nВыберите клуб:",
+            reply_markup=reply_markup
+        )
+        
+        return WAITING_REPORT

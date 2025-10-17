@@ -552,3 +552,86 @@ class ClubManager:
         except Exception as e:
             logger.error(f"❌ Ошибка получения проблем: {e}")
             return []
+    
+    def create_report(self, club_id: int, user_id: int, report_data: dict) -> bool:
+        """Создание отчета по клубу"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT INTO club_reports (
+                    club_id, user_id, report_date,
+                    cash_fact, cash_in_safe, cashless_fact, qr_payment,
+                    cashless_new_register, cash_products, cash_in_box,
+                    joysticks_total, joysticks_in_repair, joysticks_need_repair,
+                    games_count, toilet_supplies, paper_towels, notes
+                ) VALUES (?, ?, datetime('now'), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                club_id, user_id,
+                report_data.get('cash_fact', 0),
+                report_data.get('cash_in_safe', 0),
+                report_data.get('cashless_fact', 0),
+                report_data.get('qr_payment', 0),
+                report_data.get('cashless_new_register', 0),
+                report_data.get('cash_products', 0),
+                report_data.get('cash_in_box', 0),
+                report_data.get('joysticks_total', 0),
+                report_data.get('joysticks_in_repair', 0),
+                report_data.get('joysticks_need_repair', 0),
+                report_data.get('games_count', 0),
+                report_data.get('toilet_supplies', False),
+                report_data.get('paper_towels', False),
+                report_data.get('notes', '')
+            ))
+            
+            conn.commit()
+            conn.close()
+            logger.info(f"✅ Отчет для клуба {club_id} создан пользователем {user_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Ошибка создания отчета: {e}")
+            return False
+    
+    def get_latest_report(self, club_id: int) -> Optional[dict]:
+        """Получить последний отчет по клубу (или None если отчетов нет)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT * FROM club_reports
+                WHERE club_id = ?
+                ORDER BY report_date DESC
+                LIMIT 1
+            ''', (club_id,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return dict(row)
+            return None
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения отчета: {e}")
+            return None
+    
+    def get_club_status(self, club_id: int) -> dict:
+        """Получить текущий статус клуба (из последнего отчета)"""
+        report = self.get_latest_report(club_id)
+        if not report:
+            return {
+                'has_data': False,
+                'message': 'Нет данных по клубу'
+            }
+        
+        return {
+            'has_data': True,
+            'cash_total': report['cash_fact'] + report['cash_in_safe'] + report['cash_in_box'] + report['cash_products'],
+            'cashless_total': report['cashless_fact'] + report['qr_payment'],
+            'joysticks_ok': report['joysticks_total'] - report['joysticks_in_repair'] - report['joysticks_need_repair'],
+            'joysticks_repair': report['joysticks_in_repair'] + report['joysticks_need_repair'],
+            'supplies_ok': report['toilet_supplies'] and report['paper_towels'],
+            'last_update': report['report_date']
+        }
