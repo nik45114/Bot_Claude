@@ -5,7 +5,7 @@ V2Ray Bot Commands v2 - With REALITY Support
 Команды для управления V2Ray с REALITY через Telegram бота
 """
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import logging
 
@@ -29,8 +29,6 @@ class V2RayCommands:
         if not self.is_owner(update.effective_user.id):
             await update.message.reply_text("❌ Доступ запрещён")
             return
-        
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
         
         text = """🔐 V2Ray Manager (REALITY)
 
@@ -88,8 +86,6 @@ class V2RayCommands:
             
             if result:
                 # Успех - отправляем с кнопками
-                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                
                 keyboard = [
                     [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{name}")],
                     [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{name}")],
