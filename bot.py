@@ -960,6 +960,18 @@ class ClubAssistantBot:
         
         Returns:
             Tuple[bool, str]: (success, message) - успех операции и сообщение для пользователя
+        
+        Возможные сценарии ошибок:
+        - Git fetch failed: Ошибка при проверке обновлений (network/git issues)
+        - Git rev-list failed: Ошибка при подсчёте коммитов
+        - Commit count parsing: Ошибка при обработке количества коммитов (invalid output)
+        - Git pull failed: Ошибка при загрузке обновлений
+        - Timeout: Превышено время ожидания операции (>30 sec)
+        - General exception: Общая ошибка обновления
+        
+        Успешные сценарии:
+        - No updates: "Бот уже использует последнюю версию"
+        - Updates applied: "Обновления загружены (N коммитов)"
         """
         try:
             work_dir = '/opt/club_assistant'
@@ -996,7 +1008,7 @@ class ClubAssistantBot:
                 commits_count = int(result.stdout.strip())
             except ValueError as e:
                 logger.error(f"❌ Failed to parse commit count: '{result.stdout.strip()}' - {e}")
-                return False, "❌ Ошибка при обработке количества коммитов"
+                return False, f'❌ Ошибка при обработке количества коммитов: "{result.stdout.strip()}"'
             
             logger.info(f"📊 Found {commits_count} new commits")
             
@@ -1019,7 +1031,7 @@ class ClubAssistantBot:
             
             logger.info("✅ Updates pulled successfully")
             
-            # Перезапуск сервиса
+            # Перезапуск сервиса (асинхронно через Popen)
             logger.info("🔄 Restarting service...")
             subprocess.Popen(
                 ['systemctl', 'restart', 'club_assistant.service'],
@@ -1027,8 +1039,8 @@ class ClubAssistantBot:
                 stderr=subprocess.DEVNULL
             )
             
-            logger.info("✅ Update completed successfully")
-            return True, f"✅ Обновления загружены ({commits_count} коммитов)\n🔄 Перезапускаю бота..."
+            logger.info("✅ Update completed, restart initiated")
+            return True, f"✅ Обновления загружены ({commits_count} коммитов)\n🔄 Бот перезапускается..."
             
         except subprocess.TimeoutExpired:
             logger.error("❌ Git command timeout")
