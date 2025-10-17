@@ -468,6 +468,8 @@ class ClubAssistantBot:
         logger.info(f"   Записей: {self.kb.count()}")
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
         text = f"""👋 Привет!
 
 Я ассистент клуба v{VERSION}.
@@ -479,14 +481,21 @@ class ClubAssistantBot:
 • Важную информацию о клубе
 
 💬 В личке: просто спрашивай
-💬 В группе: @{self.bot_username or 'bot'} вопрос
+💬 В группе: @{self.bot_username or 'bot'} вопрос"""
 
-/help - справка"""
-
-        if self.admin_manager.is_admin(update.effective_user.id):
-            text += "\n\n🔧 /admin"
+        keyboard = []
         
-        await update.message.reply_text(text, reply_markup=ReplyKeyboardRemove())
+        # Основные кнопки для всех
+        keyboard.append([InlineKeyboardButton("📖 Справка", callback_data="help")])
+        keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data="stats")])
+        
+        # Админские кнопки
+        if self.admin_manager.is_admin(update.effective_user.id):
+            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
+            keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, reply_markup=reply_markup)
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"""📖 Справка - Club Assistant Bot v{VERSION}
@@ -518,6 +527,33 @@ class ClubAssistantBot:
             text += "\n🔐 /v2ray - управление VPN"
 
         await update.message.reply_text(text)
+    
+    def _get_help_text(self) -> str:
+        """Получить текст справки"""
+        text = f"""📖 Справка - Club Assistant Bot v{VERSION}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 Умное автообучение:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Автоматически запоминаю:
+  • Проблемы и их решения
+  • Инструкции по работе
+  • Инциденты
+  • Важную информацию о клубе
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💬 Как пользоваться:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• В личке: просто спрашивай
+• В группе: @{self.bot_username or 'bot'} вопрос
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📊 Команды:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/start - начало работы
+/help - эта справка
+/stats - статистика базы знаний"""
+        return text
     
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         kb_count = self.kb.count()
@@ -951,6 +987,262 @@ class ClubAssistantBot:
                         stdout=subprocess.DEVNULL, 
                         stderr=subprocess.DEVNULL)
     
+    async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик inline-кнопок"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        
+        # Главное меню
+        if data == "main_menu":
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            
+            text = f"""👋 Привет!
+
+Я ассистент клуба v{VERSION}.
+
+🤖 Запоминаю только важное:
+• Проблемы и решения
+• Инструкции
+• Инциденты
+• Важную информацию о клубе
+
+💬 В личке: просто спрашивай
+💬 В группе: @{self.bot_username or 'bot'} вопрос"""
+
+            keyboard = []
+            keyboard.append([InlineKeyboardButton("📖 Справка", callback_data="help")])
+            keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data="stats")])
+            
+            if self.admin_manager.is_admin(query.from_user.id):
+                keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
+                keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text, reply_markup=reply_markup)
+            return
+        
+        # Справка
+        if data == "help":
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            help_text = self._get_help_text()
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
+            await query.edit_message_text(help_text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        # Статистика
+        if data == "stats":
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            kb_count = self.kb.count()
+            vector_stats = self.vector_store.stats()
+            text = f"""📊 Статистика v{VERSION}
+
+📚 База знаний:
+• Записей: {kb_count}
+• Векторов: {vector_stats['total_vectors']}
+
+🤖 Умное автообучение: ВКЛ"""
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        # Админ-панель
+        if data == "admin":
+            if not self.admin_manager.is_admin(query.from_user.id):
+                await query.answer("❌ Только для админов")
+                return
+            
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            text = f"""🔧 Админ-панель v{VERSION}
+
+Команды:
+/learn <инфо> - добавить
+/import - импорт файла
+/cleanup - удалить дубликаты
+/fixdb - исправить битые записи
+/fixjson - исправить JSON в ответах ⚠️
+/deletetrash - удалить мусорные записи ⚠️
+/viewrecord <id> - посмотреть запись
+/addadmin <id>"""
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        # V2Ray меню
+        if data == "v2ray":
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            
+            text = """🔐 V2Ray Manager (REALITY)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Системные требования:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • ОС: Debian/Ubuntu Linux
+  • Python: 3.8+
+  • Требуется: SSH доступ с root
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌐 REALITY маскировка:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• По умолчанию: rutube.ru
+• Доступны: youtube.com, yandex.ru"""
+
+            keyboard = [
+                [InlineKeyboardButton("📡 Серверы", callback_data="v2_servers")],
+                [InlineKeyboardButton("👤 Пользователи", callback_data="v2_users")],
+                [InlineKeyboardButton("📖 Справка по командам", callback_data="v2_help")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text, reply_markup=reply_markup)
+            return
+        
+        # V2Ray подменю
+        if data == "v2_servers":
+            await self._show_v2_servers_menu(query)
+            return
+        
+        if data == "v2_users":
+            await self._show_v2_users_menu(query)
+            return
+        
+        if data == "v2_help":
+            await self._show_v2_help_menu(query)
+            return
+        
+        # V2Ray меню (альтернативное название)
+        if data == "v2ray_menu":
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            
+            text = """🔐 V2Ray Manager (REALITY)
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Системные требования:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • ОС: Debian/Ubuntu Linux
+  • Python: 3.8+
+  • Требуется: SSH доступ с root
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🌐 REALITY маскировка:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• По умолчанию: rutube.ru
+• Доступны: youtube.com, yandex.ru"""
+
+            keyboard = [
+                [InlineKeyboardButton("📡 Серверы", callback_data="v2_servers")],
+                [InlineKeyboardButton("👤 Пользователи", callback_data="v2_users")],
+                [InlineKeyboardButton("📖 Справка по командам", callback_data="v2_help")],
+                [InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(text, reply_markup=reply_markup)
+            return
+    
+    async def _show_v2_servers_menu(self, query):
+        """Меню управления серверами"""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        servers = self.v2ray_manager.list_servers()
+        
+        text = "📡 Управление серверами\n\n"
+        
+        if servers:
+            text += "Ваши серверы:\n\n"
+            for srv in servers:
+                text += f"🖥️ {srv['name']} - {srv['host']}\n"
+        else:
+            text += "Нет добавленных серверов\n\n"
+            text += "Добавьте сервер командой:\n"
+            text += "/v2add <имя> <host> <user> <pass> [sni]"
+        
+        keyboard = []
+        for srv in servers:
+            keyboard.append([
+                InlineKeyboardButton(f"⚙️ {srv['name']}", callback_data=f"v2server_{srv['name']}")
+            ])
+        
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="v2ray")])
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def _show_v2_users_menu(self, query):
+        """Меню управления пользователями"""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        text = """👤 Управление пользователями
+
+Добавить пользователя:
+/v2user <сервер> <user_id> [email]
+
+Удалить пользователя:
+/v2remove <сервер> <uuid>"""
+        
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="v2ray")]]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def _show_v2_help_menu(self, query):
+        """Справка по командам V2Ray"""
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        
+        text = """📖 Справка по командам V2Ray
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📡 Управление серверами:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/v2add <имя> <host> <user> <pass> [sni]
+  └─ Добавить новый сервер
+  
+/v2list
+  └─ Список всех серверов
+  
+/v2setup <имя>
+  └─ Установить Xray на сервер
+  
+/v2stats <имя>
+  └─ Статистика сервера
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 Управление пользователями:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/v2user <сервер> <user_id> [email]
+  └─ Добавить пользователя
+  
+/v2remove <сервер> <uuid>
+  └─ Удалить пользователя
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚙️ Настройки:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/v2sni <сервер> <сайт>
+  └─ Изменить маскировку
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📝 Пример использования:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣ /v2add main 192.168.1.100 root Pass123
+2️⃣ /v2setup main
+3️⃣ /v2user main @username Иван
+4️⃣ /v2sni main youtube.com"""
+        
+        keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="v2ray")]]
+        
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
     def _should_respond(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
         message = update.message
         
@@ -1073,6 +1365,10 @@ class ClubAssistantBot:
         app.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         app.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         app.add_handler(CommandHandler("update", self.cmd_update))
+        
+        # Обработчик inline-кнопок
+        from telegram.ext import CallbackQueryHandler
+        app.add_handler(CallbackQueryHandler(self.handle_callback))
         
         # V2Ray команды
         app.add_handler(CommandHandler("v2ray", self.v2ray_commands.cmd_v2ray))
