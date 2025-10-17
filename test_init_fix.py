@@ -31,7 +31,10 @@ def verify_bot_py_changes():
     """Проверка что изменения внесены в bot.py"""
     print("\n🧪 Проверка изменений в bot.py...")
     
-    with open('/home/runner/work/Bot_Claude/Bot_Claude/bot.py', 'r') as f:
+    import os
+    bot_path = os.path.join(os.path.dirname(__file__), 'bot.py')
+    
+    with open(bot_path, 'r') as f:
         content = f.read()
     
     # Проверяем что в run() есть инициализация команд перед Application
@@ -46,15 +49,17 @@ def verify_bot_py_changes():
     for i, line in enumerate(lines):
         if 'def run(self):' in line:
             run_line = i
-        if 'self.cash_commands = CashCommands' in line and run_line and i > run_line:
-            init_cash_line = i
-        if 'self.product_commands = ProductCommands' in line and run_line and i > run_line:
-            init_product_line = i
-        if 'Application.builder().token' in line and run_line and i > run_line and not app_builder_line:
-            app_builder_line = i
-        if 'self.cash_commands.start_add_movement' in line and run_line and i > run_line:
-            add_handler_line = i
-            break  # Нашли первое использование
+        if run_line is not None and i > run_line:
+            if 'self.cash_commands = CashCommands' in line:
+                init_cash_line = i
+            if 'self.product_commands = ProductCommands' in line:
+                init_product_line = i
+            if 'Application.builder().token' in line and not app_builder_line:
+                app_builder_line = i
+            # Look for CallbackQueryHandler with cash_commands method
+            if 'CallbackQueryHandler(self.cash_commands.' in line or 'self.cash_commands.start_add_movement' in line:
+                add_handler_line = i
+                break  # Нашли первое использование
     
     print(f"  run() метод: строка {run_line}")
     print(f"  CashCommands инициализация: строка {init_cash_line}")
