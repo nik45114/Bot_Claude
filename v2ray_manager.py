@@ -571,7 +571,7 @@ class V2RayManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT name, host, port, sni
+                SELECT name, host, port, sni, username
                 FROM v2ray_servers
                 WHERE is_active = 1
             ''')
@@ -582,7 +582,8 @@ class V2RayManager:
                     'name': row[0],
                     'host': row[1],
                     'port': row[2],
-                    'sni': row[3]
+                    'sni': row[3],
+                    'username': row[4]
                 })
             
             conn.close()
@@ -690,16 +691,6 @@ class V2RayManager:
             user_uuid = str(uuid.uuid4())
             logger.info(f"🔑 Generated UUID: {user_uuid}")
             
-            # Подключаемся к серверу через SSH
-            logger.info(f"🔌 Connecting to {server_info['host']}...")
-            ssh = self._connect_ssh(server_info)
-            
-            if not ssh:
-                logger.error(f"❌ SSH connection failed")
-                return None
-            
-            logger.info(f"✅ SSH connected")
-            
             # Добавляем пользователя в конфиг Xray через существующий метод
             logger.info(f"📝 Adding user to Xray config...")
             server = V2RayServer(
@@ -712,6 +703,8 @@ class V2RayManager:
             if not server.connect():
                 logger.error(f"❌ Failed to connect to server")
                 return None
+            
+            logger.info(f"✅ SSH connected")
             
             # Используем существующий метод add_user_reality
             sni = server_info.get('sni', 'rutube.ru')
@@ -743,7 +736,7 @@ class V2RayManager:
             # Генерируем VLESS ссылку
             vless_link = self._generate_vless_link(
                 server_info['host'],
-                server_info.get('port', 443),
+                443,  # Port for VLESS connection is always 443 for REALITY
                 user_uuid,
                 sni,
                 comment
@@ -814,24 +807,6 @@ class V2RayManager:
                 
         except Exception as e:
             logger.error(f"❌ Ошибка получения информации о сервере: {e}")
-            return None
-    
-    def _connect_ssh(self, server_info: Dict):
-        """Подключение к серверу по SSH"""
-        try:
-            import paramiko
-            ssh = paramiko.SSHClient()
-            ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-            ssh.connect(
-                hostname=server_info['host'],
-                port=server_info.get('port', 22),
-                username=server_info['username'],
-                password=server_info['password'],
-                timeout=10
-            )
-            return ssh
-        except Exception as e:
-            logger.error(f"❌ SSH connection error: {e}")
             return None
     
     def get_server_users(self, server_name: str) -> list:
