@@ -307,8 +307,28 @@ fi
     def add_user_reality(self, user_id: str, email: str = "", sni: str = "rutube.ru") -> str:
         """Добавление пользователя и генерация VLESS ссылки"""
         try:
-            # Генерируем UUID для пользователя
-            user_uuid = str(uuid.uuid4())
+            # Генерируем UUID на сервере командой xray uuid
+            logger.info("🔑 Generating UUID on server...")
+            exit_code, user_uuid, err = self._exec_command('/usr/local/bin/xray uuid')
+            user_uuid = user_uuid.strip()
+            
+            # Если не сработало, пробуем другой путь
+            if not user_uuid or exit_code != 0:
+                logger.info("⚠️ /usr/local/bin/xray not found, trying ./xray...")
+                exit_code, user_uuid, err = self._exec_command('./xray uuid')
+                user_uuid = user_uuid.strip()
+            
+            # Если всё равно не сработало, пробуем python
+            if not user_uuid or exit_code != 0:
+                logger.info("⚠️ xray uuid failed, using python fallback...")
+                exit_code, user_uuid, err = self._exec_command('python3 -c "import uuid; print(uuid.uuid4())"')
+                user_uuid = user_uuid.strip()
+            
+            if not user_uuid:
+                logger.error("❌ Failed to generate UUID on server")
+                return None
+            
+            logger.info(f"✅ UUID generated on server: {user_uuid}")
             
             # Читаем текущую конфигурацию
             sftp = self.ssh_client.open_sftp()
@@ -796,6 +816,58 @@ class V2RayManager:
             public_key = server.get('public_key', '')
             short_id = server.get('short_id', '')
             
+            # Если ключи не найдены в БД, пробуем получить с сервера
+            if not public_key or not short_id:
+                logger.warning(f"⚠️ Keys not found in DB for {server_name}, fetching from server...")
+                ssh = self._connect_ssh(server)
+                if ssh:
+                    try:
+                        # Пробуем получить из keys.json
+                        logger.info("🔍 Trying to read /root/Xray-core/keys.json...")
+                        stdin, stdout, stderr = ssh.exec_command('cat /root/Xray-core/keys.json')
+                        keys_content = stdout.read().decode().strip()
+                        
+                        if keys_content:
+                            keys = json.loads(keys_content)
+                            public_key = keys.get('public_key', '')
+                            short_id = keys.get('short_id', '')
+                            logger.info(f"✅ Keys loaded from keys.json")
+                            
+                            # Сохраняем в БД для будущего использования
+                            private_key = keys.get('private_key', '')
+                            self.save_keys_to_db(server_name, public_key, private_key, short_id)
+                        else:
+                            # Пробуем парсить из config.json
+                            logger.info("🔍 Trying to read from config.json...")
+                            config_paths = [
+                                '/usr/local/etc/xray/config.json',
+                                '/root/Xray-core/config.json',
+                                '/etc/xray/config.json'
+                            ]
+                            
+                            for config_path in config_paths:
+                                stdin, stdout, stderr = ssh.exec_command(f'cat {config_path}')
+                                config_content = stdout.read().decode().strip()
+                                
+                                if config_content and 'realitySettings' in config_content:
+                                    config = json.loads(config_content)
+                                    reality_settings = config.get('inbounds', [{}])[0].get('streamSettings', {}).get('realitySettings', {})
+                                    
+                                    # Note: publicKey не хранится в config.json, только privateKey
+                                    # Нужно сгенерировать публичный ключ из приватного
+                                    private_key = reality_settings.get('privateKey', '')
+                                    short_ids = reality_settings.get('shortIds', [])
+                                    if short_ids:
+                                        short_id = short_ids[0] if short_ids[0] else ''
+                                    
+                                    logger.info(f"✅ Found private key and short_id in config")
+                                    break
+                    
+                    except Exception as e:
+                        logger.error(f"❌ Error fetching keys from server: {e}")
+                    finally:
+                        ssh.close()
+            
             if not public_key:
                 logger.warning(f"⚠️ Public key not found for {server_name}!")
             
@@ -866,8 +938,68 @@ class V2RayManager:
             logger.error(f"❌ Ошибка получения информации о сервере: {e}")
             return None
     
+    def get_users(self, server_name: str) -> List[Dict]:
+        """Получает список пользователей С СЕРВЕРА из config.json"""
+        try:
+            logger.info(f"📋 Getting users from server {server_name}...")
+            server = self.get_server_info(server_name)
+            if not server:
+                logger.error(f"❌ Server {server_name} not found")
+                return []
+            
+            ssh = self._connect_ssh(server)
+            if not ssh:
+                logger.error(f"❌ Failed to connect to {server_name}")
+                return []
+            
+            # Ищем config.json в разных местах
+            config_paths = [
+                '/usr/local/etc/xray/config.json',
+                '/root/Xray-core/config.json',
+                '/etc/xray/config.json'
+            ]
+            
+            config_content = None
+            config_path_used = None
+            for path in config_paths:
+                logger.info(f"🔍 Checking {path}...")
+                stdin, stdout, stderr = ssh.exec_command(f'cat {path}')
+                content = stdout.read().decode()
+                if content and 'inbounds' in content:
+                    config_content = content
+                    config_path_used = path
+                    logger.info(f"✅ Found config at {path}")
+                    break
+            
+            if not config_content:
+                logger.error(f"❌ Config not found on {server_name}")
+                ssh.close()
+                return []
+            
+            config = json.loads(config_content)
+            
+            # Парсим пользователей из первого inbound
+            users = []
+            if 'inbounds' in config and len(config['inbounds']) > 0:
+                clients = config['inbounds'][0].get('settings', {}).get('clients', [])
+                logger.info(f"📊 Found {len(clients)} users in config")
+                for client in clients:
+                    users.append({
+                        'uuid': client.get('id'),
+                        'email': client.get('email', 'unknown'),
+                        'flow': client.get('flow', 'xtls-rprx-vision')
+                    })
+            
+            ssh.close()
+            logger.info(f"✅ Retrieved {len(users)} users from {server_name}")
+            return users
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting users from {server_name}: {e}", exc_info=True)
+            return []
+    
     def get_server_users(self, server_name: str) -> list:
-        """Получить список пользователей сервера"""
+        """Получить список пользователей сервера (из БД для обратной совместимости)"""
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row
@@ -905,6 +1037,36 @@ class V2RayManager:
             return True
         except Exception as e:
             logger.error(f"❌ delete_user error: {e}")
+            return False
+    
+    def delete_server(self, server_name: str) -> bool:
+        """Удаляет сервер из БД вместе со всеми пользователями"""
+        try:
+            logger.info(f"🗑️ Deleting server {server_name}...")
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Удаляем пользователей сервера
+            cursor.execute('DELETE FROM v2ray_users WHERE server_name = ?', (server_name,))
+            deleted_users = cursor.rowcount
+            logger.info(f"  • Deleted {deleted_users} users")
+            
+            # Удаляем сервер
+            cursor.execute('DELETE FROM v2ray_servers WHERE name = ?', (server_name,))
+            deleted_servers = cursor.rowcount
+            
+            conn.commit()
+            conn.close()
+            
+            if deleted_servers > 0:
+                logger.info(f"✅ Сервер {server_name} и его пользователи удалены из БД")
+                return True
+            else:
+                logger.warning(f"⚠️ Сервер {server_name} не найден")
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Ошибка удаления сервера {server_name}: {e}", exc_info=True)
             return False
     
     def check_xray_status(self, server_name: str) -> bool:

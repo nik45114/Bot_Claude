@@ -1377,6 +1377,53 @@ class ClubAssistantBot:
             await self._delete_user(query, server_name, uuid)
             return
         
+        # Удаление сервера - подтверждение
+        if data.startswith("v2delete_confirm_"):
+            server_name = data.replace("v2delete_confirm_", "")
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            logger.info(f"🗑️ Deleting server {server_name}...")
+            if self.v2ray_manager.delete_server(server_name):
+                await query.edit_message_text(
+                    f"✅ Сервер {server_name} удалён!\n\n"
+                    f"Данные очищены из БД.",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 К серверам", callback_data="v2_servers")
+                    ]])
+                )
+            else:
+                await query.edit_message_text(
+                    "❌ Ошибка при удалении сервера",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("🔙 К серверам", callback_data="v2_servers")
+                    ]])
+                )
+            return
+        
+        # Удаление сервера
+        if data.startswith("v2delete_"):
+            server_name = data.replace("v2delete_", "")
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            # Подтверждение удаления
+            keyboard = [
+                [InlineKeyboardButton("✅ Да, удалить", callback_data=f"v2delete_confirm_{server_name}")],
+                [InlineKeyboardButton("❌ Отмена", callback_data=f"v2server_{server_name}")]
+            ]
+            await query.edit_message_text(
+                f"⚠️ Удалить сервер {server_name}?\n\n"
+                f"Будут удалены:\n"
+                f"• Сервер из списка\n"
+                f"• Все пользователи сервера из БД\n\n"
+                f"❗ Конфиг на сервере НЕ удаляется",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+            return
+        
         # Изменение SNI
         if data.startswith("v2changesni_"):
             parts = data.replace("v2changesni_", "").split("_")
@@ -1523,9 +1570,11 @@ class ClubAssistantBot:
             
             keyboard = [
                 [InlineKeyboardButton("👥 Пользователи", callback_data=f"v2users_{server_name}")],
+                [InlineKeyboardButton("➕ Добавить", callback_data=f"v2adduser_{server_name}")],
                 [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{server_name}")],
                 [InlineKeyboardButton("🔍 Диагностика", callback_data=f"v2diag_{server_name}")],
                 [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{server_name}")],
+                [InlineKeyboardButton("🗑️ Удалить сервер", callback_data=f"v2delete_{server_name}")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="v2_servers")]
             ]
             
