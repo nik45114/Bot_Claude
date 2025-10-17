@@ -593,8 +593,8 @@ class ClubManager:
             logger.error(f"❌ Ошибка создания отчета: {e}")
             return False
     
-    def get_latest_report(self, club_id: int) -> dict:
-        """Получить последний отчет по клубу"""
+    def get_latest_report(self, club_id: int) -> Optional[dict]:
+        """Получить последний отчет по клубу (или None если отчетов нет)"""
         try:
             conn = sqlite3.connect(self.db_path)
             conn.row_factory = sqlite3.Row

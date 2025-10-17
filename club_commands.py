@@ -5,7 +5,7 @@ Club Commands - Команды управления клубами
 Только для владельца
 """
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 import logging
 
@@ -33,8 +33,6 @@ class ClubCommands:
     
     async def cmd_clubs(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Главное меню клубов"""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        
         clubs = self.manager.list_clubs()
         
         text = "🏢 Управление клубами\n\n"
@@ -363,8 +361,6 @@ QR 3 753
     
     async def cmd_report_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начало создания отчета"""
-        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-        
         clubs = self.manager.list_clubs()
         
         if not clubs:
@@ -384,4 +380,4 @@ QR 3 753
             reply_markup=reply_markup
         )
         
-        return WAITING_CASH_FACT
+        return WAITING_REPORT

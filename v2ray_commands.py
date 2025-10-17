@@ -97,8 +97,6 @@ class V2RayCommands:
             logger.info(f"📤 manager.add_server returned: {result}")
             
             if result:
-                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-                
                 keyboard = [
                     [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{name}")],
                     [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{name}")],
