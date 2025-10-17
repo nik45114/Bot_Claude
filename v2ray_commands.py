@@ -5,7 +5,7 @@ V2Ray Bot Commands v2 - With REALITY Support
 Команды для управления V2Ray с REALITY через Telegram бота
 """
 
-from telegram import Update
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 import logging
 
@@ -40,51 +40,20 @@ class V2RayCommands:
   • Требуется: SSH доступ с root
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📡 Управление серверами:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-/v2add <имя> <host> <user> <pass> [sni]
-  └─ Добавить новый сервер
-  
-/v2list
-  └─ Список всех серверов
-  
-/v2setup <имя>
-  └─ Установить Xray на сервер
-  
-/v2stats <имя>
-  └─ Статистика сервера
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-👤 Управление пользователями:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-/v2user <сервер> <user_id> [email]
-  └─ Добавить пользователя
-  
-/v2remove <сервер> <uuid>
-  └─ Удалить пользователя
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-⚙️ Настройки:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-/v2sni <сервер> <сайт>
-  └─ Изменить маскировку
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🌐 REALITY маскировка:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 • По умолчанию: rutube.ru
-• Доступны: youtube.com, yandex.ru, 
-  google.com, vk.com
+• Доступны: youtube.com, yandex.ru"""
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📝 Пример использования:
-━━━━━━━━━━━━━━━━━━━━━━━━━━━
-1️⃣ /v2add main 192.168.1.100 root Pass123
-2️⃣ /v2setup main
-3️⃣ /v2user main @username Иван
-4️⃣ /v2sni main youtube.com"""
-
-        await update.message.reply_text(text)
+        keyboard = [
+            [InlineKeyboardButton("📡 Серверы", callback_data="v2_servers")],
+            [InlineKeyboardButton("👤 Пользователи", callback_data="v2_users")],
+            [InlineKeyboardButton("📖 Справка по командам", callback_data="v2_help")],
+            [InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, reply_markup=reply_markup)
     
     async def cmd_v2add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Добавление сервера: /v2add <имя> <host> <user> <pass> [sni]"""
@@ -92,6 +61,8 @@ class V2RayCommands:
             return
         
         try:
+            logger.info(f"v2add called with args: {context.args}")
+            
             if len(context.args) < 4:
                 await update.message.reply_text(
                     "Использование: /v2add <имя> <host> <user> <pass> [sni]\n\n"
@@ -107,9 +78,21 @@ class V2RayCommands:
             password = context.args[3]
             sni = context.args[4] if len(context.args) > 4 else "rutube.ru"
             
+            logger.info(f"Adding server: name={name}, host={host}, user={username}, sni={sni}")
+            
             await update.message.reply_text("⏳ Добавляю сервер...")
             
-            if self.manager.add_server(name, host, username, password, sni=sni):
+            result = self.manager.add_server(name, host, username, password, sni=sni)
+            
+            if result:
+                # Успех - отправляем с кнопками
+                keyboard = [
+                    [InlineKeyboardButton("🔧 Установить Xray", callback_data=f"v2setup_{name}")],
+                    [InlineKeyboardButton("📊 Статистика", callback_data=f"v2stats_{name}")],
+                    [InlineKeyboardButton("◀️ Назад в меню", callback_data="v2ray_menu")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                
                 await update.message.reply_text(
                     f"✅ Сервер добавлен успешно!\n\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -117,14 +100,15 @@ class V2RayCommands:
                     f"📍 Host: {host}\n"
                     f"👤 User: {username}\n"
                     f"🌐 SNI: {sni}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
-                    f"➡️ Следующий шаг:\n"
-                    f"/v2setup {name}"
+                    f"━━━━━━━━━━━━━━━━━━━━━━",
+                    reply_markup=reply_markup
                 )
             else:
+                logger.error("Manager.add_server returned False")
                 await update.message.reply_text("❌ Ошибка добавления сервера")
-            
+        
         except Exception as e:
+            logger.error(f"❌ v2add error: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_v2list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):

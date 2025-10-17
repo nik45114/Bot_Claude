@@ -504,6 +504,7 @@ class V2RayManager:
                    port: int = 22, sni: str = "rutube.ru") -> bool:
         """Добавление сервера"""
         try:
+            logger.info(f"Adding server: name={name}, host={host}, port={port}, sni={sni}")
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             cursor.execute('''
@@ -515,7 +516,7 @@ class V2RayManager:
             logger.info(f"✅ Сервер {name} добавлен")
             return True
         except Exception as e:
-            logger.error(f"❌ Ошибка добавления сервера: {e}")
+            logger.error(f"❌ Ошибка добавления сервера: {e}", exc_info=True)
             return False
     
     def get_server(self, name: str) -> Optional[V2RayServer]:
