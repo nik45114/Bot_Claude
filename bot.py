@@ -954,17 +954,14 @@ class ClubAssistantBot:
         if update.message.chat.type != 'private':
             await update.message.reply_text("✅ Отправил в личку")
     
-    async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Автообновление бота из GitHub"""
-        if not self.admin_manager.is_admin(update.effective_user.id):
-            await update.message.reply_text("❌ Доступ запрещён")
-            return
+    async def _perform_bot_update(self) -> Tuple[bool, str]:
+        """
+        Выполнить обновление бота из GitHub.
         
+        Returns:
+            Tuple[bool, str]: (success, message) - успех операции и сообщение для пользователя
+        """
         try:
-            logger.info(f"🔄 Update requested by user {update.effective_user.id}")
-            await update.message.reply_text("🔄 Проверяю наличие обновлений...")
-            
-            # Переходим в рабочую директорию
             work_dir = '/opt/club_assistant'
             
             # Fetch обновлений
@@ -979,8 +976,7 @@ class ClubAssistantBot:
             
             if result.returncode != 0:
                 logger.error(f"❌ Git fetch failed: {result.stderr}")
-                await update.message.reply_text(f"❌ Ошибка при проверке обновлений:\n{result.stderr}")
-                return
+                return False, f"❌ Ошибка при проверке обновлений:\n{result.stderr}"
             
             # Проверяем количество новых коммитов
             logger.info("🔍 Checking for new commits...")
@@ -994,17 +990,18 @@ class ClubAssistantBot:
             
             if result.returncode != 0:
                 logger.error(f"❌ Git rev-list failed: {result.stderr}")
-                await update.message.reply_text("❌ Ошибка при подсчёте коммитов")
-                return
+                return False, "❌ Ошибка при подсчёте коммитов"
             
-            commits_count = int(result.stdout.strip())
+            try:
+                commits_count = int(result.stdout.strip())
+            except ValueError as e:
+                logger.error(f"❌ Failed to parse commit count: '{result.stdout.strip()}' - {e}")
+                return False, "❌ Ошибка при обработке количества коммитов"
+            
             logger.info(f"📊 Found {commits_count} new commits")
             
             if commits_count == 0:
-                await update.message.reply_text("✅ Бот уже использует последнюю версию")
-                return
-            
-            await update.message.reply_text(f"📦 Найдено обновлений: {commits_count}\n⏳ Применяю обновления...")
+                return True, "✅ Бот уже использует последнюю версию"
             
             # Pull обновлений
             logger.info("📥 Pulling updates...")
@@ -1018,11 +1015,9 @@ class ClubAssistantBot:
             
             if result.returncode != 0:
                 logger.error(f"❌ Git pull failed: {result.stderr}")
-                await update.message.reply_text(f"❌ Ошибка при загрузке обновлений:\n{result.stderr}")
-                return
+                return False, f"❌ Ошибка при загрузке обновлений:\n{result.stderr}"
             
             logger.info("✅ Updates pulled successfully")
-            await update.message.reply_text("✅ Обновления загружены\n🔄 Перезапускаю бота...")
             
             # Перезапуск сервиса
             logger.info("🔄 Restarting service...")
@@ -1033,16 +1028,26 @@ class ClubAssistantBot:
             )
             
             logger.info("✅ Update completed successfully")
+            return True, f"✅ Обновления загружены ({commits_count} коммитов)\n🔄 Перезапускаю бота..."
             
         except subprocess.TimeoutExpired:
             logger.error("❌ Git command timeout")
-            await update.message.reply_text("❌ Превышено время ожидания операции")
-        except ValueError as e:
-            logger.error(f"❌ Invalid commits count: {e}")
-            await update.message.reply_text("❌ Ошибка при обработке количества коммитов")
+            return False, "❌ Превышено время ожидания операции"
         except Exception as e:
             logger.error(f"❌ Update failed: {e}", exc_info=True)
-            await update.message.reply_text(f"❌ Ошибка обновления:\n{str(e)}")
+            return False, f"❌ Ошибка обновления:\n{str(e)}"
+    
+    async def cmd_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Автообновление бота из GitHub"""
+        if not self.admin_manager.is_admin(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещён")
+            return
+        
+        logger.info(f"🔄 Update requested by user {update.effective_user.id}")
+        await update.message.reply_text("🔄 Проверяю наличие обновлений...")
+        
+        success, message = await self._perform_bot_update()
+        await update.message.reply_text(message)
     
     def _build_main_menu_keyboard(self, user_id: int) -> InlineKeyboardMarkup:
         """Построить клавиатуру главного меню"""
@@ -1179,89 +1184,10 @@ class ClubAssistantBot:
             
             logger.info(f"🔄 Bot update via button by user {query.from_user.id}")
             await query.answer("🔄 Начинаю обновление...")
+            await query.edit_message_text("🔄 Проверяю наличие обновлений...")
             
-            try:
-                await query.edit_message_text("🔄 Проверяю наличие обновлений...")
-                
-                # Переходим в рабочую директорию
-                work_dir = '/opt/club_assistant'
-                
-                # Fetch обновлений
-                logger.info("📥 Fetching updates from GitHub...")
-                result = subprocess.run(
-                    ['git', 'fetch', 'origin', 'main'],
-                    cwd=work_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if result.returncode != 0:
-                    logger.error(f"❌ Git fetch failed: {result.stderr}")
-                    await query.edit_message_text(f"❌ Ошибка при проверке обновлений:\n{result.stderr}")
-                    return
-                
-                # Проверяем количество новых коммитов
-                logger.info("🔍 Checking for new commits...")
-                result = subprocess.run(
-                    ['git', 'rev-list', '--count', 'HEAD..origin/main'],
-                    cwd=work_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=10
-                )
-                
-                if result.returncode != 0:
-                    logger.error(f"❌ Git rev-list failed: {result.stderr}")
-                    await query.edit_message_text("❌ Ошибка при подсчёте коммитов")
-                    return
-                
-                commits_count = int(result.stdout.strip())
-                logger.info(f"📊 Found {commits_count} new commits")
-                
-                if commits_count == 0:
-                    await query.edit_message_text("✅ Бот уже использует последнюю версию")
-                    return
-                
-                await query.edit_message_text(f"📦 Найдено обновлений: {commits_count}\n⏳ Применяю обновления...")
-                
-                # Pull обновлений
-                logger.info("📥 Pulling updates...")
-                result = subprocess.run(
-                    ['git', 'pull', 'origin', 'main'],
-                    cwd=work_dir,
-                    capture_output=True,
-                    text=True,
-                    timeout=30
-                )
-                
-                if result.returncode != 0:
-                    logger.error(f"❌ Git pull failed: {result.stderr}")
-                    await query.edit_message_text(f"❌ Ошибка при загрузке обновлений:\n{result.stderr}")
-                    return
-                
-                logger.info("✅ Updates pulled successfully")
-                await query.edit_message_text("✅ Обновления загружены\n🔄 Перезапускаю бота...")
-                
-                # Перезапуск сервиса
-                logger.info("🔄 Restarting service...")
-                subprocess.Popen(
-                    ['systemctl', 'restart', 'club_assistant.service'],
-                    stdout=subprocess.DEVNULL,
-                    stderr=subprocess.DEVNULL
-                )
-                
-                logger.info("✅ Update completed successfully")
-                
-            except subprocess.TimeoutExpired:
-                logger.error("❌ Git command timeout")
-                await query.edit_message_text("❌ Превышено время ожидания операции")
-            except ValueError as e:
-                logger.error(f"❌ Invalid commits count: {e}")
-                await query.edit_message_text("❌ Ошибка при обработке количества коммитов")
-            except Exception as e:
-                logger.error(f"❌ Update failed: {e}", exc_info=True)
-                await query.edit_message_text(f"❌ Ошибка обновления:\n{str(e)}")
+            success, message = await self._perform_bot_update()
+            await query.edit_message_text(message)
             return
         
         # V2Ray подменю
@@ -1414,7 +1340,11 @@ class ClubAssistantBot:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━"""
             
             if server_keys:
-                text += f"\n🔑 Public Key: `{server_keys.get('public_key', 'не установлен')[:32]}...`"
+                public_key = server_keys.get('public_key', 'не установлен')
+                if public_key and public_key != 'не установлен':
+                    text += f"\n🔑 Public Key: `{public_key[:32]}...`"
+                else:
+                    text += f"\n🔑 Public Key: `{public_key}`"
                 text += f"\n🆔 Short ID: `{server_keys.get('short_id', 'не установлен')}`"
             else:
                 text += "\n⚠️ Xray не установлен"
