@@ -59,12 +59,10 @@ class V2RayCommands:
 • Доступно: `youtube.com`, `yandex.ru`, `google.com`
 
 📝 *Пример использования:*
-```
-/v2add main 45.144.54.117 root MyPass123
-/v2setup main
-/v2user main @username Вася
-/v2sni main youtube.com
-```"""
+`/v2add main 45.144.54.117 root MyPass123`
+`/v2setup main`
+`/v2user main @username Вася`
+`/v2sni main youtube.com`"""
 
         await update.message.reply_text(text, parse_mode='Markdown')
     
@@ -121,13 +119,15 @@ class V2RayCommands:
         text = "📡 *Серверы V2Ray (REALITY):*\n\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
-        for i, srv in enumerate(servers, 1):
-            text += f"🔹 *{srv['name']}*\n"
-            text += f"   🖥 Host: `{srv['host']}`\n"
-            text += f"   🔌 Port: `{srv['port']}`\n"
-            text += f"   🌐 SNI: `{srv['sni']}`\n"
-            if i < len(servers):
-                text += "\n"
+        server_texts = []
+        for srv in servers:
+            srv_text = f"🔹 *{srv['name']}*\n"
+            srv_text += f"   🖥 Host: `{srv['host']}`\n"
+            srv_text += f"   🔌 Port: `{srv['port']}`\n"
+            srv_text += f"   🌐 SNI: `{srv['sni']}`"
+            server_texts.append(srv_text)
+        
+        text += "\n\n".join(server_texts)
         
         await update.message.reply_text(text, parse_mode='Markdown')
     
