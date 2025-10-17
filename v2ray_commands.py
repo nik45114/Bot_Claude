@@ -32,30 +32,57 @@ class V2RayCommands:
         
         text = """🔐 V2Ray Manager (REALITY)
 
-Команды:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 Системные требования:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  • ОС: Debian/Ubuntu Linux
+  • Python: 3.8+
+  • Требуется: SSH доступ с root
 
-📡 Серверы:
-/v2add <имя> <host> <user> <pass> [sni] - добавить сервер
-/v2list - список серверов
-/v2setup <имя> - установить Xray
-/v2stats <имя> - статистика сервера
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📡 Управление серверами:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/v2add <имя> <host> <user> <pass> [sni]
+  └─ Добавить новый сервер
+  
+/v2list
+  └─ Список всех серверов
+  
+/v2setup <имя>
+  └─ Установить Xray на сервер
+  
+/v2stats <имя>
+  └─ Статистика сервера
 
-👤 Пользователи:
-/v2user <сервер> <user_id> [email] - добавить пользователя
-/v2remove <сервер> <uuid> - удалить пользователя
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+👤 Управление пользователями:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/v2user <сервер> <user_id> [email]
+  └─ Добавить пользователя
+  
+/v2remove <сервер> <uuid>
+  └─ Удалить пользователя
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ⚙️ Настройки:
-/v2sni <сервер> <сайт> - изменить маскировку
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/v2sni <сервер> <сайт>
+  └─ Изменить маскировку
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 🌐 REALITY маскировка:
-По умолчанию: rutube.ru
-Можно: youtube.com, yandex.ru, google.com
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+• По умолчанию: rutube.ru
+• Доступны: youtube.com, yandex.ru, 
+  google.com, vk.com
 
-Пример:
-/v2add main 45.144.54.117 root MyPass123
-/v2setup main
-/v2user main @username Вася
-/v2sni main youtube.com"""
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📝 Пример использования:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1️⃣ /v2add main 192.168.1.100 root Pass123
+2️⃣ /v2setup main
+3️⃣ /v2user main @username Иван
+4️⃣ /v2sni main youtube.com"""
 
         await update.message.reply_text(text)
     
@@ -84,11 +111,15 @@ class V2RayCommands:
             
             if self.manager.add_server(name, host, username, password, sni=sni):
                 await update.message.reply_text(
-                    f"✅ Сервер '{name}' добавлен!\n\n"
-                    f"🖥 Host: {host}\n"
+                    f"✅ Сервер добавлен успешно!\n\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🖥️ Сервер: {name}\n"
+                    f"📍 Host: {host}\n"
                     f"👤 User: {username}\n"
-                    f"🌐 SNI: {sni}\n\n"
-                    f"Теперь выполни: /v2setup {name}"
+                    f"🌐 SNI: {sni}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                    f"➡️ Следующий шаг:\n"
+                    f"/v2setup {name}"
                 )
             else:
                 await update.message.reply_text("❌ Ошибка добавления сервера")
@@ -110,12 +141,13 @@ class V2RayCommands:
         text = "📡 Серверы V2Ray (REALITY):\n\n"
         
         for srv in servers:
-            text += f"🔹 {srv['name']}\n"
-            text += f"   Host: {srv['host']}\n"
-            text += f"   Port: {srv['port']}\n"
-            text += f"   SNI: {srv['sni']}\n\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            text += f"🖥️ {srv['name']}\n"
+            text += f"  📍 Host: `{srv['host']}`\n"
+            text += f"  🔌 Port: {srv['port']}\n"
+            text += f"  🌐 SNI: {srv['sni']}\n"
         
-        await update.message.reply_text(text)
+        await update.message.reply_text(text, parse_mode='Markdown')
     
     async def cmd_v2setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Установка Xray на сервер: /v2setup <имя>"""
@@ -238,11 +270,15 @@ class V2RayCommands:
             self.manager.save_user(server_name, user_id, user_uuid, vless_link, email)
             
             text = f"✅ Пользователь добавлен!\n\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
             text += f"👤 ID: {user_id}\n"
             text += f"📧 Email: {email or 'не указан'}\n"
-            text += f"🔑 UUID: {user_uuid}\n"
-            text += f"🌐 SNI: {sni}\n\n"
-            text += f"🔗 VLESS ссылка (REALITY):\n`{vless_link}`"
+            text += f"🔑 UUID: `{user_uuid}`\n"
+            text += f"🌐 SNI: {sni}\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            text += f"🔗 VLESS ссылка (REALITY):\n"
+            text += f"```\n{vless_link}\n```\n\n"
+            text += f"💡 Скопируйте ссылку в V2Ray клиент"
             
             await update.message.reply_text(text, parse_mode='Markdown')
             
@@ -281,20 +317,29 @@ class V2RayCommands:
                 await update.message.reply_text("❌ Ошибка получения статистики")
                 return
             
-            status_emoji = "🟢" if stats['running'] else "🔴"
+            status_emoji = "✅" if stats['running'] else "❌"
             
             text = f"📊 Статистика {server_name}\n\n"
-            text += f"{status_emoji} Статус: {'Работает' if stats['running'] else 'Остановлен'}\n"
-            text += f"🖥 Host: {stats['host']}\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            text += f"{status_emoji} Статус: {'🟢 Работает' if stats['running'] else '🔴 Остановлен'}\n"
+            text += f"📍 Host: {stats['host']}\n"
             text += f"🔌 Port: {stats['port']}\n"
             text += f"🔐 Protocol: {stats['protocol']}\n"
             text += f"🌐 SNI: {stats['sni']}\n"
-            text += f"👥 Пользователей: {stats['users']}"
+            text += f"👥 Пользователей: {stats['users']}\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━━━"
             
             await update.message.reply_text(text)
             
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    async def cmd_v2traffic(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Статистика трафика (placeholder)"""
+        if not self.is_owner(update.effective_user.id):
+            return
+        
+        await update.message.reply_text("⚠️ Функция в разработке")
     
     async def cmd_v2sni(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Изменение SNI: /v2sni <сервер> <сайт>"""
