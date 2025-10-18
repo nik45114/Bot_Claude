@@ -12,8 +12,23 @@ logger = logging.getLogger(__name__)
 
 
 class VideoGenerator:
-    def __init__(self, api_key: str):
-        self.api_key = api_key
+    def __init__(self, config_or_api_key):
+        """
+        Initialize VideoGenerator
+        
+        Args:
+            config_or_api_key: Either a dict with video config or api_key string (for backwards compatibility)
+        """
+        if isinstance(config_or_api_key, dict):
+            # New way: config dict
+            video_config = config_or_api_key.get('content_generation', {}).get('video', {})
+            self.enabled = video_config.get('enabled', False)
+            self.api_key = video_config.get('api_key', '')
+        else:
+            # Old way: direct api_key string (backwards compatibility)
+            self.api_key = config_or_api_key
+            self.enabled = True
+        
         self.base_url = "https://api.yesai.io/v1"
     
     def generate(self, prompt: str, duration: int = 5, resolution: str = "1080p") -> dict:
@@ -38,24 +53,36 @@ class VideoGenerator:
             data = {
                 "prompt": prompt,
                 "duration": duration,
-                "resolution": resolution
+                "resolution": resolution,
+                "model": "sora-1.0-turbo"
             }
             
-            logger.info(f"🎬 Sending video generation request for: {prompt[:50]}...")
+            logger.info(f"🎬 Sending video generation request")
+            logger.info(f"  📝 Prompt: {prompt[:100]}...")
+            logger.info(f"  ⏱️ Duration: {duration}s")
+            logger.info(f"  📺 Resolution: {resolution}")
+            logger.info(f"  🤖 Model: sora-1.0-turbo")
+            logger.info(f"  🌐 Endpoint: {self.base_url}/video/generation")
             
             response = requests.post(
-                f"{self.base_url}/video/generate",
+                f"{self.base_url}/video/generation",
                 headers=headers,
                 json=data,
-                timeout=10
+                timeout=30
             )
             
             if response.status_code != 200:
                 error_msg = f'API error: {response.status_code}'
                 logger.error(f"❌ {error_msg}")
+                try:
+                    error_detail = response.json()
+                    logger.error(f"  📄 Response: {error_detail}")
+                except:
+                    logger.error(f"  📄 Response text: {response.text[:200]}")
                 return {'error': error_msg}
             
             result = response.json()
+            logger.info(f"  ✅ Response received: {result}")
             task_id = result.get('task_id')
             
             if not task_id:
@@ -72,19 +99,24 @@ class VideoGenerator:
                 logger.info(f"⏳ Checking status... (attempt {attempt + 1}/{max_attempts})")
                 
                 status_response = requests.get(
-                    f"{self.base_url}/sora/status/{task_id}",
+                    f"{self.base_url}/video/status/{task_id}",
                     headers=headers,
                     timeout=10
                 )
                 
                 if status_response.status_code != 200:
                     logger.warning(f"⚠️ Status check failed: {status_response.status_code}")
+                    try:
+                        logger.warning(f"  📄 Response: {status_response.json()}")
+                    except:
+                        logger.warning(f"  📄 Response text: {status_response.text[:200]}")
                     continue
                 
                 status_data = status_response.json()
                 status = status_data.get('status')
                 
                 logger.info(f"📊 Status: {status}")
+                logger.debug(f"  📄 Full response: {status_data}")
                 
                 if status == 'completed':
                     video_url = status_data.get('video_url')

@@ -713,7 +713,7 @@ class ClubAssistantBot:
         if video_config.get('enabled'):
             try:
                 from video_generator import VideoGenerator
-                self.video_generator = VideoGenerator(video_config['api_key'])
+                self.video_generator = VideoGenerator(config)
                 logger.info("✅ Video generator initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize VideoGenerator: {e}")
