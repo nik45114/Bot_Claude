@@ -44,7 +44,7 @@ class VideoGenerator:
             logger.info(f"🎬 Sending video generation request for: {prompt[:50]}...")
             
             response = requests.post(
-                f"{self.base_url}/sora/generate",
+                f"{self.base_url}/video/generate",
                 headers=headers,
                 json=data,
                 timeout=10
