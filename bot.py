@@ -694,7 +694,7 @@ class ClubAssistantBot:
         self.issue_manager = IssueManager(DB_PATH)
         self.issue_commands = None  # Будет инициализирован позже с bot_app
         
-        # Content Generator - AI content generation with auto-detection
+        # Content Generator - AI content generation
         logger.info("🎨 Initializing ContentGenerator...")
         try:
             self.content_generator = ContentGenerator(
@@ -707,6 +707,20 @@ class ClubAssistantBot:
             logger.error(f"❌ Failed to initialize ContentGenerator: {e}")
             raise
         self.content_commands = ContentCommands(self.content_generator, self.admin_manager)
+        
+        # Video generation (if enabled)
+        video_config = config.get('content_generation', {}).get('video', {})
+        if video_config.get('enabled'):
+            try:
+                from video_generator import VideoGenerator
+                self.video_generator = VideoGenerator(video_config['api_key'])
+                logger.info("✅ Video generator initialized")
+            except Exception as e:
+                logger.error(f"❌ Failed to initialize VideoGenerator: {e}")
+                self.video_generator = None
+        else:
+            self.video_generator = None
+            logger.info("⏸️ Video generation disabled")
         
         openai.api_key = config['openai_api_key']
         
@@ -740,12 +754,21 @@ class ClubAssistantBot:
 • В группе: @{self.bot_username or 'bot'} вопрос
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎨 Генерация контента:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/image <описание> - создать изображение
+/video <описание> - создать видео
+
+Примеры:
+• /image космический корабль
+• /video дракон летит
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📊 Команды:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 /start - начало работы
 /help - эта справка
-/stats - статистика базы знаний
-/generate - генерация контента (текст/изображения)"""
+/stats - статистика базы знаний"""
 
         if self.admin_manager.is_admin(update.effective_user.id):
             text += "\n\n🔧 /admin - админ-панель (+ настройки GPT)"
@@ -1648,6 +1671,99 @@ class ClubAssistantBot:
         success, message = await self._perform_bot_update()
         await update.message.reply_text(message)
     
+    async def cmd_image(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate image via DALL-E 3"""
+        if not context.args:
+            await update.message.reply_text(
+                "Использование: /image <описание>\n\n"
+                "Примеры:\n"
+                "• /image красивый закат\n"
+                "• /image космический корабль"
+            )
+            return
+        
+        prompt = ' '.join(context.args)
+        user_id = update.effective_user.id
+        
+        # Show processing message
+        await update.message.reply_text("🎨 Генерирую изображение... Это может занять ~30 секунд.")
+        
+        try:
+            response = openai.Image.create(
+                model="dall-e-3",
+                prompt=prompt,
+                size="1024x1024",
+                quality="standard",
+                n=1
+            )
+            
+            image_url = response['data'][0]['url']
+            
+            # Log to database (non-blocking - don't fail if logging fails)
+            try:
+                self.content_generator.generate_image(prompt, user_id)
+            except Exception as log_err:
+                logger.warning(f"⚠️ Failed to log image generation to database: {log_err}")
+            
+            await update.message.reply_photo(
+                photo=image_url,
+                caption=f"🎨 {prompt}"
+            )
+        except Exception as e:
+            logger.error(f"❌ Image generation error: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {e}")
+    
+    async def cmd_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Generate video via Yes Ai (Sora)"""
+        if not self.video_generator:
+            await update.message.reply_text("❌ Генерация видео отключена в конфигурации")
+            return
+        
+        if not context.args:
+            await update.message.reply_text(
+                "Использование: /video <описание>\n\n"
+                "Примеры:\n"
+                "• /video кот играет с мячиком\n"
+                "• /video дракон летит над горами\n\n"
+                "⏱️ Генерация занимает 30-90 секунд"
+            )
+            return
+        
+        prompt = ' '.join(context.args)
+        user_id = update.effective_user.id
+        msg = await update.message.reply_text("🎬 Генерирую видео...")
+        
+        try:
+            result = self.video_generator.generate(prompt)
+            
+            if 'error' in result:
+                await msg.edit_text(f"❌ Ошибка: {result['error']}")
+                return
+            
+            video_url = result['video_url']
+            
+            # Log to database (non-blocking - don't fail if logging fails)
+            try:
+                self.content_generator.generate_video(
+                    prompt, 
+                    user_id, 
+                    video_url=video_url,
+                    duration=result.get('duration', 5),
+                    resolution=result.get('resolution', '1080p')
+                )
+            except Exception as log_err:
+                logger.warning(f"⚠️ Failed to log video generation to database: {log_err}")
+            
+            await update.message.reply_video(
+                video=video_url,
+                caption=f"🎬 {prompt}\n📊 {result['resolution']} • {result['duration']}s"
+            )
+            await msg.delete()
+            
+        except Exception as e:
+            logger.error(f"❌ Video generation error: {e}")
+            await msg.edit_text(f"❌ Ошибка: {e}")
+    
     def _build_main_menu_keyboard(self, user_id: int) -> InlineKeyboardMarkup:
         """Построить клавиатуру главного меню"""
         keyboard = []
@@ -1679,14 +1795,12 @@ class ClubAssistantBot:
 • Инциденты
 • Важную информацию о клубе
 
-🎨 Новое! Генерация контента:
-• Текст - статьи, посты ✍️
-• Изображения - DALL-E 3 🎨
-• Видео - скоро 🎬
+🎨 Генерация контента:
+• /image - изображения (DALL-E 3) 🎨
+• /video - видео (Sora) 🎬
 
 💬 В личке: просто спрашивай
-💬 В группе: @{self.bot_username or 'bot'} вопрос
-🎯 Команда: /generate <описание>"""
+💬 В группе: @{self.bot_username or 'bot'} вопрос"""
     
     def _get_v2ray_menu_text(self) -> str:
         """Получить текст меню V2Ray"""
@@ -1758,10 +1872,6 @@ class ClubAssistantBot:
             return
         
         # Content type info
-        if data == "content_text":
-            await self.content_commands.show_content_type_info(query, 'text')
-            return
-        
         if data == "content_image":
             await self.content_commands.show_content_type_info(query, 'image')
             return
@@ -2955,8 +3065,10 @@ class ClubAssistantBot:
         application.add_handler(CommandHandler("adminstats", self.cmd_adminstats))
         application.add_handler(CommandHandler("adminmonitor", self.cmd_adminmonitor))
         
-        # Content generation command
-        application.add_handler(CommandHandler("generate", self.content_commands.cmd_generate))
+        # Content generation commands
+        application.add_handler(CommandHandler("image", self.cmd_image))
+        if self.video_generator:
+            application.add_handler(CommandHandler("video", self.cmd_video))
         
         # === CONVERSATION HANDLERS (must be registered BEFORE CallbackQueryHandler) ===
         
