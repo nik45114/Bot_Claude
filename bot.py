@@ -1866,10 +1866,6 @@ class ClubAssistantBot:
             return
         
         # Content type info
-        if data == "content_text":
-            await self.content_commands.show_content_type_info(query, 'text')
-            return
-        
         if data == "content_image":
             await self.content_commands.show_content_type_info(query, 'image')
             return

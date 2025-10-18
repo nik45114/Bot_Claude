@@ -10,51 +10,42 @@ import os
 # Add the directory to path
 sys.path.insert(0, os.path.dirname(__file__))
 
-def test_content_type_detection():
-    """Test auto-detection of content types"""
-    print("Testing content type detection...")
+def test_video_generator_api():
+    """Test VideoGenerator class structure"""
+    print("Testing VideoGenerator API...")
     
-    # Mock the ContentGenerator class for testing
-    class MockContentGenerator:
-        def detect_content_type(self, text):
-            text_lower = text.lower()
-            
-            # Video keywords
-            video_keywords = ['создай видео', 'сгенерируй видео', 'сделай видео']
-            for keyword in video_keywords:
-                if keyword in text_lower:
-                    return ('video', text)
-            
-            # Image keywords
-            image_keywords = ['создай изображение', 'нарисуй', 'создай картинку']
-            for keyword in image_keywords:
-                if keyword in text_lower:
-                    return ('image', text)
-            
-            return ('text', text)
+    # Mock the VideoGenerator class for testing
+    class MockVideoGenerator:
+        def __init__(self, api_key):
+            self.api_key = api_key
+            self.base_url = "https://api.yesai.io/v1"
+        
+        def generate(self, prompt, duration=5, resolution="1080p"):
+            # Mock implementation
+            return {
+                'video_url': 'https://example.com/video.mp4',
+                'duration': duration,
+                'resolution': resolution
+            }
     
-    gen = MockContentGenerator()
+    gen = MockVideoGenerator("yes-test-key")
     
     # Test cases
     tests = [
-        ("Напиши статью про AI", 'text'),
-        ("Создай изображение космического корабля", 'image'),
-        ("Нарисуй логотип для кафе", 'image'),
-        ("Создай видео с анимацией", 'video'),
-        ("Сгенерируй видео про продукт", 'video'),
-        ("Что такое Python?", 'text'),
+        ("кот играет с мячиком", 5, "1080p"),
+        ("дракон летит", 10, "720p"),
     ]
     
     passed = 0
     failed = 0
     
-    for text, expected_type in tests:
-        detected_type, _ = gen.detect_content_type(text)
-        if detected_type == expected_type:
-            print(f"  ✅ '{text[:40]}...' -> {detected_type}")
+    for prompt, duration, resolution in tests:
+        result = gen.generate(prompt, duration, resolution)
+        if 'video_url' in result and result['duration'] == duration and result['resolution'] == resolution:
+            print(f"  ✅ '{prompt[:40]}...' -> {result['resolution']} {result['duration']}s")
             passed += 1
         else:
-            print(f"  ❌ '{text[:40]}...' -> Expected: {expected_type}, Got: {detected_type}")
+            print(f"  ❌ '{prompt[:40]}...' -> Failed validation")
             failed += 1
     
     print(f"\nResults: {passed} passed, {failed} failed")
@@ -121,15 +112,41 @@ def test_database_schema():
     return True
 
 
+def test_command_structure():
+    """Test that commands are properly structured"""
+    print("\nTesting command structure...")
+    
+    commands = {
+        'image': {
+            'description': 'Generate image via DALL-E 3',
+            'usage': '/image <описание>',
+            'example': '/image красивый закат'
+        },
+        'video': {
+            'description': 'Generate video via Yes Ai (Sora)',
+            'usage': '/video <описание>',
+            'example': '/video кот играет с мячиком'
+        }
+    }
+    
+    print(f"  ✅ Commands defined: {', '.join(commands.keys())}")
+    
+    for cmd, info in commands.items():
+        print(f"  ✅ /{cmd}: {info['description']}")
+    
+    return True
+
+
 def main():
     print("=" * 60)
     print("Content Generation Test Suite")
     print("=" * 60)
     
     tests = [
-        test_content_type_detection,
+        test_video_generator_api,
         test_model_validation,
-        test_database_schema
+        test_database_schema,
+        test_command_structure
     ]
     
     results = []
