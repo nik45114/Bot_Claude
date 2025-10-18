@@ -23,7 +23,9 @@ class VideoGenerator:
             # New way: config dict
             video_config = config_or_api_key.get('content_generation', {}).get('video', {})
             self.enabled = video_config.get('enabled', False)
-            self.api_key = video_config.get('api_key', '')
+            self.api_key = video_config.get('api_key', None)
+            if not self.api_key:
+                logger.warning("⚠️ Video API key not found in config")
         else:
             # Old way: direct api_key string (backwards compatibility)
             self.api_key = config_or_api_key
@@ -77,8 +79,9 @@ class VideoGenerator:
                 try:
                     error_detail = response.json()
                     logger.error(f"  📄 Response: {error_detail}")
-                except:
+                except (ValueError, requests.exceptions.JSONDecodeError) as e:
                     logger.error(f"  📄 Response text: {response.text[:200]}")
+                    logger.debug(f"  Failed to parse JSON: {e}")
                 return {'error': error_msg}
             
             result = response.json()
@@ -108,8 +111,9 @@ class VideoGenerator:
                     logger.warning(f"⚠️ Status check failed: {status_response.status_code}")
                     try:
                         logger.warning(f"  📄 Response: {status_response.json()}")
-                    except:
+                    except (ValueError, requests.exceptions.JSONDecodeError) as e:
                         logger.warning(f"  📄 Response text: {status_response.text[:200]}")
+                        logger.debug(f"  Failed to parse JSON: {e}")
                     continue
                 
                 status_data = status_response.json()
