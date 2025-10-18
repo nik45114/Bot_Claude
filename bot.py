@@ -1699,8 +1699,11 @@ class ClubAssistantBot:
             
             image_url = response['data'][0]['url']
             
-            # Log to database
-            self.content_generator.generate_image(prompt, user_id)
+            # Log to database (non-blocking - don't fail if logging fails)
+            try:
+                self.content_generator.generate_image(prompt, user_id)
+            except Exception as log_err:
+                logger.warning(f"⚠️ Failed to log image generation to database: {log_err}")
             
             await update.message.reply_photo(
                 photo=image_url,
@@ -1739,14 +1742,17 @@ class ClubAssistantBot:
             
             video_url = result['video_url']
             
-            # Log to database
-            self.content_generator.generate_video(
-                prompt, 
-                user_id, 
-                video_url=video_url,
-                duration=result.get('duration', 5),
-                resolution=result.get('resolution', '1080p')
-            )
+            # Log to database (non-blocking - don't fail if logging fails)
+            try:
+                self.content_generator.generate_video(
+                    prompt, 
+                    user_id, 
+                    video_url=video_url,
+                    duration=result.get('duration', 5),
+                    resolution=result.get('resolution', '1080p')
+                )
+            except Exception as log_err:
+                logger.warning(f"⚠️ Failed to log video generation to database: {log_err}")
             
             await update.message.reply_video(
                 video=video_url,
