@@ -107,10 +107,19 @@ class ProductCommands:
             await query.edit_message_text("❌ Доступно только владельцу")
             return
         
-        text = self.product_manager.format_all_debts_report()
+        # Определяем режим сортировки из callback_data
+        sort_by = 'debt'  # по умолчанию
+        if query.data == 'product_all_debts_by_name':
+            sort_by = 'name'
+        
+        text = self.product_manager.format_all_debts_report(sort_by=sort_by)
         
         keyboard = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data="product_all_debts")],
+            [
+                InlineKeyboardButton("📊 По долгу", callback_data="product_all_debts"),
+                InlineKeyboardButton("👤 По имени", callback_data="product_all_debts_by_name")
+            ],
+            [InlineKeyboardButton("📋 Детальный отчёт", callback_data="product_detailed_debts")],
             [InlineKeyboardButton("◀️ Назад", callback_data="product_menu")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -291,11 +300,58 @@ class ProductCommands:
             await query.edit_message_text("❌ Доступно только владельцу")
             return
         
-        text = self.product_manager.format_products_report()
+        # Определяем режим сортировки из callback_data
+        sort_by = 'admin'  # по умолчанию
+        if query.data == 'product_report_by_product':
+            sort_by = 'product'
+        
+        text = self.product_manager.format_products_report(sort_by=sort_by)
         
         keyboard = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data="product_report")],
+            [
+                InlineKeyboardButton("👤 По админам", callback_data="product_report"),
+                InlineKeyboardButton("📦 По товарам", callback_data="product_report_by_product")
+            ],
+            [InlineKeyboardButton("📊 Сводка", callback_data="product_summary")],
             [InlineKeyboardButton("◀️ Назад", callback_data="product_menu")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    
+    async def show_products_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать сводку по товарам (только владелец)"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(query.from_user.id):
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return
+        
+        text = self.product_manager.format_products_summary_report()
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить", callback_data="product_summary")],
+            [InlineKeyboardButton("◀️ К отчётам", callback_data="product_report")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(text, reply_markup=reply_markup)
+    
+    async def show_detailed_debts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать детальный отчёт по долгам (только владелец)"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(query.from_user.id):
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return
+        
+        text = self.product_manager.format_detailed_debts_report()
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить", callback_data="product_detailed_debts")],
+            [InlineKeyboardButton("◀️ К долгам", callback_data="product_all_debts")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
