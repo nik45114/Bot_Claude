@@ -41,6 +41,8 @@ try:
     from product_commands import ProductCommands, PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY, PRODUCT_EDIT_PRICE, PRODUCT_SET_NICKNAME
     from issue_manager import IssueManager
     from issue_commands import IssueCommands, ISSUE_SELECT_CLUB, ISSUE_ENTER_DESCRIPTION, ISSUE_EDIT_DESCRIPTION
+    from content_generator import ContentGenerator
+    from content_commands import ContentCommands
 except ImportError as e:
     print(f"❌ Не найдены модули v4.10: {e}")
     sys.exit(1)
@@ -486,6 +488,20 @@ class ClubAssistantBot:
         self.issue_manager = IssueManager(DB_PATH)
         self.issue_commands = None  # Будет инициализирован позже с bot_app
         
+        # Content Generator - AI content generation with auto-detection
+        logger.info("🎨 Initializing ContentGenerator...")
+        try:
+            self.content_generator = ContentGenerator(
+                DB_PATH, 
+                config['openai_api_key'],
+                config.get('gpt_model', 'gpt-4o-mini')
+            )
+            logger.info("✅ ContentGenerator initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ContentGenerator: {e}")
+            raise
+        self.content_commands = ContentCommands(self.content_generator, self.admin_manager)
+        
         openai.api_key = config['openai_api_key']
         
         self.bot_username = None
@@ -522,10 +538,11 @@ class ClubAssistantBot:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 /start - начало работы
 /help - эта справка
-/stats - статистика базы знаний"""
+/stats - статистика базы знаний
+/generate - генерация контента (текст/изображения)"""
 
         if self.admin_manager.is_admin(update.effective_user.id):
-            text += "\n\n🔧 /admin - админ-панель"
+            text += "\n\n🔧 /admin - админ-панель (+ настройки GPT)"
             text += "\n🔐 /v2ray - управление VPN"
 
         await update.message.reply_text(text)
@@ -542,6 +559,14 @@ class ClubAssistantBot:
   • Инструкции по работе
   • Инциденты
   • Важную информацию о клубе
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🎨 Генерация контента (NEW!):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+Автоматически определяю тип:
+  • Текст - статьи, посты, описания
+  • Изображения - DALL-E 3
+  • Видео - скоро доступно
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💬 Как пользоваться:
@@ -1091,6 +1116,7 @@ class ClubAssistantBot:
         keyboard = []
         keyboard.append([InlineKeyboardButton("📖 Справка", callback_data="help")])
         keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data="stats")])
+        keyboard.append([InlineKeyboardButton("🎨 Генерация контента", callback_data="content_menu")])
         
         if self.admin_manager.is_admin(user_id):
             keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
@@ -1116,8 +1142,14 @@ class ClubAssistantBot:
 • Инциденты
 • Важную информацию о клубе
 
+🎨 Новое! Генерация контента:
+• Текст - статьи, посты ✍️
+• Изображения - DALL-E 3 🎨
+• Видео - скоро 🎬
+
 💬 В личке: просто спрашивай
-💬 В группе: @{self.bot_username or 'bot'} вопрос"""
+💬 В группе: @{self.bot_username or 'bot'} вопрос
+🎯 Команда: /generate <описание>"""
     
     def _get_v2ray_menu_text(self) -> str:
         """Получить текст меню V2Ray"""
@@ -1183,6 +1215,40 @@ class ClubAssistantBot:
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
             return
         
+        # Content generation menu
+        if data == "content_menu":
+            await self.content_commands.show_content_menu(query)
+            return
+        
+        # Content type info
+        if data == "content_text":
+            await self.content_commands.show_content_type_info(query, 'text')
+            return
+        
+        if data == "content_image":
+            await self.content_commands.show_content_type_info(query, 'image')
+            return
+        
+        if data == "content_video":
+            await self.content_commands.show_content_type_info(query, 'video')
+            return
+        
+        # Content generation history
+        if data == "content_history":
+            await self.content_commands.show_generation_history(query)
+            return
+        
+        # Model settings
+        if data == "model_settings":
+            await self.content_commands.show_model_settings(query)
+            return
+        
+        # Model change handlers
+        if data.startswith("model_"):
+            model_name = data.replace("model_", "")
+            await self.content_commands.handle_model_change(query, model_name)
+            return
+        
         # Админ-панель
         if data == "admin":
             if not self.admin_manager.is_admin(query.from_user.id):
@@ -1202,6 +1268,7 @@ class ClubAssistantBot:
 /addadmin <id>"""
             
             keyboard = [
+                [InlineKeyboardButton("⚙️ Настройки GPT модели", callback_data="model_settings")],
                 [InlineKeyboardButton("🔄 Обновить бота", callback_data="admin_update")],
                 [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
             ]
@@ -2279,6 +2346,9 @@ class ClubAssistantBot:
         application.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         application.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         application.add_handler(CommandHandler("update", self.cmd_update))
+        
+        # Content generation command
+        application.add_handler(CommandHandler("generate", self.content_commands.cmd_generate))
         
         # === CONVERSATION HANDLERS (must be registered BEFORE CallbackQueryHandler) ===
         
