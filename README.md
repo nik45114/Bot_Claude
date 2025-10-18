@@ -288,6 +288,7 @@ Owner: /v2add main 185.123.45.67 root MyPass123
 
 - [V2RAY_GUIDE.md](V2RAY_GUIDE.md) - Руководство по V2Ray
 - [CLUB_MANAGEMENT_GUIDE.md](CLUB_MANAGEMENT_GUIDE.md) - Руководство по Club Management
+- [PRODUCT_DB_MIGRATION_GUIDE.md](PRODUCT_DB_MIGRATION_GUIDE.md) - Руководство по миграции и диагностике базы данных товаров
 - [UPDATE_TO_V4.11.md](UPDATE_TO_V4.11.md) - Инструкция по обновлению
 
 ---
@@ -312,6 +313,24 @@ pip3 install -r requirements.txt --break-system-packages
 /fixdb       # Исправление базы
 /cleanup     # Очистка дубликатов
 /deletetrash # Удаление мусора
+```
+
+### Проблемы с таблицами товаров
+```bash
+# Диагностика базы данных товаров
+python3 diagnose_product_db.py
+
+# Создание отсутствующих таблиц
+python3 migrate_product_db.py
+
+# Сброс и пересоздание таблиц (с сохранением данных)
+python3 reset_product_db.py
+
+# Полная очистка таблиц товаров
+python3 reset_product_db.py --clean
+
+# Подробная документация
+# См. PRODUCT_DB_MIGRATION_GUIDE.md
 ```
 
 ### V2Ray не подключается
