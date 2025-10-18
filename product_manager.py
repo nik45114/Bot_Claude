@@ -22,63 +22,130 @@ class ProductManager:
     
     def _init_db(self):
         """Инициализация таблиц"""
-        conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
-        # Таблица товаров
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                name TEXT NOT NULL UNIQUE,
-                cost_price REAL NOT NULL,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-        ''')
-        
-        # Таблица взятых товаров админами
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS admin_products (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                admin_id INTEGER NOT NULL,
-                admin_name TEXT NOT NULL,
-                product_id INTEGER NOT NULL,
-                product_name TEXT NOT NULL,
-                quantity INTEGER NOT NULL,
-                cost_price REAL NOT NULL,
-                total_debt REAL NOT NULL,
-                taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                settled BOOLEAN DEFAULT FALSE,
-                FOREIGN KEY (product_id) REFERENCES products(id)
-            )
-        ''')
-        
-        conn.commit()
-        conn.close()
-        logger.info("✅ Product Manager database initialized")
-    
-    def add_product(self, name: str, cost_price: float) -> bool:
-        """Добавить новый товар"""
         try:
+            logger.info(f"🔧 Initializing Product Manager database at: {self.db_path}")
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
+            # Таблица товаров
+            logger.info("📋 Creating products table...")
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL UNIQUE,
+                    cost_price REAL NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            logger.info("✅ Products table created/verified")
+            
+            # Таблица взятых товаров админами
+            logger.info("📋 Creating admin_products table...")
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS admin_products (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    admin_id INTEGER NOT NULL,
+                    admin_name TEXT NOT NULL,
+                    product_id INTEGER NOT NULL,
+                    product_name TEXT NOT NULL,
+                    quantity INTEGER NOT NULL,
+                    cost_price REAL NOT NULL,
+                    total_debt REAL NOT NULL,
+                    taken_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    settled BOOLEAN DEFAULT FALSE,
+                    FOREIGN KEY (product_id) REFERENCES products(id)
+                )
+            ''')
+            logger.info("✅ Admin_products table created/verified")
+            
+            conn.commit()
+            
+            # Verify tables exist
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
+            if cursor.fetchone():
+                logger.info("✅ Products table exists in database")
+            else:
+                logger.error("❌ Products table was not created!")
+                
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='admin_products'")
+            if cursor.fetchone():
+                logger.info("✅ Admin_products table exists in database")
+            else:
+                logger.error("❌ Admin_products table was not created!")
+            
+            conn.close()
+            logger.info("✅ Product Manager database initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Error initializing Product Manager database: {e}")
+            raise
+    
+    def add_product(self, name: str, cost_price: float) -> bool:
+        """Добавить новый товар"""
+        logger.info(f"🔄 Attempting to add product: name='{name}', cost_price={cost_price}")
+        
+        # Validate inputs
+        if not name or not name.strip():
+            logger.error("❌ Product name is empty or invalid")
+            return False
+        
+        if cost_price <= 0:
+            logger.error(f"❌ Invalid cost_price: {cost_price} (must be > 0)")
+            return False
+        
+        try:
+            logger.info(f"📂 Connecting to database: {self.db_path}")
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Check if products table exists
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='products'")
+            if not cursor.fetchone():
+                logger.error("❌ Products table does not exist! Attempting to recreate...")
+                self._init_db()
+                # Reconnect after recreation
+                conn.close()
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+            
+            # Check if product already exists
+            logger.info(f"🔍 Checking if product '{name}' already exists...")
+            cursor.execute('SELECT id FROM products WHERE name = ?', (name,))
+            existing = cursor.fetchone()
+            if existing:
+                logger.error(f"❌ Product '{name}' already exists with ID: {existing[0]}")
+                conn.close()
+                return False
+            
+            logger.info(f"➕ Inserting product into database...")
             cursor.execute('''
                 INSERT INTO products (name, cost_price)
                 VALUES (?, ?)
             ''', (name, cost_price))
             
-            conn.commit()
-            conn.close()
+            product_id = cursor.lastrowid
+            logger.info(f"✅ Product inserted with ID: {product_id}")
             
-            logger.info(f"✅ Product added: {name} - {cost_price} ₽")
+            conn.commit()
+            logger.info("✅ Transaction committed")
+            
+            conn.close()
+            logger.info("✅ Database connection closed")
+            
+            logger.info(f"✅ Product added successfully: {name} - {cost_price} ₽ [ID: {product_id}]")
             return True
             
-        except sqlite3.IntegrityError:
-            logger.error(f"❌ Product {name} already exists")
+        except sqlite3.IntegrityError as e:
+            logger.error(f"❌ IntegrityError adding product '{name}': {e}")
+            return False
+        except sqlite3.OperationalError as e:
+            logger.error(f"❌ OperationalError adding product '{name}': {e}")
+            logger.error("   This may indicate a database schema issue or locked database")
             return False
         except Exception as e:
-            logger.error(f"❌ Error adding product: {e}")
+            logger.error(f"❌ Unexpected error adding product '{name}': {type(e).__name__}: {e}")
+            import traceback
+            logger.error(f"   Traceback: {traceback.format_exc()}")
             return False
     
     def update_product_price(self, product_id: int, new_price: float) -> bool:

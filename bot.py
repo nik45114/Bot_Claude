@@ -473,7 +473,13 @@ class ClubAssistantBot:
         self.cash_commands = None  # Будет инициализирован позже с bot_app
         
         # Product Manager - управление товарами (для владельца и админов)
-        self.product_manager = ProductManager(DB_PATH)
+        logger.info("🔧 Initializing ProductManager...")
+        try:
+            self.product_manager = ProductManager(DB_PATH)
+            logger.info("✅ ProductManager initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ProductManager: {e}")
+            raise
         self.product_commands = None  # Будет инициализирован позже
         
         # Issue Manager - отслеживание проблем (для владельца и админов)
