@@ -15,4 +15,3 @@ env/
 # Системное
 .DS_Store
 *.log
-test_admin_monitoring.py
