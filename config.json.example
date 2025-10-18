@@ -18,5 +18,20 @@
     "max_context_results": 3,
     "temperature": 0.3,
     "max_tokens": 500
+  },
+  "content_generation": {
+    "image": {
+      "enabled": true,
+      "model": "dall-e-3",
+      "size": "1024x1024",
+      "quality": "standard"
+    },
+    "video": {
+      "enabled": true,
+      "provider": "yesai",
+      "api_key": "yes-06b045099e782bd35a48c69699e8d77a6a23f69983a02d06caacceb8aaa4",
+      "duration": 5,
+      "resolution": "1080p"
+    }
   }
 }

@@ -19,57 +19,7 @@ class ContentCommands:
         self.content_generator = content_generator
         self.admin_manager = admin_manager
     
-    async def cmd_generate(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle /generate command"""
-        user_id = update.effective_user.id
-        
-        if not context.args:
-            await update.message.reply_text(
-                "🎨 Генерация контента\n\n"
-                "Использование:\n"
-                "/generate <ваш запрос>\n\n"
-                "Примеры:\n"
-                "• /generate напиши статью про Python\n"
-                "• /generate создай изображение космического корабля\n"
-                "• /generate создай видео с анимацией логотипа\n\n"
-                "💡 Бот автоматически определит тип контента!"
-            )
-            return
-        
-        prompt = ' '.join(context.args)
-        
-        # Show typing indicator
-        await update.message.reply_chat_action('typing')
-        
-        # Detect content type and show appropriate message
-        content_type, _ = self.content_generator.detect_content_type(prompt)
-        
-        if content_type == 'image':
-            await update.message.reply_text("🎨 Генерирую изображение... Это может занять ~30 секунд.")
-        elif content_type == 'video':
-            await update.message.reply_text("🎬 Обрабатываю запрос на видео...")
-        else:
-            await update.message.reply_text("✍️ Генерирую текст...")
-        
-        # Generate content
-        result = self.content_generator.generate_content(prompt, user_id)
-        
-        if result['success']:
-            if result['type'] == 'image':
-                await update.message.reply_photo(
-                    photo=result['url'],
-                    caption=f"🎨 Изображение создано!\nМодель: {result['model']}"
-                )
-            elif result['type'] == 'video':
-                await update.message.reply_text(result['content'])
-            else:
-                await update.message.reply_text(
-                    f"✅ Контент создан!\nМодель: {result['model']}\n\n{result['content']}"
-                )
-        else:
-            await update.message.reply_text(
-                f"❌ Ошибка генерации: {result.get('error', 'Неизвестная ошибка')}"
-            )
+
     
     async def show_content_menu(self, query):
         """Show content generation menu"""

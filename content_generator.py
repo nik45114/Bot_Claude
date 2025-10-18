@@ -2,21 +2,20 @@
 # -*- coding: utf-8 -*-
 """
 Content Generation Manager
-Handles AI content generation with auto-detection (text, images, video)
+Handles AI content generation (text, images, video)
 """
 
 import logging
 import sqlite3
 from datetime import datetime
-from typing import Optional, Dict, Tuple
+from typing import Optional, Dict
 import openai
-import re
 
 logger = logging.getLogger(__name__)
 
 
 class ContentGenerator:
-    """Manages AI content generation with auto-detection"""
+    """Manages AI content generation"""
     
     def __init__(self, db_path: str, openai_api_key: str, gpt_model: str = 'gpt-4o-mini'):
         self.db_path = db_path
@@ -62,44 +61,7 @@ class ContentGenerator:
         except Exception as e:
             logger.error(f"❌ Error initializing content generation tables: {e}")
     
-    def detect_content_type(self, text: str) -> Tuple[str, str]:
-        """
-        Auto-detect what type of content the user wants to generate
-        Returns: (content_type, cleaned_prompt)
-        """
-        text_lower = text.lower()
-        
-        # Image generation keywords
-        image_keywords = [
-            'создай изображение', 'сгенерируй картинку', 'нарисуй', 
-            'создай картинку', 'generate image', 'create image',
-            'нарисуй мне', 'покажи как выглядит', 'изобрази',
-            'создай фото', 'сделай картинку'
-        ]
-        
-        # Video generation keywords
-        video_keywords = [
-            'создай видео', 'сгенерируй видео', 'сделай видео',
-            'generate video', 'create video', 'make video',
-            'видеоролик', 'анимацию'
-        ]
-        
-        # Check for video request
-        for keyword in video_keywords:
-            if keyword in text_lower:
-                # Remove the keyword to get clean prompt
-                prompt = re.sub(r'(создай|сгенерируй|сделай|generate|create|make)\s+(видео|video)', '', text, flags=re.IGNORECASE)
-                return ('video', prompt.strip())
-        
-        # Check for image request
-        for keyword in image_keywords:
-            if keyword in text_lower:
-                # Remove the keyword to get clean prompt
-                prompt = re.sub(r'(создай|сгенерируй|нарисуй|создай|generate|create|нарисуй мне|покажи как выглядит|изобрази|сделай)\s+(изображение|картинку|картинку|фото|image)', '', text, flags=re.IGNORECASE)
-                return ('image', prompt.strip())
-        
-        # Default to text generation
-        return ('text', text)
+
     
     def generate_text(self, prompt: str, user_id: int) -> Dict:
         """Generate text content using GPT"""
@@ -170,35 +132,32 @@ class ContentGenerator:
                 'error': str(e)
             }
     
-    def generate_video(self, prompt: str, user_id: int) -> Dict:
+    def generate_video(self, prompt: str, user_id: int, video_url: str = None, duration: int = 5, resolution: str = "1080p") -> Dict:
         """
-        Generate video (placeholder for future implementation)
-        This can be integrated with services like RunwayML, Pika Labs, or other video generation APIs
+        Log video generation to database
+        Note: Actual video generation is now handled by VideoGenerator class
         """
         try:
-            generation_id = self._log_generation(user_id, prompt, 'video', 'video-api')
+            generation_id = self._log_generation(user_id, prompt, 'video', 'yesai-sora')
             
-            # TODO: Integrate with video generation API
-            # For now, return a placeholder message
-            message = (
-                "🎬 Генерация видео скоро будет доступна!\n\n"
-                f"Ваш запрос сохранен: {prompt}\n\n"
-                "В будущих версиях будет интеграция с:\n"
-                "• RunwayML Gen-2\n"
-                "• Pika Labs\n"
-                "• Stable Video Diffusion"
-            )
-            
-            self._update_generation(generation_id, 'pending', generated_content=message)
-            
-            return {
-                'success': True,
-                'type': 'video',
-                'content': message,
-                'model': 'video-api (coming soon)'
-            }
+            if video_url:
+                self._update_generation(generation_id, 'completed', video_url=video_url)
+                return {
+                    'success': True,
+                    'type': 'video',
+                    'url': video_url,
+                    'model': 'yesai-sora',
+                    'duration': duration,
+                    'resolution': resolution
+                }
+            else:
+                self._update_generation(generation_id, 'failed', error_message='No video URL provided')
+                return {
+                    'success': False,
+                    'error': 'No video URL provided'
+                }
         except Exception as e:
-            logger.error(f"❌ Video generation error: {e}")
+            logger.error(f"❌ Video generation logging error: {e}")
             if 'generation_id' in locals():
                 self._update_generation(generation_id, 'failed', error_message=str(e))
             return {
@@ -206,18 +165,7 @@ class ContentGenerator:
                 'error': str(e)
             }
     
-    def generate_content(self, text: str, user_id: int) -> Dict:
-        """Auto-detect and generate appropriate content"""
-        content_type, prompt = self.detect_content_type(text)
-        
-        logger.info(f"🎨 Detected content type: {content_type} for prompt: {prompt[:50]}...")
-        
-        if content_type == 'image':
-            return self.generate_image(prompt, user_id)
-        elif content_type == 'video':
-            return self.generate_video(prompt, user_id)
-        else:
-            return self.generate_text(prompt, user_id)
+
     
     def _log_generation(self, user_id: int, request_text: str, content_type: str, model_used: str) -> int:
         """Log a generation request to database"""
