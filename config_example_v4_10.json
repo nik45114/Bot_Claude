@@ -18,5 +18,11 @@
     "max_context_results": 3,
     "temperature": 0.3,
     "max_tokens": 500
+  },
+  "content_generation": {
+    "enabled": true,
+    "text_max_tokens": 1000,
+    "image_model": "dall-e-3",
+    "image_size": "1024x1024"
   }
 }
