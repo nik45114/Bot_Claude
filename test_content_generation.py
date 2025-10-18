@@ -65,14 +65,17 @@ def test_model_validation():
     """Test GPT model validation"""
     print("\nTesting GPT model validation...")
     
-    valid_models = ['gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo', 'gpt-4-turbo']
+    # Define valid models once to avoid duplication (DRY principle)
+    VALID_MODELS = ['gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo', 'gpt-4-turbo']
+    
+    valid_test_cases = VALID_MODELS  # Test all valid models
     invalid_models = ['gpt-5', 'invalid-model', '']
     
     passed = 0
     failed = 0
     
-    for model in valid_models:
-        if model in ['gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo', 'gpt-4-turbo']:
+    for model in valid_test_cases:
+        if model in VALID_MODELS:
             print(f"  ✅ {model} is valid")
             passed += 1
         else:
@@ -80,7 +83,7 @@ def test_model_validation():
             failed += 1
     
     for model in invalid_models:
-        if model not in ['gpt-4o-mini', 'gpt-4o', 'gpt-4', 'gpt-3.5-turbo', 'gpt-4-turbo']:
+        if model not in VALID_MODELS:
             print(f"  ✅ {model} correctly rejected")
             passed += 1
         else:

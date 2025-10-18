@@ -211,14 +211,20 @@ Future integrations:
 
 ## Cost Considerations
 
-Approximate costs (as of 2024):
-- **GPT-4o Mini**: ~$0.00015 per 1K tokens (cheapest)
-- **GPT-4o**: ~$0.0025 per 1K tokens
-- **GPT-4 Turbo**: ~$0.01 per 1K tokens
-- **GPT-4**: ~$0.03 per 1K tokens (most expensive)
-- **DALL-E 3**: ~$0.04 per image
-
 💡 Tip: Start with gpt-4o-mini and upgrade only if needed.
+
+For current pricing information, please refer to:
+- OpenAI Pricing Page: https://openai.com/pricing
+- Pricing may vary based on your OpenAI plan and usage volume
+- Monitor your usage in the OpenAI dashboard to track costs
+
+Relative cost comparison (from cheapest to most expensive):
+1. **GPT-4o Mini** - Most cost-effective
+2. **GPT-3.5 Turbo** - Budget option
+3. **GPT-4o** - Balanced
+4. **GPT-4 Turbo** - Advanced
+5. **GPT-4** - Premium pricing
+6. **DALL-E 3** - Per-image pricing
 
 ## Support
 
