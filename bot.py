@@ -1288,7 +1288,7 @@ class ClubAssistantBot:
             return
         
         # Check for callbacks that should be handled by ConversationHandlers
-        if data in ("product_add", "product_edit_price", "product_set_nickname", "product_clear_debt"):
+        if data in ("product_add", "product_edit_price", "product_set_nickname", "product_clear_debt", "issue_report"):
             # These are handled through conversation handlers
             return
         
@@ -1297,11 +1297,6 @@ class ClubAssistantBot:
             return
         
         # Проблемы клуба
-        # Check for callbacks that should be handled by ConversationHandlers
-        if data == "issue_report":
-            # This is handled through conversation handler
-            return
-        
         if data == "issue_menu":
             await self.issue_commands.show_issue_menu(update, context)
             return
