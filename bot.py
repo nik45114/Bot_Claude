@@ -1287,6 +1287,11 @@ class ClubAssistantBot:
             await self.product_commands.clear_all_debts_execute(update, context)
             return
         
+        # Check for callbacks that should be handled by ConversationHandlers
+        if data in ("product_add", "product_edit_price", "product_set_nickname", "product_clear_debt", "issue_report"):
+            # These are handled through conversation handlers
+            return
+        
         if data.startswith("product_clear_") and data != "product_clear_settled":
             await self.product_commands.clear_admin_debt(update, context)
             return
