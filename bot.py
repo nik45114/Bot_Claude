@@ -1288,7 +1288,7 @@ class ClubAssistantBot:
             return
         
         # Check for callbacks that should be handled by ConversationHandlers
-        if data == "product_add" or data == "product_edit_price" or data == "product_set_nickname" or data == "product_clear_debt":
+        if data in ("product_add", "product_edit_price", "product_set_nickname", "product_clear_debt"):
             # These are handled through conversation handlers
             return
         
