@@ -27,7 +27,7 @@ The issue reported that "adding products doesn't work" with possible causes:
 
 ### 2. Enhanced add_product Method (`product_manager.py`)
 
-#### Before:
+#### Before (simplified example showing original logic):
 ```python
 def add_product(self, name: str, cost_price: float) -> bool:
     try:

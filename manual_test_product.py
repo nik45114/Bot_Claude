@@ -55,7 +55,7 @@ def main():
     
     print("📋 Step 5: Try to add product with invalid price")
     print("-" * 70)
-    result4 = pm.add_product('Invalid Product', 0)
+    result4 = pm.add_product('Invalid Product', -10.0)
     print(f"Result: {result4} (should be False)")
     print()
     
