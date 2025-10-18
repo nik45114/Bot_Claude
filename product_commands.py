@@ -14,6 +14,7 @@ logger = logging.getLogger(__name__)
 # Состояния conversation handler
 PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY = range(4)
 PRODUCT_EDIT_PRICE = 5
+PRODUCT_SET_NICKNAME = 6
 
 
 class ProductCommands:
@@ -62,6 +63,7 @@ class ProductCommands:
             keyboard.append([InlineKeyboardButton("💰 Долги админов", callback_data="product_all_debts")])
             keyboard.append([InlineKeyboardButton("➕ Добавить товар", callback_data="product_add")])
             keyboard.append([InlineKeyboardButton("✏️ Изменить цену", callback_data="product_edit_price")])
+            keyboard.append([InlineKeyboardButton("👤 Установить никнейм", callback_data="product_set_nickname")])
             keyboard.append([InlineKeyboardButton("🗑️ Обнулить долг", callback_data="product_clear_debt")])
             keyboard.append([InlineKeyboardButton("🧹 Обнулить списанное", callback_data="product_clear_settled")])
         
@@ -591,4 +593,109 @@ class ProductCommands:
         context.user_data.clear()
         await self.show_product_menu(update, context)
         return ConversationHandler.END
+    
+    async def start_set_nickname(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Начать установку никнейма админа (только владелец)"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(query.from_user.id):
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return ConversationHandler.END
+        
+        # Получаем список админов с долгами
+        debts = self.product_manager.get_all_debts()
+        
+        if not debts:
+            await query.edit_message_text(
+                "❌ Нет админов с долгами\n\n"
+                "Никнеймы можно устанавливать только админам, которые брали товары.",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Назад", callback_data="product_menu")
+                ]])
+            )
+            return ConversationHandler.END
+        
+        # Создаём кнопки с админами
+        keyboard = []
+        for admin_id, data in debts.items():
+            display_text = data['name']
+            if data.get('original_name') and data['name'] != data['original_name']:
+                display_text += f" ({data['original_name']})"
+            
+            keyboard.append([InlineKeyboardButton(
+                display_text,
+                callback_data=f"product_nickname_{admin_id}"
+            )])
+        
+        keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="product_menu")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            "👤 Выберите админа для установки никнейма:",
+            reply_markup=reply_markup
+        )
+        
+        return PRODUCT_SET_NICKNAME
+    
+    async def select_admin_for_nickname(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Выбор админа для установки никнейма"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Извлекаем ID админа из callback_data
+        admin_id = int(query.data.split('_')[-1])
+        context.user_data['nickname_admin_id'] = admin_id
+        
+        # Получаем текущий никнейм
+        current_nickname = self.product_manager.get_admin_nickname(admin_id)
+        
+        text = f"👤 Установка никнейма для админа\n\n"
+        text += f"ID: {admin_id}\n"
+        if current_nickname:
+            text += f"Текущий никнейм: {current_nickname}\n\n"
+        else:
+            text += "Никнейм не установлен\n\n"
+        text += "Введите новый никнейм:"
+        
+        await query.edit_message_text(text)
+        
+        return PRODUCT_SET_NICKNAME
+    
+    async def enter_nickname(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Ввод никнейма"""
+        nickname = update.message.text.strip()
+        
+        if not nickname or len(nickname) < 2:
+            await update.message.reply_text("❌ Никнейм должен содержать минимум 2 символа")
+            return PRODUCT_SET_NICKNAME
+        
+        if len(nickname) > 50:
+            await update.message.reply_text("❌ Никнейм слишком длинный (максимум 50 символов)")
+            return PRODUCT_SET_NICKNAME
+        
+        admin_id = context.user_data.get('nickname_admin_id')
+        
+        if not admin_id:
+            await update.message.reply_text("❌ Ошибка: не выбран админ")
+            return ConversationHandler.END
+        
+        success = self.product_manager.set_admin_nickname(admin_id, nickname)
+        
+        if success:
+            text = f"✅ Никнейм установлен\n\n"
+            text += f"👤 Админ ID: {admin_id}\n"
+            text += f"📝 Никнейм: {nickname}\n\n"
+            text += "Этот никнейм будет использоваться во всех отчётах."
+        else:
+            text = "❌ Ошибка установки никнейма"
+        
+        keyboard = [[InlineKeyboardButton("◀️ В меню товаров", callback_data="product_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(text, reply_markup=reply_markup)
+        
+        context.user_data.clear()
+        return ConversationHandler.END
+
 
