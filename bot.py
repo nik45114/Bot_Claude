@@ -38,7 +38,7 @@ try:
     from cash_manager import CashManager
     from cash_commands import CashCommands, CASH_SELECT_CLUB, CASH_SELECT_TYPE, CASH_ENTER_AMOUNT, CASH_ENTER_DESCRIPTION, CASH_ENTER_CATEGORY
     from product_manager import ProductManager
-    from product_commands import ProductCommands, PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY, PRODUCT_EDIT_PRICE
+    from product_commands import ProductCommands, PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY, PRODUCT_EDIT_PRICE, PRODUCT_SET_NICKNAME
     from issue_manager import IssueManager
     from issue_commands import IssueCommands, ISSUE_SELECT_CLUB, ISSUE_ENTER_DESCRIPTION, ISSUE_EDIT_DESCRIPTION
 except ImportError as e:
@@ -2366,6 +2366,21 @@ class ClubAssistantBot:
             fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
         )
         application.add_handler(product_edit_price_handler)
+        
+        # ConversationHandler для установки никнейма админа
+        product_nickname_handler = ConversationHandler(
+            entry_points=[
+                CallbackQueryHandler(self.product_commands.start_set_nickname, pattern="^product_set_nickname$")
+            ],
+            states={
+                PRODUCT_SET_NICKNAME: [
+                    CallbackQueryHandler(self.product_commands.select_admin_for_nickname, pattern="^product_nickname_"),
+                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.product_commands.enter_nickname)
+                ]
+            },
+            fallbacks=[CallbackQueryHandler(self.product_commands.cancel, pattern="^product_menu$")]
+        )
+        application.add_handler(product_nickname_handler)
         
         # ConversationHandler для сообщения о проблеме
         issue_report_handler = ConversationHandler(

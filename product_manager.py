@@ -280,8 +280,84 @@ class ProductManager:
             logger.error(f"❌ Error getting admin products: {e}")
             return []
     
+    def get_admin_nickname(self, admin_id: int) -> Optional[str]:
+        """Получить никнейм админа из БД
+        
+        Args:
+            admin_id: ID админа
+            
+        Returns:
+            Никнейм админа или None
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT admin_nickname FROM admins WHERE user_id = ?', (admin_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            return row[0] if row and row[0] else None
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting admin nickname: {e}")
+            return None
+    
+    def set_admin_nickname(self, admin_id: int, nickname: str) -> bool:
+        """Установить никнейм для админа
+        
+        Args:
+            admin_id: ID админа
+            nickname: Никнейм для установки
+            
+        Returns:
+            True если успешно, False в случае ошибки
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Проверяем существует ли админ
+            cursor.execute('SELECT user_id FROM admins WHERE user_id = ?', (admin_id,))
+            if not cursor.fetchone():
+                # Создаём запись админа если её нет
+                cursor.execute('''
+                    INSERT INTO admins (user_id, admin_nickname, is_active)
+                    VALUES (?, ?, 1)
+                ''', (admin_id, nickname))
+            else:
+                # Обновляем никнейм
+                cursor.execute('''
+                    UPDATE admins 
+                    SET admin_nickname = ?
+                    WHERE user_id = ?
+                ''', (nickname, admin_id))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Admin nickname set: {admin_id} -> {nickname}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"❌ Error setting admin nickname: {e}")
+            return False
+    
+    def get_display_name(self, admin_id: int, admin_name: str) -> str:
+        """Получить отображаемое имя админа (никнейм или имя)
+        
+        Args:
+            admin_id: ID админа
+            admin_name: Имя из Telegram
+            
+        Returns:
+            Никнейм если установлен, иначе имя из Telegram
+        """
+        nickname = self.get_admin_nickname(admin_id)
+        return nickname if nickname else admin_name
+    
     def get_all_debts(self, sort_by: str = 'debt') -> Dict:
-        """Получить долги всех админов
+        """Получить долги всех админов с никнеймами
         
         Args:
             sort_by: 'debt' - сортировка по сумме долга (по убыванию)
@@ -305,8 +381,11 @@ class ProductManager:
             debts = {}
             for row in cursor.fetchall():
                 admin_id, admin_name, total = row
+                # Получаем никнейм для админа
+                display_name = self.get_display_name(admin_id, admin_name)
                 debts[admin_id] = {
-                    'name': admin_name,
+                    'name': display_name,
+                    'original_name': admin_name,
                     'total': total
                 }
             
@@ -318,7 +397,7 @@ class ProductManager:
             return {}
     
     def get_products_report(self, start_date: str = None, end_date: str = None, sort_by: str = 'admin') -> List[Dict]:
-        """Получить отчёт по товарам за период
+        """Получить отчёт по товарам за период с никнеймами админов
         
         Args:
             start_date: начальная дата периода
@@ -358,9 +437,13 @@ class ProductManager:
             
             report = []
             for row in cursor.fetchall():
+                admin_id = row[0]
+                admin_name = row[1]
+                display_name = self.get_display_name(admin_id, admin_name)
                 report.append({
-                    'admin_id': row[0],
-                    'admin_name': row[1],
+                    'admin_id': admin_id,
+                    'admin_name': display_name,
+                    'original_name': admin_name,
                     'product_name': row[2],
                     'total_quantity': row[3],
                     'total_debt': row[4]
