@@ -1365,6 +1365,14 @@ class ClubAssistantBot:
             await self._show_server_users(query, server_name)
             return
         
+        # Детали пользователя
+        if data.startswith("v2userdetail_"):
+            parts = data.replace("v2userdetail_", "").split("_", 1)
+            server_name = parts[0]
+            uuid = parts[1]
+            await self._show_user_detail(query, server_name, uuid)
+            return
+        
         # Добавление пользователя через кнопку
         if data.startswith("v2adduser_"):
             server_name = data.replace("v2adduser_", "")
@@ -1379,10 +1387,44 @@ class ClubAssistantBot:
         
         # Удаление пользователя
         if data.startswith("v2deluser_"):
-            parts = data.replace("v2deluser_", "").split("_")
+            parts = data.replace("v2deluser_", "").split("_", 1)
             server_name = parts[0]
             uuid = parts[1]
             await self._delete_user(query, server_name, uuid)
+            return
+        
+        # Подтверждение удаления пользователя
+        if data.startswith("v2deluser_confirm_"):
+            parts = data.replace("v2deluser_confirm_", "").split("_", 1)
+            server_name = parts[0]
+            uuid = parts[1]
+            await self._confirm_delete_user(query, server_name, uuid)
+            return
+        
+        # Временный доступ - выбор периода
+        if data.startswith("v2tempaccess_"):
+            parts = data.replace("v2tempaccess_", "").split("_", 1)
+            server_name = parts[0]
+            uuid = parts[1]
+            await self._show_temp_access_options(query, server_name, uuid)
+            return
+        
+        # Временный доступ - установка
+        if data.startswith("v2settemp_"):
+            # Format: v2settemp_<server>_<uuid>_<days>
+            parts = data.replace("v2settemp_", "").split("_")
+            server_name = parts[0]
+            uuid = parts[1]
+            days = int(parts[2])
+            await self._set_temp_access(query, server_name, uuid, days)
+            return
+        
+        # Отключить временный доступ
+        if data.startswith("v2removetemp_"):
+            parts = data.replace("v2removetemp_", "").split("_", 1)
+            server_name = parts[0]
+            uuid = parts[1]
+            await self._remove_temp_access(query, server_name, uuid)
             return
         
         # Удаление сервера - подтверждение
@@ -1815,13 +1857,14 @@ class ClubAssistantBot:
             await query.edit_message_text(f"❌ Ошибка: {str(e)}")
     
     async def _show_server_users(self, query, server_name: str):
-        """Показать список пользователей сервера"""
+        """Показать список пользователей сервера (из конфига Xray на сервере)"""
         try:
             if not self.v2ray_commands.is_owner(query.from_user.id):
                 await query.answer("❌ Доступ запрещён")
                 return
             
-            users = self.v2ray_manager.get_server_users(server_name)
+            # Получаем пользователей напрямую с сервера из Xray config
+            users = self.v2ray_manager.get_users(server_name)
             
             text = f"👥 Пользователи сервера {server_name}\n\n"
             
@@ -1829,25 +1872,28 @@ class ClubAssistantBot:
                 text += f"Всего: {len(users)}\n\n"
                 for user in users:
                     text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
-                    text += f"👤 {user['comment']}\n"
-                    text += f"🆔 ID: {user['user_id']}\n"
+                    text += f"👤 {user['email']}\n"
                     text += f"🔑 UUID: {user['uuid'][:8]}...\n"
-                    text += f"🌐 SNI: {user.get('sni', 'rutube.ru')}\n"
+                    text += f"⚡ Flow: {user.get('flow', 'xtls-rprx-vision')}\n"
             else:
                 text += "Нет пользователей\n"
             
             keyboard = []
             
+            # Добавляем кнопки для каждого пользователя
             for user in users[:10]:  # Максимум 10 кнопок
                 keyboard.append([
                     InlineKeyboardButton(
-                        f"🗑️ {user['comment']}", 
-                        callback_data=f"v2deluser_{server_name}_{user['uuid']}"
+                        f"⚙️ {user['email'][:20]}", 
+                        callback_data=f"v2userdetail_{server_name}_{user['uuid']}"
                     )
                 ])
             
             keyboard.append([
                 InlineKeyboardButton("➕ Добавить", callback_data=f"v2adduser_{server_name}"),
+                InlineKeyboardButton("🔄 Обновить", callback_data=f"v2users_{server_name}")
+            ])
+            keyboard.append([
                 InlineKeyboardButton("◀️ Назад", callback_data=f"v2server_{server_name}")
             ])
             
@@ -1858,18 +1904,48 @@ class ClubAssistantBot:
             await query.answer(f"❌ Ошибка: {str(e)}")
     
     async def _delete_user(self, query, server_name: str, uuid: str):
-        """Удалить пользователя"""
+        """Показать подтверждение удаления пользователя"""
         try:
             if not self.v2ray_commands.is_owner(query.from_user.id):
                 await query.answer("❌ Доступ запрещён")
                 return
             
+            text = "⚠️ Подтверждение удаления\n\n"
+            text += f"Вы действительно хотите удалить пользователя?\n"
+            text += f"🔑 UUID: {uuid[:8]}...\n\n"
+            text += "Это действие нельзя отменить!"
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Да, удалить", callback_data=f"v2deluser_confirm_{server_name}_{uuid}"),
+                    InlineKeyboardButton("❌ Отмена", callback_data=f"v2userdetail_{server_name}_{uuid}")
+                ]
+            ]
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"❌ Error showing delete confirmation: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
+    async def _confirm_delete_user(self, query, server_name: str, uuid: str):
+        """Удалить пользователя с сервера"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            await query.answer("⏳ Удаляю пользователя...")
+            
             result = self.v2ray_manager.delete_user(server_name, uuid)
             
             if result:
-                text = f"✅ Пользователь удалён"
+                text = f"✅ Пользователь удалён\n\n"
+                text += f"🔑 UUID: {uuid[:8]}...\n"
+                text += f"Пользователь удалён из Xray конфигурации и базы данных."
             else:
-                text = f"❌ Ошибка удаления пользователя"
+                text = f"❌ Ошибка удаления пользователя\n\n"
+                text += f"Проверьте логи для деталей."
             
             keyboard = [[InlineKeyboardButton("◀️ К списку", callback_data=f"v2users_{server_name}")]]
             await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1877,6 +1953,158 @@ class ClubAssistantBot:
         except Exception as e:
             logger.error(f"❌ Error deleting user: {e}", exc_info=True)
             await query.answer(f"❌ Ошибка: {str(e)}")
+    
+    async def _show_user_detail(self, query, server_name: str, uuid: str):
+        """Показать детали пользователя"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            # Получаем пользователей с сервера
+            users = self.v2ray_manager.get_users(server_name)
+            user = next((u for u in users if u['uuid'] == uuid), None)
+            
+            if not user:
+                await query.answer("❌ Пользователь не найден")
+                return
+            
+            # Проверяем временный доступ из БД
+            temp_access = self.v2ray_manager.get_temp_access(server_name, uuid)
+            
+            text = f"👤 Детали пользователя\n\n"
+            text += f"━━━━━━━━━━━━━━━━━━━━━━\n"
+            text += f"📧 Email: {user['email']}\n"
+            text += f"🔑 UUID: `{uuid}`\n"
+            text += f"⚡ Flow: {user.get('flow', 'xtls-rprx-vision')}\n"
+            text += f"🖥️ Сервер: {server_name}\n"
+            
+            if temp_access:
+                from datetime import datetime
+                expires = datetime.fromisoformat(temp_access['expires_at'])
+                now = datetime.now()
+                if expires > now:
+                    days_left = (expires - now).days
+                    text += f"\n⏰ Временный доступ:\n"
+                    text += f"   Истекает: {expires.strftime('%Y-%m-%d %H:%M')}\n"
+                    text += f"   Осталось: {days_left} дней\n"
+                else:
+                    text += f"\n⚠️ Доступ истёк: {expires.strftime('%Y-%m-%d %H:%M')}\n"
+            
+            text += f"━━━━━━━━━━━━━━━━━━━━━━"
+            
+            keyboard = []
+            
+            # Кнопки управления временным доступом
+            if temp_access:
+                keyboard.append([
+                    InlineKeyboardButton("🔄 Изменить срок", callback_data=f"v2tempaccess_{server_name}_{uuid}"),
+                    InlineKeyboardButton("♾️ Убрать ограничение", callback_data=f"v2removetemp_{server_name}_{uuid}")
+                ])
+            else:
+                keyboard.append([
+                    InlineKeyboardButton("⏰ Временный доступ", callback_data=f"v2tempaccess_{server_name}_{uuid}")
+                ])
+            
+            keyboard.append([
+                InlineKeyboardButton("🗑️ Удалить", callback_data=f"v2deluser_{server_name}_{uuid}")
+            ])
+            keyboard.append([
+                InlineKeyboardButton("◀️ К списку", callback_data=f"v2users_{server_name}")
+            ])
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            
+        except Exception as e:
+            logger.error(f"❌ Error showing user detail: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
+    async def _show_temp_access_options(self, query, server_name: str, uuid: str):
+        """Показать опции временного доступа"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            text = "⏰ Выберите срок доступа\n\n"
+            text += "После истечения срока пользователь будет автоматически удалён."
+            
+            keyboard = [
+                [
+                    InlineKeyboardButton("1 день", callback_data=f"v2settemp_{server_name}_{uuid}_1"),
+                    InlineKeyboardButton("3 дня", callback_data=f"v2settemp_{server_name}_{uuid}_3")
+                ],
+                [
+                    InlineKeyboardButton("7 дней", callback_data=f"v2settemp_{server_name}_{uuid}_7"),
+                    InlineKeyboardButton("14 дней", callback_data=f"v2settemp_{server_name}_{uuid}_14")
+                ],
+                [
+                    InlineKeyboardButton("30 дней", callback_data=f"v2settemp_{server_name}_{uuid}_30"),
+                    InlineKeyboardButton("60 дней", callback_data=f"v2settemp_{server_name}_{uuid}_60")
+                ],
+                [
+                    InlineKeyboardButton("90 дней", callback_data=f"v2settemp_{server_name}_{uuid}_90")
+                ],
+                [
+                    InlineKeyboardButton("◀️ Назад", callback_data=f"v2userdetail_{server_name}_{uuid}")
+                ]
+            ]
+            
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"❌ Error showing temp access options: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
+    async def _set_temp_access(self, query, server_name: str, uuid: str, days: int):
+        """Установить временный доступ"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            from datetime import datetime, timedelta
+            expires_at = datetime.now() + timedelta(days=days)
+            
+            result = self.v2ray_manager.set_temp_access(server_name, uuid, expires_at)
+            
+            if result:
+                text = f"✅ Временный доступ установлен\n\n"
+                text += f"⏰ Срок: {days} дней\n"
+                text += f"📅 Истекает: {expires_at.strftime('%Y-%m-%d %H:%M')}\n\n"
+                text += f"Пользователь будет автоматически удалён после истечения срока."
+            else:
+                text = f"❌ Ошибка установки временного доступа"
+            
+            keyboard = [[InlineKeyboardButton("◀️ К деталям", callback_data=f"v2userdetail_{server_name}_{uuid}")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"❌ Error setting temp access: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
+    async def _remove_temp_access(self, query, server_name: str, uuid: str):
+        """Убрать временное ограничение доступа"""
+        try:
+            if not self.v2ray_commands.is_owner(query.from_user.id):
+                await query.answer("❌ Доступ запрещён")
+                return
+            
+            result = self.v2ray_manager.remove_temp_access(server_name, uuid)
+            
+            if result:
+                text = f"✅ Временное ограничение снято\n\n"
+                text += f"Пользователь теперь имеет постоянный доступ."
+            else:
+                text = f"❌ Ошибка снятия ограничения"
+            
+            keyboard = [[InlineKeyboardButton("◀️ К деталям", callback_data=f"v2userdetail_{server_name}_{uuid}")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            
+        except Exception as e:
+            logger.error(f"❌ Error removing temp access: {e}", exc_info=True)
+            await query.answer(f"❌ Ошибка: {str(e)}")
+    
     
     
     def _should_respond(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
