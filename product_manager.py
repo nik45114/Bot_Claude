@@ -351,10 +351,40 @@ class ProductManager:
             admin_name: Имя из Telegram
             
         Returns:
-            Никнейм если установлен, иначе имя из Telegram
+            Приоритет: full_name > nickname > username > admin_name > admin_id
         """
-        nickname = self.get_admin_nickname(admin_id)
-        return nickname if nickname else admin_name
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            # Get full_name and username from admins table
+            cursor.execute('SELECT full_name, username FROM admins WHERE user_id = ?', (admin_id,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                full_name, username = result
+                # Priority: full_name > nickname > username
+                if full_name and full_name.strip():
+                    return full_name
+                
+                nickname = self.get_admin_nickname(admin_id)
+                if nickname:
+                    return nickname
+                
+                if username and username.strip():
+                    return f"@{username}"
+            else:
+                # Not in admins table, try nickname
+                nickname = self.get_admin_nickname(admin_id)
+                if nickname:
+                    return nickname
+            
+            # Fallback to admin_name or admin_id
+            return admin_name if admin_name else str(admin_id)
+        except Exception as e:
+            logger.error(f"❌ Error getting display name: {e}")
+            nickname = self.get_admin_nickname(admin_id)
+            return nickname if nickname else (admin_name if admin_name else str(admin_id))
     
     def get_all_debts(self, sort_by: str = 'debt') -> Dict:
         """Получить долги всех админов с никнеймами
