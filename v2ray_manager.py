@@ -546,6 +546,19 @@ class V2RayManager:
             )
         ''')
         
+        # Таблица временного доступа
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS v2ray_temp_access (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                server_name TEXT NOT NULL,
+                uuid TEXT NOT NULL,
+                expires_at TIMESTAMP NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(server_name, uuid),
+                FOREIGN KEY (server_name) REFERENCES v2ray_servers(name)
+            )
+        ''')
+        
         conn.commit()
         conn.close()
     
@@ -1056,9 +1069,71 @@ class V2RayManager:
             return []
     
     def delete_user(self, server_name: str, uuid: str) -> bool:
-        """Удалить пользователя"""
+        """Удалить пользователя с сервера и из БД"""
         try:
             logger.info(f"🗑️ Deleting user {uuid} from {server_name}")
+            
+            # Удаляем из конфига Xray на сервере
+            server_info = self.get_server_info(server_name)
+            if not server_info:
+                logger.error(f"❌ Server {server_name} not found")
+                return False
+            
+            ssh = self._connect_ssh(server_info)
+            if not ssh:
+                logger.error(f"❌ Failed to connect to {server_name}")
+                return False
+            
+            try:
+                # Читаем конфигурацию
+                config_paths = [
+                    '/usr/local/etc/xray/config.json',
+                    '/root/Xray-core/config.json',
+                    '/etc/xray/config.json'
+                ]
+                
+                config_content = None
+                config_path_used = None
+                for path in config_paths:
+                    stdin, stdout, stderr = ssh.exec_command(f'cat {path}')
+                    content = stdout.read().decode()
+                    if content and 'inbounds' in content:
+                        config_content = content
+                        config_path_used = path
+                        break
+                
+                if not config_content:
+                    logger.error(f"❌ Config not found on {server_name}")
+                    ssh.close()
+                    return False
+                
+                config = json.loads(config_content)
+                
+                # Удаляем пользователя из конфига
+                clients = config['inbounds'][0]['settings']['clients']
+                original_count = len(clients)
+                config['inbounds'][0]['settings']['clients'] = [
+                    c for c in clients if c['id'] != uuid
+                ]
+                new_count = len(config['inbounds'][0]['settings']['clients'])
+                
+                if original_count == new_count:
+                    logger.warning(f"⚠️ User {uuid} not found in config")
+                else:
+                    logger.info(f"✅ User removed from config ({original_count} -> {new_count})")
+                
+                # Сохраняем обновлённую конфигурацию
+                sftp = ssh.open_sftp()
+                with sftp.file(config_path_used, 'w') as f:
+                    json.dump(config, f, indent=2)
+                sftp.close()
+                
+                # Перезапускаем Xray
+                ssh.exec_command('systemctl restart xray')
+                logger.info(f"🔄 Xray restarted")
+                
+            finally:
+                ssh.close()
             
             # Удаляем из БД
             conn = sqlite3.connect(self.db_path)
@@ -1067,12 +1142,10 @@ class V2RayManager:
             conn.commit()
             conn.close()
             
-            # TODO: Удалить из конфига Xray через SSH
-            
-            logger.info(f"✅ User deleted")
+            logger.info(f"✅ User {uuid} deleted from server and DB")
             return True
         except Exception as e:
-            logger.error(f"❌ delete_user error: {e}")
+            logger.error(f"❌ delete_user error: {e}", exc_info=True)
             return False
     
     def delete_server(self, server_name: str) -> bool:
@@ -1183,3 +1256,123 @@ class V2RayManager:
         except Exception as e:
             logger.error(f"❌ SSH connection error: {e}")
             return None
+    
+    def set_temp_access(self, server_name: str, uuid: str, expires_at) -> bool:
+        """Установить временный доступ для пользователя"""
+        try:
+            from datetime import datetime
+            
+            # Преобразуем expires_at в строку, если это datetime объект
+            if isinstance(expires_at, datetime):
+                expires_str = expires_at.isoformat()
+            else:
+                expires_str = expires_at
+            
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Используем INSERT OR REPLACE для обновления существующей записи
+            cursor.execute('''
+                INSERT OR REPLACE INTO v2ray_temp_access (server_name, uuid, expires_at)
+                VALUES (?, ?, ?)
+            ''', (server_name, uuid, expires_str))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Temporary access set for {uuid} on {server_name} until {expires_str}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ set_temp_access error: {e}", exc_info=True)
+            return False
+    
+    def get_temp_access(self, server_name: str, uuid: str) -> Optional[dict]:
+        """Получить информацию о временном доступе пользователя"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT * FROM v2ray_temp_access
+                WHERE server_name = ? AND uuid = ?
+            ''', (server_name, uuid))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return dict(row)
+            return None
+        except Exception as e:
+            logger.error(f"❌ get_temp_access error: {e}")
+            return None
+    
+    def remove_temp_access(self, server_name: str, uuid: str) -> bool:
+        """Убрать временное ограничение доступа"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM v2ray_temp_access
+                WHERE server_name = ? AND uuid = ?
+            ''', (server_name, uuid))
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"✅ Temporary access removed for {uuid} on {server_name}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ remove_temp_access error: {e}")
+            return False
+    
+    def get_expired_users(self) -> List[Dict]:
+        """Получить список пользователей с истёкшим доступом"""
+        try:
+            from datetime import datetime
+            
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            now = datetime.now().isoformat()
+            
+            cursor.execute('''
+                SELECT * FROM v2ray_temp_access
+                WHERE expires_at < ?
+            ''', (now,))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"❌ get_expired_users error: {e}")
+            return []
+    
+    def cleanup_expired_users(self) -> int:
+        """Очистить пользователей с истёкшим доступом"""
+        try:
+            expired = self.get_expired_users()
+            deleted_count = 0
+            
+            for user in expired:
+                server_name = user['server_name']
+                uuid = user['uuid']
+                
+                logger.info(f"🗑️ Cleaning up expired user {uuid} on {server_name}")
+                
+                # Удаляем пользователя
+                if self.delete_user(server_name, uuid):
+                    deleted_count += 1
+                    logger.info(f"✅ Deleted expired user {uuid}")
+                else:
+                    logger.error(f"❌ Failed to delete expired user {uuid}")
+            
+            logger.info(f"✅ Cleanup completed: {deleted_count} expired users deleted")
+            return deleted_count
+        except Exception as e:
+            logger.error(f"❌ cleanup_expired_users error: {e}", exc_info=True)
+            return 0
