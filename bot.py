@@ -2280,38 +2280,7 @@ class ClubAssistantBot:
         application.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         application.add_handler(CommandHandler("update", self.cmd_update))
         
-        # Обработчик inline-кнопок
-        application.add_handler(CallbackQueryHandler(self.handle_callback))
-        
-        # V2Ray команды
-        application.add_handler(CommandHandler("v2ray", self.v2ray_commands.cmd_v2ray))
-        application.add_handler(CommandHandler("v2add", self.v2ray_commands.cmd_v2add))
-        application.add_handler(CommandHandler("v2list", self.v2ray_commands.cmd_v2list))
-        application.add_handler(CommandHandler("v2setup", self.v2ray_commands.cmd_v2setup))
-        application.add_handler(CommandHandler("v2user", self.v2ray_commands.cmd_v2user))
-        application.add_handler(CommandHandler("v2stats", self.v2ray_commands.cmd_v2stats))
-        application.add_handler(CommandHandler("v2traffic", self.v2ray_commands.cmd_v2traffic))
-        application.add_handler(CommandHandler("v2remove", self.v2ray_commands.cmd_v2remove))
-        
-        # Club команды
-        application.add_handler(CommandHandler("clubs", self.club_commands.cmd_clubs))
-        application.add_handler(CommandHandler("clubadd", self.club_commands.cmd_clubadd))
-        application.add_handler(CommandHandler("clublist", self.club_commands.cmd_clublist))
-        application.add_handler(CommandHandler("lastreport", self.club_commands.cmd_lastreport))
-        application.add_handler(CommandHandler("clubstats", self.club_commands.cmd_clubstats))
-        application.add_handler(CommandHandler("issues", self.club_commands.cmd_issues))
-        
-        # ConversationHandler для отчётов
-        report_handler = ConversationHandler(
-            entry_points=[CommandHandler("report", self.club_commands.cmd_report)],
-            states={
-                WAITING_REPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.club_commands.handle_report_text)]
-            },
-            fallbacks=[CommandHandler("cancel", self.club_commands.cmd_cancel)]
-        )
-        application.add_handler(report_handler)
-        
-        # === НОВЫЕ CONVERSATION HANDLERS ===
+        # === CONVERSATION HANDLERS (must be registered BEFORE CallbackQueryHandler) ===
         
         # ConversationHandler для финансового мониторинга
         cash_handler = ConversationHandler(
@@ -2412,7 +2381,38 @@ class ClubAssistantBot:
         )
         application.add_handler(issue_edit_handler)
         
-        # === КОНЕЦ НОВЫХ HANDLERS ===
+        # === END CONVERSATION HANDLERS ===
+        
+        # Обработчик inline-кнопок (must be AFTER ConversationHandlers)
+        application.add_handler(CallbackQueryHandler(self.handle_callback))
+        
+        # V2Ray команды
+        application.add_handler(CommandHandler("v2ray", self.v2ray_commands.cmd_v2ray))
+        application.add_handler(CommandHandler("v2add", self.v2ray_commands.cmd_v2add))
+        application.add_handler(CommandHandler("v2list", self.v2ray_commands.cmd_v2list))
+        application.add_handler(CommandHandler("v2setup", self.v2ray_commands.cmd_v2setup))
+        application.add_handler(CommandHandler("v2user", self.v2ray_commands.cmd_v2user))
+        application.add_handler(CommandHandler("v2stats", self.v2ray_commands.cmd_v2stats))
+        application.add_handler(CommandHandler("v2traffic", self.v2ray_commands.cmd_v2traffic))
+        application.add_handler(CommandHandler("v2remove", self.v2ray_commands.cmd_v2remove))
+        
+        # Club команды
+        application.add_handler(CommandHandler("clubs", self.club_commands.cmd_clubs))
+        application.add_handler(CommandHandler("clubadd", self.club_commands.cmd_clubadd))
+        application.add_handler(CommandHandler("clublist", self.club_commands.cmd_clublist))
+        application.add_handler(CommandHandler("lastreport", self.club_commands.cmd_lastreport))
+        application.add_handler(CommandHandler("clubstats", self.club_commands.cmd_clubstats))
+        application.add_handler(CommandHandler("issues", self.club_commands.cmd_issues))
+        
+        # ConversationHandler для отчётов
+        report_handler = ConversationHandler(
+            entry_points=[CommandHandler("report", self.club_commands.cmd_report)],
+            states={
+                WAITING_REPORT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.club_commands.handle_report_text)]
+            },
+            fallbacks=[CommandHandler("cancel", self.club_commands.cmd_cancel)]
+        )
+        application.add_handler(report_handler)
         
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
