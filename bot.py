@@ -1259,12 +1259,20 @@ class ClubAssistantBot:
             await self.product_commands.show_my_debt(update, context)
             return
         
-        if data == "product_all_debts":
+        if data == "product_all_debts" or data == "product_all_debts_by_name":
             await self.product_commands.show_all_debts(update, context)
             return
         
-        if data == "product_report":
+        if data == "product_report" or data == "product_report_by_product":
             await self.product_commands.show_products_report(update, context)
+            return
+        
+        if data == "product_summary":
+            await self.product_commands.show_products_summary(update, context)
+            return
+        
+        if data == "product_detailed_debts":
+            await self.product_commands.show_detailed_debts(update, context)
             return
         
         if data == "product_clear_settled":

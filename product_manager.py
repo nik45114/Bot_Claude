@@ -280,18 +280,26 @@ class ProductManager:
             logger.error(f"❌ Error getting admin products: {e}")
             return []
     
-    def get_all_debts(self) -> Dict:
-        """Получить долги всех админов"""
+    def get_all_debts(self, sort_by: str = 'debt') -> Dict:
+        """Получить долги всех админов
+        
+        Args:
+            sort_by: 'debt' - сортировка по сумме долга (по убыванию)
+                    'name' - сортировка по имени админа (по возрастанию)
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
             
-            cursor.execute('''
+            # Определяем порядок сортировки
+            order_clause = 'total DESC' if sort_by == 'debt' else 'admin_name ASC'
+            
+            cursor.execute(f'''
                 SELECT admin_id, admin_name, SUM(total_debt) as total
                 FROM admin_products
                 WHERE settled = FALSE
                 GROUP BY admin_id
-                ORDER BY total DESC
+                ORDER BY {order_clause}
             ''')
             
             debts = {}
@@ -309,8 +317,15 @@ class ProductManager:
             logger.error(f"❌ Error getting all debts: {e}")
             return {}
     
-    def get_products_report(self, start_date: str = None, end_date: str = None) -> List[Dict]:
-        """Получить отчёт по товарам за период"""
+    def get_products_report(self, start_date: str = None, end_date: str = None, sort_by: str = 'admin') -> List[Dict]:
+        """Получить отчёт по товарам за период
+        
+        Args:
+            start_date: начальная дата периода
+            end_date: конечная дата периода
+            sort_by: 'admin' - сортировка по имени админа
+                    'product' - сортировка по названию товара
+        """
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
@@ -333,7 +348,11 @@ class ProductManager:
                 query += ' AND taken_at <= ?'
                 params.append(end_date)
             
-            query += ' GROUP BY admin_id, product_name ORDER BY admin_name, product_name'
+            # Определяем порядок сортировки
+            if sort_by == 'product':
+                query += ' GROUP BY product_name, admin_id ORDER BY product_name, admin_name'
+            else:
+                query += ' GROUP BY admin_id, product_name ORDER BY admin_name, product_name'
             
             cursor.execute(query, params)
             
@@ -352,6 +371,58 @@ class ProductManager:
             
         except Exception as e:
             logger.error(f"❌ Error getting products report: {e}")
+            return []
+    
+    def get_products_summary(self, start_date: str = None, end_date: str = None) -> List[Dict]:
+        """Получить сводку по товарам (общее количество каждого товара за период)
+        
+        Args:
+            start_date: начальная дата периода
+            end_date: конечная дата периода
+            
+        Returns:
+            Список словарей с информацией о каждом товаре:
+            [{'product_name': 'Gorilla', 'total_quantity': 12, 'total_debt': 600}, ...]
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            query = '''
+                SELECT product_name, 
+                       SUM(quantity) as total_quantity,
+                       SUM(total_debt) as total_debt
+                FROM admin_products
+                WHERE settled = FALSE
+            '''
+            
+            params = []
+            
+            if start_date:
+                query += ' AND taken_at >= ?'
+                params.append(start_date)
+            
+            if end_date:
+                query += ' AND taken_at <= ?'
+                params.append(end_date)
+            
+            query += ' GROUP BY product_name ORDER BY product_name'
+            
+            cursor.execute(query, params)
+            
+            summary = []
+            for row in cursor.fetchall():
+                summary.append({
+                    'product_name': row[0],
+                    'total_quantity': row[1],
+                    'total_debt': row[2]
+                })
+            
+            conn.close()
+            return summary
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting products summary: {e}")
             return []
     
     def clear_settled_products(self) -> int:
@@ -470,14 +541,21 @@ class ProductManager:
         
         return text
     
-    def format_all_debts_report(self) -> str:
-        """Форматирование отчёта по всем долгам"""
-        debts = self.get_all_debts()
+    def format_all_debts_report(self, sort_by: str = 'debt') -> str:
+        """Форматирование отчёта по всем долгам
+        
+        Args:
+            sort_by: 'debt' - сортировка по сумме долга
+                    'name' - сортировка по имени админа
+        """
+        debts = self.get_all_debts(sort_by=sort_by)
         
         if not debts:
             return "✅ Нет долгов"
         
-        text = "💳 ДОЛГИ АДМИНОВ ПО ТОВАРАМ\n"
+        sort_label = "по сумме долга" if sort_by == 'debt' else "по имени"
+        
+        text = f"💳 ДОЛГИ АДМИНОВ ПО ТОВАРАМ (сортировка {sort_label})\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
         total_all = 0
@@ -492,9 +570,16 @@ class ProductManager:
         
         return text
     
-    def format_products_report(self, start_date: str = None, end_date: str = None) -> str:
-        """Форматирование отчёта по товарам за период"""
-        report = self.get_products_report(start_date, end_date)
+    def format_products_report(self, start_date: str = None, end_date: str = None, sort_by: str = 'admin') -> str:
+        """Форматирование отчёта по товарам за период
+        
+        Args:
+            start_date: начальная дата периода
+            end_date: конечная дата периода
+            sort_by: 'admin' - группировка по админам
+                    'product' - группировка по товарам
+        """
+        report = self.get_products_report(start_date, end_date, sort_by=sort_by)
         
         if not report:
             return "📭 Нет данных за период"
@@ -505,28 +590,147 @@ class ProductManager:
         elif start_date:
             period_text = f" с {start_date[:10]}"
         
-        text = f"📊 ОТЧЁТ ПО ТОВАРАМ{period_text}\n"
+        sort_label = "по админам" if sort_by == 'admin' else "по товарам"
+        
+        text = f"📊 ОТЧЁТ ПО ТОВАРАМ{period_text} ({sort_label})\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        if sort_by == 'product':
+            # Группировка по товарам
+            current_product = None
+            product_total = 0
+            
+            for item in report:
+                if current_product != item['product_name']:
+                    if current_product:
+                        text += f"   💰 Итого: {product_total:,.0f} ₽\n\n"
+                    
+                    current_product = item['product_name']
+                    product_total = 0
+                    text += f"📦 {current_product}\n"
+                
+                text += f"   👤 {item['admin_name']}: {item['total_quantity']} шт × "
+                text += f"{item['total_debt']/item['total_quantity']:,.0f} ₽ = "
+                text += f"{item['total_debt']:,.0f} ₽\n"
+                
+                product_total += item['total_debt']
+            
+            if current_product:
+                text += f"   💰 Итого: {product_total:,.0f} ₽\n"
+        else:
+            # Группировка по админам
+            current_admin = None
+            admin_total = 0
+            
+            for item in report:
+                if current_admin != item['admin_name']:
+                    if current_admin:
+                        text += f"   💰 Итого: {admin_total:,.0f} ₽\n\n"
+                    
+                    current_admin = item['admin_name']
+                    admin_total = 0
+                    text += f"👤 {current_admin}\n"
+                
+                text += f"   📦 {item['product_name']}: {item['total_quantity']} шт × "
+                text += f"{item['total_debt']/item['total_quantity']:,.0f} ₽ = "
+                text += f"{item['total_debt']:,.0f} ₽\n"
+                
+                admin_total += item['total_debt']
+            
+            if current_admin:
+                text += f"   💰 Итого: {admin_total:,.0f} ₽\n"
+        
+        return text
+    
+    def format_products_summary_report(self, start_date: str = None, end_date: str = None) -> str:
+        """Форматирование сводного отчёта по товарам (общие количества)
+        
+        Args:
+            start_date: начальная дата периода
+            end_date: конечная дата периода
+            
+        Returns:
+            Строка формата "12 Gorilla, 14 Redbull за период"
+        """
+        summary = self.get_products_summary(start_date, end_date)
+        
+        if not summary:
+            return "📭 Нет данных за период"
+        
+        period_text = ""
+        if start_date and end_date:
+            period_text = f" с {start_date[:10]} по {end_date[:10]}"
+        elif start_date:
+            period_text = f" с {start_date[:10]}"
+        
+        text = f"📊 СВОДКА ПО ТОВАРАМ{period_text}\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        
+        # Создаём строку в формате "12 Gorilla, 14 Redbull"
+        products_list = []
+        total_debt = 0
+        
+        for item in summary:
+            products_list.append(f"{item['total_quantity']} {item['product_name']}")
+            total_debt += item['total_debt']
+        
+        text += "📦 " + ", ".join(products_list) + "\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        
+        # Детальная разбивка
+        text += "\nДетально:\n"
+        for item in summary:
+            text += f"  • {item['product_name']}: {item['total_quantity']} шт = {item['total_debt']:,.0f} ₽\n"
+        
+        text += "\n━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        text += f"💰 ВСЕГО: {total_debt:,.0f} ₽"
+        
+        return text
+    
+    def format_detailed_debts_report(self) -> str:
+        """Форматирование детального отчёта с разбивкой по админам и товарам
+        
+        Returns:
+            Строка формата "Vanya: 2 Redbull, 4 Bulmeni = 300₽"
+        """
+        report = self.get_products_report(sort_by='admin')
+        
+        if not report:
+            return "✅ Нет долгов"
+        
+        text = "💳 ДЕТАЛЬНЫЕ ДОЛГИ АДМИНОВ\n"
         text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         
         current_admin = None
+        admin_products = []
         admin_total = 0
+        grand_total = 0
         
         for item in report:
             if current_admin != item['admin_name']:
-                if current_admin:
-                    text += f"   💰 Итого: {admin_total:,.0f} ₽\n\n"
+                # Выводим предыдущего админа
+                if current_admin and admin_products:
+                    text += f"👤 {current_admin}: "
+                    text += ", ".join(admin_products)
+                    text += f" = {admin_total:,.0f} ₽\n\n"
                 
+                # Начинаем нового админа
                 current_admin = item['admin_name']
+                admin_products = []
                 admin_total = 0
-                text += f"👤 {current_admin}\n"
             
-            text += f"   📦 {item['product_name']}: {item['total_quantity']} шт × "
-            text += f"{item['total_debt']/item['total_quantity']:,.0f} ₽ = "
-            text += f"{item['total_debt']:,.0f} ₽\n"
-            
+            admin_products.append(f"{item['total_quantity']} {item['product_name']}")
             admin_total += item['total_debt']
+            grand_total += item['total_debt']
         
-        if current_admin:
-            text += f"   💰 Итого: {admin_total:,.0f} ₽\n"
+        # Выводим последнего админа
+        if current_admin and admin_products:
+            text += f"👤 {current_admin}: "
+            text += ", ".join(admin_products)
+            text += f" = {admin_total:,.0f} ₽\n\n"
+        
+        text += "━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        text += f"💎 ВСЕГО ДОЛГОВ: {grand_total:,.0f} ₽"
         
         return text
+
