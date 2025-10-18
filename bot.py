@@ -99,6 +99,212 @@ class AdminManager:
             return admins
         except:
             return []
+    
+    def set_full_name(self, user_id: int, full_name: str) -> bool:
+        """Set admin's full name"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('UPDATE admins SET full_name = ? WHERE user_id = ?', (full_name, user_id))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error setting full name: {e}")
+            return False
+    
+    def get_display_name(self, user_id: int) -> str:
+        """Get display name with priority: full_name > username > user_id"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('SELECT full_name, username FROM admins WHERE user_id = ?', (user_id,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                full_name, username = result
+                if full_name and full_name.strip():
+                    return full_name
+                if username and username.strip():
+                    return f"@{username}"
+            
+            return str(user_id)
+        except:
+            return str(user_id)
+    
+    def log_admin_message(self, user_id: int, username: str, full_name: str, text: str, 
+                         chat_id: int, chat_type: str, is_command: bool) -> bool:
+        """Log admin message to database"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            cursor.execute('''
+                INSERT INTO admin_chat_logs 
+                (user_id, username, full_name, message_text, chat_id, chat_type, is_command)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (user_id, username, full_name, text, chat_id, chat_type, is_command))
+            conn.commit()
+            conn.close()
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error logging admin message: {e}")
+            return False
+    
+    def get_admin_logs(self, user_id: int = None, limit: int = 50, period: str = 'all') -> List[Dict]:
+        """Get admin logs with filtering"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Build query based on period
+            where_clause = ""
+            params = []
+            
+            if user_id:
+                where_clause = "WHERE user_id = ?"
+                params.append(user_id)
+            
+            # Add time filter
+            if period == 'today':
+                time_filter = "date(timestamp) = date('now')"
+            elif period == 'week':
+                time_filter = "date(timestamp) >= date('now', '-7 days')"
+            elif period == 'month':
+                time_filter = "date(timestamp) >= date('now', '-30 days')"
+            else:
+                time_filter = None
+            
+            if time_filter:
+                if where_clause:
+                    where_clause += f" AND {time_filter}"
+                else:
+                    where_clause = f"WHERE {time_filter}"
+            
+            query = f'''
+                SELECT id, user_id, username, full_name, message_text, chat_id, chat_type, 
+                       is_command, timestamp
+                FROM admin_chat_logs
+                {where_clause}
+                ORDER BY timestamp DESC
+                LIMIT ?
+            '''
+            params.append(limit)
+            
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+            conn.close()
+            
+            return [{
+                'id': r[0], 'user_id': r[1], 'username': r[2], 'full_name': r[3],
+                'message_text': r[4], 'chat_id': r[5], 'chat_type': r[6],
+                'is_command': r[7], 'timestamp': r[8]
+            } for r in rows]
+        except Exception as e:
+            logger.error(f"❌ Error getting admin logs: {e}")
+            return []
+    
+    def get_admin_stats(self, user_id: int, period: str = 'today') -> Dict:
+        """Get admin statistics"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Build time filter
+            if period == 'today':
+                time_filter = "date(timestamp) = date('now')"
+            elif period == 'week':
+                time_filter = "date(timestamp) >= date('now', '-7 days')"
+            elif period == 'month':
+                time_filter = "date(timestamp) >= date('now', '-30 days')"
+            else:
+                time_filter = "1=1"
+            
+            # Total messages
+            cursor.execute(f'''
+                SELECT COUNT(*) FROM admin_chat_logs 
+                WHERE user_id = ? AND {time_filter}
+            ''', (user_id,))
+            total_messages = cursor.fetchone()[0]
+            
+            # Messages by chat type
+            cursor.execute(f'''
+                SELECT chat_type, COUNT(*) FROM admin_chat_logs 
+                WHERE user_id = ? AND {time_filter}
+                GROUP BY chat_type
+            ''', (user_id,))
+            by_chat_type = dict(cursor.fetchall())
+            
+            # Commands
+            cursor.execute(f'''
+                SELECT COUNT(*) FROM admin_chat_logs 
+                WHERE user_id = ? AND is_command = 1 AND {time_filter}
+            ''', (user_id,))
+            total_commands = cursor.fetchone()[0]
+            
+            # Top commands
+            cursor.execute(f'''
+                SELECT message_text, COUNT(*) as cnt FROM admin_chat_logs 
+                WHERE user_id = ? AND is_command = 1 AND {time_filter}
+                GROUP BY message_text
+                ORDER BY cnt DESC
+                LIMIT 5
+            ''', (user_id,))
+            top_commands = cursor.fetchall()
+            
+            conn.close()
+            
+            return {
+                'total_messages': total_messages,
+                'by_chat_type': by_chat_type,
+                'total_commands': total_commands,
+                'top_commands': top_commands
+            }
+        except Exception as e:
+            logger.error(f"❌ Error getting admin stats: {e}")
+            return {
+                'total_messages': 0,
+                'by_chat_type': {},
+                'total_commands': 0,
+                'top_commands': []
+            }
+    
+    def get_all_admins_activity(self, period: str = 'today') -> List[Dict]:
+        """Get activity for all admins"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Build time filter
+            if period == 'today':
+                time_filter = "date(timestamp) = date('now')"
+            elif period == 'week':
+                time_filter = "date(timestamp) >= date('now', '-7 days')"
+            elif period == 'month':
+                time_filter = "date(timestamp) >= date('now', '-30 days')"
+            else:
+                time_filter = "1=1"
+            
+            cursor.execute(f'''
+                SELECT a.user_id, a.username, a.full_name, COUNT(*) as msg_count
+                FROM admin_chat_logs l
+                JOIN admins a ON l.user_id = a.user_id
+                WHERE {time_filter}
+                GROUP BY a.user_id, a.username, a.full_name
+                ORDER BY msg_count DESC
+            ''')
+            rows = cursor.fetchall()
+            conn.close()
+            
+            return [{
+                'user_id': r[0],
+                'username': r[1],
+                'full_name': r[2],
+                'message_count': r[3]
+            } for r in rows]
+        except Exception as e:
+            logger.error(f"❌ Error getting all admins activity: {e}")
+            return []
 
 
 class CredentialManager:
@@ -964,14 +1170,19 @@ class ClubAssistantBot:
             await update.message.reply_text("Нет админов")
             return
         
-        text = "👥 Админы:\n\n"
-        for user_id, username, full_name in admins:
-            text += f"• {user_id}"
-            if username:
-                text += f" @{username}"
-            text += "\n"
-        
-        await update.message.reply_text(text)
+        # For owner, show interactive list with stats
+        if update.effective_user.id == self.owner_id:
+            await self._show_admins_list(update, context)
+        else:
+            # For regular admins, show simple list
+            text = "👥 Админы:\n\n"
+            for user_id, username, full_name in admins:
+                text += f"• {user_id}"
+                if username:
+                    text += f" @{username}"
+                text += "\n"
+            
+            await update.message.reply_text(text)
     
     async def cmd_savecreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -1003,6 +1214,332 @@ class ClubAssistantBot:
         
         if update.message.chat.type != 'private':
             await update.message.reply_text("✅ Отправил в личку")
+    
+    async def cmd_setname(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Set admin's full name (owner only)"""
+        if update.effective_user.id != self.owner_id:
+            await update.message.reply_text("❌ Только для владельца")
+            return
+        
+        try:
+            if len(context.args) < 2:
+                await update.message.reply_text("Использование: /setname <user_id> <полное имя>")
+                return
+            
+            user_id = int(context.args[0])
+            full_name = ' '.join(context.args[1:])
+            
+            # Check if user is admin
+            if not self.admin_manager.is_admin(user_id):
+                await update.message.reply_text(f"❌ Пользователь {user_id} не является админом")
+                return
+            
+            if self.admin_manager.set_full_name(user_id, full_name):
+                await update.message.reply_text(f"✅ Имя установлено: {full_name}")
+            else:
+                await update.message.reply_text("❌ Ошибка при установке имени")
+        except ValueError:
+            await update.message.reply_text("❌ Неверный user_id")
+        except Exception as e:
+            logger.error(f"❌ Error in cmd_setname: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    
+    async def cmd_adminchats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show admin chat logs (owner only)"""
+        if update.effective_user.id != self.owner_id:
+            await update.message.reply_text("❌ Только для владельца")
+            return
+        
+        try:
+            if len(context.args) < 1:
+                await update.message.reply_text("Использование: /adminchats <user_id>")
+                return
+            
+            user_id = int(context.args[0])
+            
+            # Check if user is admin
+            if not self.admin_manager.is_admin(user_id):
+                await update.message.reply_text(f"❌ Пользователь {user_id} не является админом")
+                return
+            
+            # Show admin chat dashboard
+            await self._show_admin_chats(update, context, user_id, 'today', 'all')
+        except ValueError:
+            await update.message.reply_text("❌ Неверный user_id")
+        except Exception as e:
+            logger.error(f"❌ Error in cmd_adminchats: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    
+    async def cmd_adminstats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show all admins activity (owner only)"""
+        if update.effective_user.id != self.owner_id:
+            await update.message.reply_text("❌ Только для владельца")
+            return
+        
+        try:
+            await self._show_all_admins_activity(update, context, 'today')
+        except Exception as e:
+            logger.error(f"❌ Error in cmd_adminstats: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    
+    async def cmd_adminmonitor(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show admin monitoring dashboard (owner only)"""
+        if update.effective_user.id != self.owner_id:
+            await update.message.reply_text("❌ Только для владельца")
+            return
+        
+        try:
+            await self._show_monitor_main(update, context)
+        except Exception as e:
+            logger.error(f"❌ Error in cmd_adminmonitor: {e}")
+            await update.message.reply_text(f"❌ Ошибка: {str(e)}")
+    
+    async def _show_monitor_main(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show main admin monitoring dashboard"""
+        text = "👥 Мониторинг админов\n\n"
+        text += "Выберите действие:"
+        
+        keyboard = [
+            [InlineKeyboardButton("📋 Список админов", callback_data="monitor_admins_list")],
+            [InlineKeyboardButton("💬 Активность за сегодня", callback_data="monitor_activity_today")],
+            [InlineKeyboardButton("📅 Активность за неделю", callback_data="monitor_activity_week")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
+        ]
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def _show_admins_list(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show interactive admin list with stats"""
+        admins = self.admin_manager.list_admins()
+        
+        if not admins:
+            text = "Нет админов"
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="monitor_main")]]
+            
+            if update.callback_query:
+                await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            else:
+                await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+        
+        text = f"👥 Админы ({len(admins)})\n\n"
+        
+        keyboard = []
+        for i, (user_id, username, full_name) in enumerate(admins, 1):
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+            text += f"{i}. 👤 {full_name if full_name else 'Не установлено'}\n"
+            text += f"   ID: {user_id}"
+            if username:
+                text += f" | @{username}"
+            
+            # Get today's message count
+            stats = self.admin_manager.get_admin_stats(user_id, 'today')
+            text += f"\n   💬 Сегодня: {stats['total_messages']} сообщений\n"
+            
+            # Add buttons for this admin
+            keyboard.append([
+                InlineKeyboardButton("📝 Чаты", callback_data=f"monitor_admin_chats_{user_id}_today_all"),
+                InlineKeyboardButton("📊 Статистика", callback_data=f"monitor_admin_stats_{user_id}_today")
+            ])
+        
+        text += "\n━━━━━━━━━━━━━━━━━━━━━━"
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="monitor_main")])
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def _show_admin_chats(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                user_id: int, period: str = 'today', filter_type: str = 'all',
+                                offset: int = 0):
+        """Show admin chat logs with filters"""
+        display_name = self.admin_manager.get_display_name(user_id)
+        
+        # Get logs based on filter
+        if filter_type == 'groups':
+            logs = [l for l in self.admin_manager.get_admin_logs(user_id, 20 + offset, period) 
+                   if l['chat_type'] in ['group', 'supergroup']]
+        elif filter_type == 'commands':
+            logs = [l for l in self.admin_manager.get_admin_logs(user_id, 20 + offset, period) 
+                   if l['is_command']]
+        else:
+            logs = self.admin_manager.get_admin_logs(user_id, 20 + offset, period)
+        
+        # Apply offset for pagination
+        logs = logs[offset:][:20]
+        
+        text = f"💬 Чаты: {display_name}\n\n"
+        
+        # Filter buttons
+        text += "Фильтры:\n"
+        period_buttons = [
+            InlineKeyboardButton("🕐 Сегодня" if period == 'today' else "Сегодня", 
+                               callback_data=f"monitor_admin_chats_{user_id}_today_{filter_type}"),
+            InlineKeyboardButton("📅 Неделя" if period == 'week' else "Неделя", 
+                               callback_data=f"monitor_admin_chats_{user_id}_week_{filter_type}"),
+            InlineKeyboardButton("📆 Месяц" if period == 'month' else "Месяц", 
+                               callback_data=f"monitor_admin_chats_{user_id}_month_{filter_type}")
+        ]
+        
+        filter_buttons = [
+            InlineKeyboardButton("💬 Все" if filter_type == 'all' else "Все", 
+                               callback_data=f"monitor_admin_chats_{user_id}_{period}_all"),
+            InlineKeyboardButton("👥 Группы" if filter_type == 'groups' else "Группы", 
+                               callback_data=f"monitor_admin_chats_{user_id}_{period}_groups"),
+            InlineKeyboardButton("⚙️ Команды" if filter_type == 'commands' else "Команды", 
+                               callback_data=f"monitor_admin_chats_{user_id}_{period}_commands")
+        ]
+        
+        keyboard = [period_buttons, filter_buttons]
+        
+        text += "\n━━━━━━━━━━━━━━━━━━━━━━\n"
+        
+        if not logs:
+            text += "Нет сообщений за этот период"
+        else:
+            for log in logs:
+                # Format timestamp
+                ts = log['timestamp']
+                time_str = ts.split()[1][:8] if ' ' in ts else ts[:8]
+                
+                # Chat type emoji
+                if log['chat_type'] == 'private':
+                    chat_emoji = "💬 Личка"
+                elif log['chat_type'] in ['group', 'supergroup']:
+                    chat_emoji = "👥 Группа"
+                else:
+                    chat_emoji = "💬"
+                
+                text += f"⏰ {time_str} | {chat_emoji}\n"
+                
+                # Message text
+                msg_text = log['message_text']
+                if log['is_command']:
+                    text += f"🔧 {msg_text}\n"
+                else:
+                    # Truncate long messages
+                    if len(msg_text) > 100:
+                        msg_text = msg_text[:97] + "..."
+                    text += f'"{msg_text}"\n'
+                
+                text += "\n"
+        
+        # Navigation buttons
+        nav_buttons = [
+            InlineKeyboardButton("◀️ Назад", callback_data="monitor_admins_list"),
+            InlineKeyboardButton("🔄 Обновить", callback_data=f"monitor_admin_chats_{user_id}_{period}_{filter_type}")
+        ]
+        
+        if len(logs) == 20:
+            nav_buttons.append(InlineKeyboardButton("⬇️ Ещё 20", 
+                                                   callback_data=f"monitor_admin_chats_{user_id}_{period}_{filter_type}_{offset + 20}"))
+        
+        keyboard.append(nav_buttons)
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def _show_admin_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+                               user_id: int, period: str = 'today'):
+        """Show admin statistics"""
+        display_name = self.admin_manager.get_display_name(user_id)
+        stats = self.admin_manager.get_admin_stats(user_id, period)
+        
+        period_names = {
+            'today': 'За сегодня',
+            'week': 'За неделю',
+            'month': 'За месяц'
+        }
+        
+        text = f"📊 Статистика: {display_name}\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+        text += f"📅 {period_names.get(period, 'За период')}:\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+        text += f"💬 Сообщений: {stats['total_messages']}\n"
+        
+        # By chat type
+        by_type = stats.get('by_chat_type', {})
+        if by_type:
+            text += f"   • Личка: {by_type.get('private', 0)}\n"
+            text += f"   • Группы: {by_type.get('group', 0) + by_type.get('supergroup', 0)}\n"
+        
+        text += f"\n⚙️ Команд: {stats['total_commands']}\n"
+        
+        # Top commands
+        top_commands = stats.get('top_commands', [])
+        if top_commands:
+            for cmd, cnt in top_commands[:5]:
+                text += f"   • {cmd}: {cnt}\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("📅 Сегодня" if period != 'today' else "✅ Сегодня", 
+                                callback_data=f"monitor_admin_stats_{user_id}_today"),
+             InlineKeyboardButton("📅 Неделя" if period != 'week' else "✅ Неделя", 
+                                callback_data=f"monitor_admin_stats_{user_id}_week"),
+             InlineKeyboardButton("📅 Месяц" if period != 'month' else "✅ Месяц", 
+                                callback_data=f"monitor_admin_stats_{user_id}_month")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="monitor_admins_list")]
+        ]
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    async def _show_all_admins_activity(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                       period: str = 'today'):
+        """Show all admins activity"""
+        activity = self.admin_manager.get_all_admins_activity(period)
+        
+        period_names = {
+            'today': 'сегодня',
+            'week': 'за неделю',
+            'month': 'за месяц'
+        }
+        
+        text = f"💬 Активность админов ({period_names.get(period, 'за период')})\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+        
+        if not activity:
+            text += "Нет активности"
+        else:
+            medals = ['🥇', '🥈', '🥉']
+            total_messages = 0
+            
+            for i, admin in enumerate(activity):
+                medal = medals[i] if i < 3 else f"{i+1}."
+                display_name = admin['full_name'] if admin['full_name'] else (
+                    f"@{admin['username']}" if admin['username'] else str(admin['user_id'])
+                )
+                
+                text += f"{medal} {display_name}: {admin['message_count']} сообщений\n"
+                text += f"   [📝 Чаты]({admin['user_id']})\n\n"
+                total_messages += admin['message_count']
+            
+            text += "━━━━━━━━━━━━━━━━━━━━━━\n"
+            text += f"📊 Всего: {total_messages} сообщений\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🕐 Сегодня" if period != 'today' else "✅ Сегодня", 
+                                callback_data="monitor_activity_today"),
+             InlineKeyboardButton("📅 Неделя" if period != 'week' else "✅ Неделя", 
+                                callback_data="monitor_activity_week"),
+             InlineKeyboardButton("📆 Месяц" if period != 'month' else "✅ Месяц", 
+                                callback_data="monitor_activity_month")],
+            [InlineKeyboardButton("🔄 Обновить", callback_data=f"monitor_activity_{period}"),
+             InlineKeyboardButton("◀️ Назад", callback_data="monitor_main")]
+        ]
+        
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     
     async def _perform_bot_update(self) -> Tuple[bool, str]:
         """
@@ -1390,6 +1927,54 @@ class ClubAssistantBot:
         
         if data.startswith("issue_delete_"):
             await self.issue_commands.delete_issue(update, context)
+            return
+        
+        # Admin monitoring callbacks (owner only)
+        if data == "monitor_main":
+            if query.from_user.id != self.owner_id:
+                await query.answer("❌ Доступ запрещён")
+                return
+            await self._show_monitor_main(update, context)
+            return
+        
+        if data == "monitor_admins_list":
+            if query.from_user.id != self.owner_id:
+                await query.answer("❌ Доступ запрещён")
+                return
+            await self._show_admins_list(update, context)
+            return
+        
+        if data.startswith("monitor_admin_chats_"):
+            if query.from_user.id != self.owner_id:
+                await query.answer("❌ Доступ запрещён")
+                return
+            # Parse: monitor_admin_chats_{user_id}_{period}_{filter}[_{offset}]
+            parts = data.replace("monitor_admin_chats_", "").split("_")
+            user_id = int(parts[0])
+            period = parts[1] if len(parts) > 1 else 'today'
+            filter_type = parts[2] if len(parts) > 2 else 'all'
+            offset = int(parts[3]) if len(parts) > 3 else 0
+            await self._show_admin_chats(update, context, user_id, period, filter_type, offset)
+            return
+        
+        if data.startswith("monitor_admin_stats_"):
+            if query.from_user.id != self.owner_id:
+                await query.answer("❌ Доступ запрещён")
+                return
+            # Parse: monitor_admin_stats_{user_id}_{period}
+            parts = data.replace("monitor_admin_stats_", "").split("_")
+            user_id = int(parts[0])
+            period = parts[1] if len(parts) > 1 else 'today'
+            await self._show_admin_stats(update, context, user_id, period)
+            return
+        
+        if data.startswith("monitor_activity_"):
+            if query.from_user.id != self.owner_id:
+                await query.answer("❌ Доступ запрещён")
+                return
+            # Parse: monitor_activity_{period}
+            period = data.replace("monitor_activity_", "")
+            await self._show_all_admins_activity(update, context, period)
             return
         
         # === КОНЕЦ НОВЫХ МОДУЛЕЙ ===
@@ -2220,6 +2805,23 @@ class ClubAssistantBot:
         if len(text) < 3:
             return
         
+        # Log admin messages automatically
+        if self.admin_manager.is_admin(user.id):
+            try:
+                is_command = text.startswith('/')
+                chat_type = message.chat.type  # 'private', 'group', 'supergroup'
+                self.admin_manager.log_admin_message(
+                    user_id=user.id,
+                    username=user.username or "",
+                    full_name=user.full_name or "",
+                    text=text,
+                    chat_id=message.chat.id,
+                    chat_type=chat_type,
+                    is_command=is_command
+                )
+            except Exception as e:
+                logger.error(f"❌ Error logging admin message: {e}")
+        
         # Автообучение ТОЛЬКО в группах (не в личке!)
         if message.chat.type != 'private':
             try:
@@ -2346,6 +2948,12 @@ class ClubAssistantBot:
         application.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         application.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         application.add_handler(CommandHandler("update", self.cmd_update))
+        
+        # Owner-only admin monitoring commands
+        application.add_handler(CommandHandler("setname", self.cmd_setname))
+        application.add_handler(CommandHandler("adminchats", self.cmd_adminchats))
+        application.add_handler(CommandHandler("adminstats", self.cmd_adminstats))
+        application.add_handler(CommandHandler("adminmonitor", self.cmd_adminmonitor))
         
         # Content generation command
         application.add_handler(CommandHandler("generate", self.content_commands.cmd_generate))
@@ -2556,6 +3164,22 @@ def init_database():
     
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_knowledge_current ON knowledge(is_current)')
     cursor.execute('CREATE INDEX IF NOT EXISTS idx_draft_status ON knowledge_drafts(status)')
+    
+    # Admin chat logs table for monitoring
+    cursor.execute('''CREATE TABLE IF NOT EXISTS admin_chat_logs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_id INTEGER NOT NULL,
+        username TEXT,
+        full_name TEXT,
+        message_text TEXT,
+        chat_id INTEGER,
+        chat_type TEXT,
+        is_command BOOLEAN DEFAULT 0,
+        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        FOREIGN KEY (user_id) REFERENCES admins(user_id))''')
+    
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_admin_chat_logs_user ON admin_chat_logs(user_id, timestamp DESC)')
+    cursor.execute('CREATE INDEX IF NOT EXISTS idx_admin_chat_logs_timestamp ON admin_chat_logs(timestamp DESC)')
     
     conn.commit()
     conn.close()
