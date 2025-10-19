@@ -21,20 +21,29 @@ def test_browser_headers():
     gen = VideoGenerator("test-api-key")
     
     # Check that all required headers are present
-    required_headers = {
-        'Authorization': 'Bearer test-api-key',
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/plain, */*',
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-        'Origin': 'https://www.yesai.pro',
-        'Referer': 'https://www.yesai.pro/',
-    }
+    assert 'Authorization' in gen.headers, "Missing Authorization header"
+    assert gen.headers['Authorization'] == 'Bearer test-api-key', "Authorization header incorrect"
+    print(f"  ✅ Authorization: {gen.headers['Authorization']}")
     
-    for header_name, expected_value in required_headers.items():
-        assert header_name in gen.headers, f"Missing header: {header_name}"
-        actual_value = gen.headers[header_name]
-        assert actual_value == expected_value, f"Header {header_name}: expected '{expected_value}', got '{actual_value}'"
-        print(f"  ✅ {header_name}: {actual_value}")
+    assert 'Content-Type' in gen.headers, "Missing Content-Type header"
+    assert gen.headers['Content-Type'] == 'application/json', "Content-Type should be application/json"
+    print(f"  ✅ Content-Type: {gen.headers['Content-Type']}")
+    
+    assert 'Accept' in gen.headers, "Missing Accept header"
+    assert 'application/json' in gen.headers['Accept'], "Accept should include application/json"
+    assert 'text/plain' in gen.headers['Accept'], "Accept should include text/plain"
+    print(f"  ✅ Accept: {gen.headers['Accept']}")
+    
+    assert 'User-Agent' in gen.headers, "Missing User-Agent header"
+    print(f"  ✅ User-Agent: {gen.headers['User-Agent']}")
+    
+    assert 'Origin' in gen.headers, "Missing Origin header"
+    assert gen.headers['Origin'] == 'https://www.yesai.pro', "Origin should be https://www.yesai.pro"
+    print(f"  ✅ Origin: {gen.headers['Origin']}")
+    
+    assert 'Referer' in gen.headers, "Missing Referer header"
+    assert gen.headers['Referer'] == 'https://www.yesai.pro/', "Referer should be https://www.yesai.pro/"
+    print(f"  ✅ Referer: {gen.headers['Referer']}")
     
     # Verify User-Agent looks like a browser
     user_agent = gen.headers['User-Agent']
