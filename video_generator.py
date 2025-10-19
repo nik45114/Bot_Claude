@@ -84,7 +84,7 @@ class VideoGenerator:
             response = requests.post(generation_url, headers=self.headers, json=data, timeout=30)
             response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
             
-            # Capture response text before parsing JSON (for error handling)
+            # Capture response text before parsing JSON to ensure it's available in exception handlers
             response_text = response.text
             response_data = response.json()
             logger.info(f"  ✅ Response received: {response_data}")
@@ -145,7 +145,7 @@ class VideoGenerator:
                 response = requests.get(status_url, headers=self.headers, timeout=10)
                 response.raise_for_status()
                 
-                # Capture response text before parsing JSON (for error handling)
+                # Capture response text before parsing JSON to ensure it's available in exception handlers
                 response_text = response.text
                 status_data = response.json()
                 
