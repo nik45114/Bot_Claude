@@ -7,6 +7,10 @@ Video Generator using Yes Ai API
 import logging
 import requests
 import time
+import urllib3
+
+# Disable SSL warnings when verify=False is used
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +74,8 @@ class VideoGenerator:
                 f"{self.base_url}/video/generation",
                 headers=headers,
                 json=data,
-                timeout=30
+                timeout=30,
+                verify=False  # Bypass SSL verification
             )
             
             if response.status_code != 200:
@@ -104,7 +109,8 @@ class VideoGenerator:
                 status_response = requests.get(
                     f"{self.base_url}/video/status/{task_id}",
                     headers=headers,
-                    timeout=10
+                    timeout=10,
+                    verify=False  # Bypass SSL verification
                 )
                 
                 if status_response.status_code != 200:
