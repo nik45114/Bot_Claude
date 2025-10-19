@@ -33,6 +33,38 @@ def test_curl_flags_in_command():
     return True
 
 
+def test_tlsv1_2_flag():
+    """Test that curl supports --tlsv1.2 flag"""
+    print("\nTesting TLSv1.2 flag support...")
+    
+    # Test that curl supports --tlsv1.2 flag
+    help_result = subprocess.run(
+        ['curl', '--help'],
+        capture_output=True,
+        text=True
+    )
+    
+    if '--tlsv1.2' in help_result.stdout:
+        print("  ✅ Confirmed: curl supports --tlsv1.2 flag")
+    else:
+        print("  ⚠️  curl --tlsv1.2 not found in help (may still work)")
+    
+    # Test that the flag doesn't cause immediate errors
+    result = subprocess.run(
+        ['curl', '--tlsv1.2', '--version'],
+        capture_output=True,
+        text=True,
+        timeout=5
+    )
+    
+    if result.returncode == 0:
+        print("  ✅ Confirmed: --tlsv1.2 flag is accepted by curl")
+        return True
+    else:
+        print(f"  ❌ Error: --tlsv1.2 flag rejected by curl: {result.stderr}")
+        return False
+
+
 def test_curl_error_messages():
     """Test that curl produces detailed error messages"""
     print("\nTesting curl error message production...")
@@ -137,6 +169,7 @@ def main():
     
     tests = [
         test_curl_flags_in_command,
+        test_tlsv1_2_flag,
         test_curl_error_messages,
         test_error_detail_fallback,
         test_headers_format,
