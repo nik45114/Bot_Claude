@@ -97,6 +97,14 @@ class VideoGenerator:
             # Step 2: Poll for completion (max 2 minutes)
             return self._poll_for_completion(task_id, duration, resolution)
 
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"API request failed with status {e.response.status_code}: {e.response.text[:200]}"
+            logger.error(f"❌ {error_msg}")
+            return {'error': error_msg}
+        except requests.exceptions.JSONDecodeError as e:
+            error_msg = f"Failed to decode JSON response. Server response: {response.text[:200]}"
+            logger.error(f"❌ {error_msg}")
+            return {'error': "API returned an invalid (non-JSON) response. See logs for details."}
         except requests.exceptions.Timeout:
             logger.error("❌ Initial request timed out")
             return {'error': 'Timeout: initial request took too long'}
@@ -155,6 +163,8 @@ class VideoGenerator:
                     logger.error(f"❌ Generation failed: {error_msg}")
                     return {'error': f"Generation failed: {error_msg}"}
 
+            except requests.exceptions.JSONDecodeError:
+                logger.warning(f"⚠️ Failed to parse status JSON: {response.text[:200]}")
             except requests.exceptions.Timeout:
                 logger.warning("⚠️ Status check timed out")
             except requests.exceptions.RequestException as e:
