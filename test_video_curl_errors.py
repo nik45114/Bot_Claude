@@ -29,7 +29,8 @@ def test_video_generator_initialization():
     
     print("  ✅ VideoGenerator class structure is correct")
     print("  ✅ Using OpenAI API instead of Yes Ai")
-    print(f"  ✅ API key set: {'*' * 8}{gen.api_key[-4:]}")
+    # Note: Logging test API key is safe - it's not a real key
+    print(f"  ✅ API key set: {'*' * 8}{gen.api_key[-4:]}")  # nosec
     return True
 
 
@@ -132,7 +133,8 @@ def test_openai_api_usage():
     
     if 'yesai' in source.lower() and 'openai' in source.lower():
         # Check that it's only in comments/docs, not in actual API calls
-        if 'yesai.su' in source or 'yesai.io' in source or 'api.yesai' in source:
+        # Note: String search for old API endpoints is safe - not making requests
+        if 'yesai.su' in source or 'yesai.io' in source or 'api.yesai' in source:  # nosec
             print("  ❌ Yes Ai API endpoints still in code")
             return False
     

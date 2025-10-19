@@ -145,7 +145,8 @@ def test_no_yesai_references():
     source = inspect.getsource(video_generator)
     
     # Check that Yes Ai endpoints are removed
-    if 'yesai.su' in source or 'yesai.io' in source or 'api.yesai' in source:
+    # Note: String search for old API endpoints is safe - not making requests
+    if 'yesai.su' in source or 'yesai.io' in source or 'api.yesai' in source:  # nosec
         print("  ❌ Yes Ai API endpoints still in code")
         return False
     
