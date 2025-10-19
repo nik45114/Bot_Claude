@@ -23,27 +23,31 @@ def test_browser_headers():
     # Check that all required headers are present
     assert 'Authorization' in gen.headers, "Missing Authorization header"
     assert gen.headers['Authorization'] == 'Bearer test-api-key', "Authorization header incorrect"
-    print(f"  ✅ Authorization: {gen.headers['Authorization']}")
+    print(f"  ✅ Authorization: Bearer ***")
     
     assert 'Content-Type' in gen.headers, "Missing Content-Type header"
     assert gen.headers['Content-Type'] == 'application/json', "Content-Type should be application/json"
-    print(f"  ✅ Content-Type: {gen.headers['Content-Type']}")
+    print("  ✅ Content-Type: application/json")
     
     assert 'Accept' in gen.headers, "Missing Accept header"
-    assert 'application/json' in gen.headers['Accept'], "Accept should include application/json"
-    assert 'text/plain' in gen.headers['Accept'], "Accept should include text/plain"
-    print(f"  ✅ Accept: {gen.headers['Accept']}")
+    accept_header = gen.headers['Accept']
+    assert 'application/json' in accept_header, "Accept should include application/json"
+    assert 'text/plain' in accept_header, "Accept should include text/plain"
+    print(f"  ✅ Accept: {accept_header}")
     
     assert 'User-Agent' in gen.headers, "Missing User-Agent header"
-    print(f"  ✅ User-Agent: {gen.headers['User-Agent']}")
+    user_agent = gen.headers['User-Agent']
+    print(f"  ✅ User-Agent: {user_agent}")
     
     assert 'Origin' in gen.headers, "Missing Origin header"
-    assert gen.headers['Origin'] == 'https://www.yesai.pro', "Origin should be https://www.yesai.pro"
-    print(f"  ✅ Origin: {gen.headers['Origin']}")
+    origin_header = gen.headers['Origin']
+    assert origin_header == 'https://www.yesai.pro', "Origin should be https://www.yesai.pro"
+    print(f"  ✅ Origin: {origin_header}")
     
     assert 'Referer' in gen.headers, "Missing Referer header"
-    assert gen.headers['Referer'] == 'https://www.yesai.pro/', "Referer should be https://www.yesai.pro/"
-    print(f"  ✅ Referer: {gen.headers['Referer']}")
+    referer_header = gen.headers['Referer']
+    assert referer_header == 'https://www.yesai.pro/', "Referer should be https://www.yesai.pro/"
+    print(f"  ✅ Referer: {referer_header}")
     
     # Verify User-Agent looks like a browser
     user_agent = gen.headers['User-Agent']
