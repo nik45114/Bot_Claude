@@ -138,7 +138,7 @@ class ContentGenerator:
         Note: Actual video generation is now handled by VideoGenerator class
         """
         try:
-            generation_id = self._log_generation(user_id, prompt, 'video', 'yesai-sora')
+            generation_id = self._log_generation(user_id, prompt, 'video', 'openai-sora')
             
             if video_url:
                 self._update_generation(generation_id, 'completed', video_url=video_url)
@@ -146,7 +146,7 @@ class ContentGenerator:
                     'success': True,
                     'type': 'video',
                     'url': video_url,
-                    'model': 'yesai-sora',
+                    'model': 'openai-sora',
                     'duration': duration,
                     'resolution': resolution
                 }

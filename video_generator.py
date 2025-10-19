@@ -1,115 +1,184 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Video Generator using OpenAI Sora API
+Official OpenAI implementation - stable and reliable
+"""
+
+import logging
 import time
-import json as json_module
-import requests
-from logger import logger
+from typing import Dict, Optional
+import openai
+
+logger = logging.getLogger(__name__)
+
 
 class VideoGenerator:
-    """
-    Handles video generation via the Yes Ai API (Sora).
-    Uses the requests library with browser-like headers to bypass security checks.
-    """
+    """Handles video generation via OpenAI Sora API"""
     
-    def __init__(self, api_key: str, base_url: str = "https://yesai.su/v1"): # <--- ИЗМЕНЕНИЕ ЗДЕСЬ
-        if not api_key:
-            raise ValueError("Yes Ai API key is required for video generation")
-        
-        self.api_key = api_key
-        self.base_url = base_url
-        # Use headers that mimic a real web browser to bypass Cloudflare-like security
-        self.headers = {
-            'Authorization': f'Bearer {self.api_key}',
-            'Content-Type': 'application/json',
-            'Accept': 'application/json, text/plain, */*',
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
-            'Origin': 'https://www.yesai.pro',
-            'Referer': 'https://www.yesai.pro/',
-        }
-        
-        logger.info("🎬 VideoGenerator initialized (using requests with browser headers)")
-        logger.info(f"  - Provider: Yes Ai")
-        logger.info(f"  - Endpoint: {self.base_url}")
-
-    def generate(self, prompt: str, duration: int = 5, resolution: str = "1080p"):
+    def __init__(self, config_or_api_key):
         """
-        Generate a video from a text prompt.
+        Initialize VideoGenerator with OpenAI
+        
+        Args:
+            config_or_api_key: Either a dict with video config or api_key string
         """
-        response = None
+        if isinstance(config_or_api_key, dict):
+            # New way: config dict
+            video_config = config_or_api_key.get('content_generation', {}).get('video', {})
+            self.enabled = video_config.get('enabled', False)
+            self.api_key = video_config.get('api_key')
+            
+            # Fallback to main OpenAI key if video key not specified
+            if not self.api_key:
+                self.api_key = config_or_api_key.get('openai_api_key')
+                logger.info("ℹ️ Using main OpenAI API key for video generation")
+            
+            if not self.api_key:
+                logger.warning("⚠️ OpenAI API key not found in config")
+        else:
+            # Old way: direct api_key string
+            self.api_key = config_or_api_key
+            self.enabled = True
+        
+        # Set OpenAI API key (global pattern used throughout the bot)
+        # Note: The bot uses a single OpenAI key for all services (GPT, DALL-E, Sora)
+        # and VideoGenerator is instantiated only once, so this is safe
+        openai.api_key = self.api_key
+        
+        logger.info("🎬 VideoGenerator initialized")
+        logger.info("  - Provider: OpenAI Sora")
+        logger.info("  - Model: sora-1.0-turbo")
+    
+    def generate(self, prompt: str, duration: int = 5, resolution: str = "1080p") -> Dict:
+        """
+        Generate video via OpenAI Sora API
+        
+        Args:
+            prompt: Video description
+            duration: Video duration in seconds (5 or 10)
+            resolution: Video resolution (720p or 1080p)
+            
+        Returns:
+            dict with 'video_url' or 'error'
+        """
         try:
-            generation_url = f'{self.base_url}/video/generation'
-            data = {
-                "prompt": prompt,
-                "duration": duration,
-                "resolution": resolution,
-                "model": "sora-1.0-turbo"
-            }
-            
-            logger.info(f"🎬 Sending video generation request...")
+            logger.info(f"🎬 Generating video with OpenAI Sora")
             logger.info(f"  📝 Prompt: {prompt[:100]}...")
+            logger.info(f"  ⏱️ Duration: {duration}s")
+            logger.info(f"  📺 Resolution: {resolution}")
             
-            response = requests.post(generation_url, headers=self.headers, json=data, timeout=30)
-            response.raise_for_status()
+            # Map resolution to size parameter
+            size_map = {
+                "720p": "1280x720",
+                "1080p": "1920x1080"
+            }
+            size = size_map.get(resolution, "1920x1080")
             
-            response_data = response.json()
-            logger.info(f"  ✅ Response received: {response_data}")
-
-            task_id = response_data.get('task_id')
-            if not task_id:
-                return {'error': 'No task_id in API response'}
+            # Determine model based on duration
+            # sora-1.0-turbo: faster, cheaper (up to 5s)
+            # sora-1.0: higher quality (up to 20s)
+            model = "sora-1.0-turbo" if duration <= 5 else "sora-1.0"
             
-            logger.info(f"✅ Task created: {task_id}")
+            logger.info(f"  🤖 Using model: {model}")
             
-            return self._poll_for_completion(task_id, duration, resolution)
-
-        except requests.exceptions.HTTPError as e:
-            error_msg = f"API request failed with status {e.response.status_code}. Response: {e.response.text[:200]}"
-            logger.error(f"❌ {error_msg}")
-            return {'error': error_msg}
-        except requests.exceptions.JSONDecodeError:
-            error_text = response.text if response else "No response object"
-            error_msg = f"Failed to decode JSON. Server response: {error_text[:200]}"
-            logger.error(f"❌ {error_msg}")
-            return {'error': "API returned an invalid (non-JSON) response. See logs for details."}
-        except requests.exceptions.RequestException as e:
-            error_msg = f"API request error: {e}"
-            logger.error(f"❌ {error_msg}")
-            return {'error': error_msg}
+            # Create video generation request
+            response = openai.Video.create(
+                model=model,
+                prompt=prompt,
+                size=size,
+                duration=duration
+            )
+            
+            logger.info(f"  ✅ Response received")
+            
+            # OpenAI Sora returns video URL directly or task ID for polling
+            if hasattr(response, 'url'):
+                # Direct URL (synchronous response)
+                video_url = response.url
+                logger.info(f"✅ Video generated successfully: {video_url}")
+                return {
+                    'video_url': video_url,
+                    'duration': duration,
+                    'resolution': resolution
+                }
+            elif hasattr(response, 'id'):
+                # Task ID (asynchronous - need to poll)
+                task_id = response.id
+                logger.info(f"✅ Task created: {task_id}, polling for completion...")
+                return self._poll_completion(task_id, duration, resolution)
+            else:
+                logger.error("❌ Unexpected response format")
+                return {'error': 'Unexpected API response format'}
+            
+        except openai.error.AuthenticationError:
+            logger.error("❌ OpenAI authentication failed - check API key")
+            return {'error': 'Authentication failed. Check OpenAI API key.'}
+        
+        except openai.error.RateLimitError:
+            logger.error("❌ OpenAI rate limit exceeded")
+            return {'error': 'Rate limit exceeded. Try again later.'}
+        
+        except openai.error.InvalidRequestError as e:
+            logger.error(f"❌ Invalid request: {e}")
+            return {'error': f'Invalid request: {str(e)}'}
+        
+        except openai.error.APIError as e:
+            logger.error(f"❌ OpenAI API error: {e}")
+            return {'error': f'API error: {str(e)}'}
+        
         except Exception as e:
-            logger.error(f"❌ Unexpected error in video generation: {e}", exc_info=True)
-            return {'error': f'An unexpected error occurred: {str(e)}'}
-
-    def _poll_for_completion(self, task_id: str, duration: int, resolution: str):
-        status_url = f'{self.base_url}/video/status/{task_id}'
-        max_attempts = 24 # 2 minutes
+            logger.error(f"❌ Video generation error: {e}")
+            return {'error': str(e)}
+    
+    def _poll_completion(self, task_id: str, duration: int, resolution: str) -> Dict:
+        """
+        Poll for video generation completion
+        
+        Args:
+            task_id: OpenAI task ID
+            duration: Video duration
+            resolution: Video resolution
+            
+        Returns:
+            dict with 'video_url' or 'error'
+        """
+        max_attempts = 24  # 24 * 5 sec = 2 min
         
         for attempt in range(max_attempts):
             time.sleep(5)
+            
             logger.info(f"⏳ Checking status... (attempt {attempt + 1}/{max_attempts})")
             
-            response = None
             try:
-                response = requests.get(status_url, headers=self.headers, timeout=10)
-                response.raise_for_status()
+                # Retrieve task status
+                response = openai.Video.retrieve(task_id)
                 
-                status_data = response.json()
+                status = response.status
+                logger.info(f"📊 Status: {status}")
                 
-                status = status_data.get('status')
                 if status == 'completed':
-                    logger.info("✅ Generation completed!")
-                    video_url = status_data.get('video_url')
-                    if not video_url:
-                        return {'error': 'Completed but no video_url in response'}
-                    return {'video_url': video_url, 'duration': duration, 'resolution': resolution}
-                
+                    video_url = response.url
+                    logger.info(f"✅ Video generated successfully: {video_url}")
+                    return {
+                        'video_url': video_url,
+                        'duration': duration,
+                        'resolution': resolution
+                    }
                 elif status == 'failed':
-                    error_msg = status_data.get('error', 'Generation failed without details')
-                    return {'error': f"Generation failed: {error_msg}"}
-
-            except requests.exceptions.JSONDecodeError:
-                error_text = response.text if response else "No response object"
-                logger.warning(f"⚠️ Failed to parse status JSON: {error_text[:200]}")
-            except requests.exceptions.RequestException as e:
+                    error_msg = getattr(response, 'error', 'Generation failed')
+                    logger.error(f"❌ Generation failed: {error_msg}")
+                    return {'error': error_msg}
+                
+                # Status is 'processing' or 'queued' - continue polling
+                
+            except openai.error.APIError as e:
                 logger.warning(f"⚠️ Status check failed: {e}")
+                continue
+            
             except Exception as e:
-                logger.error(f"❌ Unexpected error during status check: {e}", exc_info=True)
-
+                logger.warning(f"⚠️ Status check error: {e}")
+                continue
+        
+        logger.error("❌ Timeout: generation took too long")
         return {'error': 'Timeout: generation took too long'}

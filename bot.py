@@ -1714,7 +1714,7 @@ class ClubAssistantBot:
             await update.message.reply_text(f"❌ Ошибка: {e}")
     
     async def cmd_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Generate video via Yes Ai (Sora)"""
+        """Generate video via OpenAI Sora"""
         if not self.video_generator:
             await update.message.reply_text("❌ Генерация видео отключена в конфигурации")
             return

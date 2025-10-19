@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Test video generator with requests library
+Test video generator with OpenAI API
 """
 
 import sys
@@ -12,7 +12,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 
 
 def test_video_generator_initialization():
-    """Test that VideoGenerator initializes correctly with requests"""
+    """Test that VideoGenerator initializes correctly with OpenAI"""
     print("Testing VideoGenerator initialization...")
     
     from video_generator import VideoGenerator
@@ -21,34 +21,29 @@ def test_video_generator_initialization():
     gen = VideoGenerator("test-api-key")
     
     # Verify the class has expected attributes
-    assert hasattr(gen, 'base_url'), "VideoGenerator should have base_url"
     assert hasattr(gen, 'api_key'), "VideoGenerator should have api_key"
-    assert hasattr(gen, 'headers'), "VideoGenerator should have headers"
+    assert hasattr(gen, 'enabled'), "VideoGenerator should have enabled"
     assert hasattr(gen, 'generate'), "VideoGenerator should have generate method"
-    assert "https://yesai.su/api/v1" in gen.base_url, "base_url should use correct endpoint"
-    
-    # Check headers are properly set
-    assert 'Authorization' in gen.headers, "Headers should include Authorization"
-    assert 'Content-Type' in gen.headers, "Headers should include Content-Type"
-    assert 'Accept' in gen.headers, "Headers should include Accept"
-    assert gen.headers['Content-Type'] == 'application/json', "Content-Type should be JSON"
+    assert gen.api_key == "test-api-key", "API key should be set correctly"
+    assert gen.enabled == True, "Should be enabled by default with direct API key"
     
     print("  ✅ VideoGenerator class structure is correct")
-    print("  ✅ Using requests library instead of curl")
-    print(f"  ✅ Base URL: {gen.base_url}")
+    print("  ✅ Using OpenAI API instead of Yes Ai")
+    # Note: Logging test API key is safe - it's not a real key
+    print(f"  ✅ API key set: {'*' * 8}{gen.api_key[-4:]}")  # nosec
     return True
 
 
-def test_requests_library_available():
-    """Test that requests library is available"""
-    print("\nTesting requests library availability...")
+def test_openai_library_available():
+    """Test that openai library is available"""
+    print("\nTesting openai library availability...")
     
     try:
-        import requests
-        print(f"  ✅ requests library is available (version {requests.__version__})")
+        import openai
+        print(f"  ✅ openai library is available (version {openai.__version__})")
         return True
     except ImportError:
-        print("  ❌ requests library is not installed")
+        print("  ❌ openai library is not installed")
         return False
 
 
@@ -99,7 +94,7 @@ def test_error_handling():
     
     from video_generator import VideoGenerator
     
-    # Test with config missing API key
+    # Test with config missing API key - should not raise error but log warning
     config = {
         'content_generation': {
             'video': {
@@ -110,16 +105,18 @@ def test_error_handling():
     
     try:
         gen = VideoGenerator(config)
-        print("  ❌ Should have raised ValueError for missing API key")
-        return False
-    except ValueError as e:
-        print(f"  ✅ Correctly raised ValueError: {e}")
+        # Should initialize but API key will be None
+        assert gen.api_key is None, "API key should be None when missing"
+        print(f"  ✅ Correctly handles missing API key (logs warning)")
         return True
+    except Exception as e:
+        print(f"  ❌ Unexpected error: {e}")
+        return False
 
 
-def test_no_curl_dependency():
-    """Test that subprocess/curl is no longer used"""
-    print("\nTesting removal of curl dependency...")
+def test_openai_api_usage():
+    """Test that OpenAI API is used instead of Yes Ai"""
+    print("\nTesting OpenAI API usage...")
     
     import video_generator
     import inspect
@@ -134,26 +131,65 @@ def test_no_curl_dependency():
         print("  ❌ curl is still mentioned in the code")
         return False
     
-    if 'requests' not in source:
-        print("  ❌ requests library is not used")
+    if 'yesai' in source.lower() and 'openai' in source.lower():
+        # Check that it's only in comments/docs, not in actual API calls
+        # Note: String search for old API endpoints is safe - not making requests
+        if 'yesai.su' in source or 'yesai.io' in source or 'api.yesai' in source:  # nosec
+            print("  ❌ Yes Ai API endpoints still in code")
+            return False
+    
+    if 'openai' not in source:
+        print("  ❌ openai library is not used")
         return False
     
-    print("  ✅ curl/subprocess removed, requests library used")
+    if 'openai.Video.create' not in source:
+        print("  ❌ openai.Video.create not found")
+        return False
+    
+    print("  ✅ Yes Ai removed, OpenAI API used")
+    print("  ✅ Using openai.Video.create for video generation")
+    return True
+
+
+def test_fallback_to_main_openai_key():
+    """Test that VideoGenerator falls back to main OpenAI key"""
+    print("\nTesting fallback to main OpenAI key...")
+    
+    from video_generator import VideoGenerator
+    
+    # Test with config that has main openai_api_key but no video-specific key
+    config = {
+        'openai_api_key': 'sk-main-key-12345',
+        'content_generation': {
+            'video': {
+                'enabled': True
+                # No api_key specified
+            }
+        }
+    }
+    
+    gen = VideoGenerator(config)
+    
+    assert gen.api_key == 'sk-main-key-12345', "Should use main OpenAI API key"
+    assert gen.enabled == True, "Should be enabled"
+    
+    print("  ✅ Falls back to main openai_api_key correctly")
     return True
 
 
 def main():
     print("=" * 60)
-    print("Video Generator Requests Library Test Suite")
+    print("Video Generator OpenAI API Test Suite")
     print("=" * 60)
     
     tests = [
         test_video_generator_initialization,
-        test_requests_library_available,
+        test_openai_library_available,
         test_config_dict_initialization,
         test_backwards_compatibility,
         test_error_handling,
-        test_no_curl_dependency,
+        test_fallback_to_main_openai_key,
+        test_openai_api_usage,
     ]
     
     results = []

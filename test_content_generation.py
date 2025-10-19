@@ -22,7 +22,7 @@ def test_video_generator_api():
                 self.api_key = video_config.get('api_key', '')
             else:
                 self.api_key = config_or_api_key
-            self.base_url = "https://api.yesai.io/v1"
+            # OpenAI API - no base_url needed
         
         def generate(self, prompt, duration=5, resolution="1080p"):
             # Mock implementation
@@ -148,7 +148,7 @@ def test_command_structure():
             'example': '/image красивый закат'
         },
         'video': {
-            'description': 'Generate video via Yes Ai (Sora)',
+            'description': 'Generate video via OpenAI Sora',
             'usage': '/video <описание>',
             'example': '/video кот играет с мячиком'
         }
