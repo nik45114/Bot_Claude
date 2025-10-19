@@ -84,6 +84,8 @@ class VideoGenerator:
             response = requests.post(generation_url, headers=self.headers, json=data, timeout=30)
             response.raise_for_status()  # Raise an exception for bad status codes (4xx or 5xx)
             
+            # Capture response text before parsing JSON to ensure it's available in exception handlers
+            response_text = response.text
             response_data = response.json()
             logger.info(f"  ✅ Response received: {response_data}")
 
@@ -97,6 +99,14 @@ class VideoGenerator:
             # Step 2: Poll for completion (max 2 minutes)
             return self._poll_for_completion(task_id, duration, resolution)
 
+        except requests.exceptions.HTTPError as e:
+            error_msg = f"API request failed with status {e.response.status_code}: {e.response.text[:200]}"
+            logger.error(f"❌ {error_msg}")
+            return {'error': error_msg}
+        except requests.exceptions.JSONDecodeError as e:
+            error_msg = f"Failed to decode JSON response. Server response: {response_text[:200]}"
+            logger.error(f"❌ {error_msg}")
+            return {'error': "API returned an invalid (non-JSON) response. See logs for details."}
         except requests.exceptions.Timeout:
             logger.error("❌ Initial request timed out")
             return {'error': 'Timeout: initial request took too long'}
@@ -135,6 +145,8 @@ class VideoGenerator:
                 response = requests.get(status_url, headers=self.headers, timeout=10)
                 response.raise_for_status()
                 
+                # Capture response text before parsing JSON to ensure it's available in exception handlers
+                response_text = response.text
                 status_data = response.json()
                 
                 if status_data.get('status') == 'completed':
@@ -155,6 +167,8 @@ class VideoGenerator:
                     logger.error(f"❌ Generation failed: {error_msg}")
                     return {'error': f"Generation failed: {error_msg}"}
 
+            except requests.exceptions.JSONDecodeError:
+                logger.warning(f"⚠️ Failed to parse status JSON: {response_text[:200]}")
             except requests.exceptions.Timeout:
                 logger.warning("⚠️ Status check timed out")
             except requests.exceptions.RequestException as e:
