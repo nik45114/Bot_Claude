@@ -26,7 +26,6 @@ class VideoGenerator:
         Args:
             config_or_api_key: Either a dict with video config or api_key string (for backwards compatibility)
             base_url: API base URL (default: https://yesai.su/api/v1)
-                     Note: Changed from https://api.yesai.pro/api/v1 to use the correct endpoint
         """
         if isinstance(config_or_api_key, dict):
             # New way: config dict
