@@ -8,11 +8,25 @@ import logging
 import requests
 import time
 import urllib3
+import ssl
+from urllib3.util.ssl_ import create_urllib3_context
+from requests.adapters import HTTPAdapter
+from urllib3.poolmanager import PoolManager
 
 # Disable SSL warnings when verify=False is used
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
+
+
+class SSLContextAdapter(HTTPAdapter):
+    """Custom adapter to disable hostname verification and SNI"""
+    def init_poolmanager(self, *args, **kwargs):
+        context = create_urllib3_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        kwargs['ssl_context'] = context
+        return super().init_poolmanager(*args, **kwargs)
 
 
 class VideoGenerator:
@@ -36,6 +50,11 @@ class VideoGenerator:
             self.enabled = True
         
         self.base_url = "https://api.yesai.io/v1"
+        
+        # Create session with custom SSL adapter
+        self.session = requests.Session()
+        self.session.mount('https://', SSLContextAdapter())
+        self.session.verify = False
     
     def generate(self, prompt: str, duration: int = 5, resolution: str = "1080p") -> dict:
         """
@@ -70,12 +89,11 @@ class VideoGenerator:
             logger.info(f"  🤖 Model: sora-1.0-turbo")
             logger.info(f"  🌐 Endpoint: {self.base_url}/video/generation")
             
-            response = requests.post(
+            response = self.session.post(
                 f"{self.base_url}/video/generation",
                 headers=headers,
                 json=data,
-                timeout=30,
-                verify=False  # Bypass SSL verification
+                timeout=30
             )
             
             if response.status_code != 200:
@@ -106,11 +124,10 @@ class VideoGenerator:
                 
                 logger.info(f"⏳ Checking status... (attempt {attempt + 1}/{max_attempts})")
                 
-                status_response = requests.get(
+                status_response = self.session.get(
                     f"{self.base_url}/video/status/{task_id}",
                     headers=headers,
-                    timeout=10,
-                    verify=False  # Bypass SSL verification
+                    timeout=10
                 )
                 
                 if status_response.status_code != 200:
