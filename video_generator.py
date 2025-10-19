@@ -41,7 +41,9 @@ class VideoGenerator:
             self.api_key = config_or_api_key
             self.enabled = True
         
-        # Set OpenAI API key
+        # Set OpenAI API key (global pattern used throughout the bot)
+        # Note: The bot uses a single OpenAI key for all services (GPT, DALL-E, Sora)
+        # and VideoGenerator is instantiated only once, so this is safe
         openai.api_key = self.api_key
         
         logger.info("🎬 VideoGenerator initialized")
