@@ -11,7 +11,6 @@ import urllib3
 import ssl
 from urllib3.util.ssl_ import create_urllib3_context
 from requests.adapters import HTTPAdapter
-from urllib3.poolmanager import PoolManager
 
 # Disable SSL warnings when verify=False is used
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -54,7 +53,6 @@ class VideoGenerator:
         # Create session with custom SSL adapter
         self.session = requests.Session()
         self.session.mount('https://', SSLContextAdapter())
-        self.session.verify = False
     
     def generate(self, prompt: str, duration: int = 5, resolution: str = "1080p") -> dict:
         """
