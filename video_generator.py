@@ -73,7 +73,8 @@ class VideoGenerator:
                 '--connect-timeout', '30',
                 '--silent',
                 '--show-error',
-                '--fail'
+                '--fail',
+                '--tlsv1.2'
             ]
             
             result = subprocess.run(curl_command, capture_output=True, text=True, timeout=30)
@@ -116,7 +117,8 @@ class VideoGenerator:
                     '--connect-timeout', '10',
                     '--silent',
                     '--show-error',
-                    '--fail'
+                    '--fail',
+                    '--tlsv1.2'
                 ]
                 
                 try:
