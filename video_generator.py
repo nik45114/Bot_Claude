@@ -5,27 +5,11 @@ Video Generator using Yes Ai API
 """
 
 import logging
-import requests
+import subprocess
+import json as json_module
 import time
-import urllib3
-import ssl
-from urllib3.util.ssl_ import create_urllib3_context
-from requests.adapters import HTTPAdapter
-
-# Disable SSL warnings when verify=False is used
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
-
-
-class SSLContextAdapter(HTTPAdapter):
-    """Custom adapter to disable hostname verification and SNI"""
-    def init_poolmanager(self, *args, **kwargs):
-        context = create_urllib3_context()
-        context.check_hostname = False
-        context.verify_mode = ssl.CERT_NONE
-        kwargs['ssl_context'] = context
-        return super().init_poolmanager(*args, **kwargs)
 
 
 class VideoGenerator:
@@ -49,14 +33,10 @@ class VideoGenerator:
             self.enabled = True
         
         self.base_url = "https://api.yesai.io/v1"
-        
-        # Create session with custom SSL adapter
-        self.session = requests.Session()
-        self.session.mount('https://', SSLContextAdapter())
     
     def generate(self, prompt: str, duration: int = 5, resolution: str = "1080p") -> dict:
         """
-        Generate video via Yes Ai API
+        Generate video via Yes Ai API using curl
         
         Args:
             prompt: Video description
@@ -67,12 +47,7 @@ class VideoGenerator:
             dict with 'video_url' or 'error'
         """
         try:
-            # Step 1: Create generation request
-            headers = {
-                "Authorization": f"Bearer {self.api_key}",
-                "Content-Type": "application/json"
-            }
-            
+            # Step 1: Create generation request via curl
             data = {
                 "prompt": prompt,
                 "duration": duration,
@@ -80,34 +55,39 @@ class VideoGenerator:
                 "model": "sora-1.0-turbo"
             }
             
-            logger.info(f"🎬 Sending video generation request")
+            logger.info(f"🎬 Sending video generation request via curl")
             logger.info(f"  📝 Prompt: {prompt[:100]}...")
             logger.info(f"  ⏱️ Duration: {duration}s")
             logger.info(f"  📺 Resolution: {resolution}")
             logger.info(f"  🤖 Model: sora-1.0-turbo")
             logger.info(f"  🌐 Endpoint: {self.base_url}/video/generation")
             
-            response = self.session.post(
-                f"{self.base_url}/video/generation",
-                headers=headers,
-                json=data,
-                timeout=30
-            )
+            curl_command = [
+                'curl', '-k', '-X', 'POST',
+                f'{self.base_url}/video/generation',
+                '-H', f'Authorization: Bearer {self.api_key}',
+                '-H', 'Content-Type: application/json',
+                '-d', json_module.dumps(data),
+                '--connect-timeout', '30',
+                '--silent'
+            ]
             
-            if response.status_code != 200:
-                error_msg = f'API error: {response.status_code}'
+            result = subprocess.run(curl_command, capture_output=True, text=True, timeout=30)
+            
+            if result.returncode != 0:
+                error_msg = f'Curl error: {result.stderr}'
                 logger.error(f"❌ {error_msg}")
-                try:
-                    error_detail = response.json()
-                    logger.error(f"  📄 Response: {error_detail}")
-                except (ValueError, requests.exceptions.JSONDecodeError) as e:
-                    logger.error(f"  📄 Response text: {response.text[:200]}")
-                    logger.debug(f"  Failed to parse JSON: {e}")
                 return {'error': error_msg}
             
-            result = response.json()
-            logger.info(f"  ✅ Response received: {result}")
-            task_id = result.get('task_id')
+            try:
+                response_data = json_module.loads(result.stdout)
+            except json_module.JSONDecodeError as e:
+                logger.error(f"❌ Failed to parse response: {result.stdout[:200]}")
+                return {'error': f'Invalid JSON response: {str(e)}'}
+            
+            logger.info(f"  ✅ Response received: {response_data}")
+            
+            task_id = response_data.get('task_id')
             
             if not task_id:
                 logger.error("❌ No task_id in response")
@@ -118,48 +98,57 @@ class VideoGenerator:
             # Step 2: Poll for completion (max 2 minutes)
             max_attempts = 24  # 24 * 5 sec = 2 min
             for attempt in range(max_attempts):
-                time.sleep(5)  # Wait 5 seconds between checks
+                time.sleep(5)
                 
                 logger.info(f"⏳ Checking status... (attempt {attempt + 1}/{max_attempts})")
                 
-                status_response = self.session.get(
-                    f"{self.base_url}/video/status/{task_id}",
-                    headers=headers,
-                    timeout=10
-                )
+                curl_status_command = [
+                    'curl', '-k', '-X', 'GET',
+                    f'{self.base_url}/video/status/{task_id}',
+                    '-H', f'Authorization: Bearer {self.api_key}',
+                    '--connect-timeout', '10',
+                    '--silent'
+                ]
                 
-                if status_response.status_code != 200:
-                    logger.warning(f"⚠️ Status check failed: {status_response.status_code}")
-                    try:
-                        logger.warning(f"  📄 Response: {status_response.json()}")
-                    except (ValueError, requests.exceptions.JSONDecodeError) as e:
-                        logger.warning(f"  📄 Response text: {status_response.text[:200]}")
-                        logger.debug(f"  Failed to parse JSON: {e}")
+                try:
+                    status_result = subprocess.run(curl_status_command, capture_output=True, text=True, timeout=10)
+                    
+                    if status_result.returncode != 0:
+                        logger.warning(f"⚠️ Status check failed: {status_result.stderr}")
+                        continue
+                    
+                    status_data = json_module.loads(status_result.stdout)
+                    status = status_data.get('status')
+                    
+                    logger.info(f"📊 Status: {status}")
+                    
+                    if status == 'completed':
+                        video_url = status_data.get('video_url')
+                        logger.info(f"✅ Video generated successfully: {video_url}")
+                        return {
+                            'video_url': video_url,
+                            'duration': duration,
+                            'resolution': resolution
+                        }
+                    elif status == 'failed':
+                        error_msg = status_data.get('error', 'Generation failed')
+                        logger.error(f"❌ Generation failed: {error_msg}")
+                        return {'error': error_msg}
+                        
+                except subprocess.TimeoutExpired:
+                    logger.warning("⚠️ Status check timeout")
                     continue
-                
-                status_data = status_response.json()
-                status = status_data.get('status')
-                
-                logger.info(f"📊 Status: {status}")
-                logger.debug(f"  📄 Full response: {status_data}")
-                
-                if status == 'completed':
-                    video_url = status_data.get('video_url')
-                    logger.info(f"✅ Video generated successfully: {video_url}")
-                    return {
-                        'video_url': video_url,
-                        'duration': duration,
-                        'resolution': resolution
-                    }
-                elif status == 'failed':
-                    error_msg = status_data.get('error', 'Generation failed')
-                    logger.error(f"❌ Generation failed: {error_msg}")
-                    return {'error': error_msg}
+                except json_module.JSONDecodeError:
+                    logger.warning(f"⚠️ Invalid status response: {status_result.stdout[:100]}")
+                    continue
+                except Exception as e:
+                    logger.warning(f"⚠️ Status check error: {e}")
+                    continue
             
             logger.error("❌ Timeout: generation took too long")
             return {'error': 'Timeout: generation took too long'}
             
-        except requests.exceptions.Timeout:
+        except subprocess.TimeoutExpired:
             logger.error("❌ Request timeout")
             return {'error': 'Request timeout'}
         except Exception as e:
