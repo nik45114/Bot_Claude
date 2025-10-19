@@ -19,14 +19,13 @@ class VideoGenerator:
     Uses the requests library for robust HTTP communication.
     """
     
-    def __init__(self, config_or_api_key, base_url: str = "https://api.yesai.pro/api/v1"):
+    def __init__(self, config_or_api_key, base_url: str = "https://yesai.su/api/v1"):
         """
         Initialize VideoGenerator
         
         Args:
             config_or_api_key: Either a dict with video config or api_key string (for backwards compatibility)
-            base_url: API base URL (default: https://api.yesai.pro/api/v1)
-                     Note: Changed from https://api.yesai.io/v1 to use the correct endpoint
+            base_url: API base URL (default: https://yesai.su/api/v1)
         """
         if isinstance(config_or_api_key, dict):
             # New way: config dict

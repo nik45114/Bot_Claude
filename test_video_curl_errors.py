@@ -25,7 +25,7 @@ def test_video_generator_initialization():
     assert hasattr(gen, 'api_key'), "VideoGenerator should have api_key"
     assert hasattr(gen, 'headers'), "VideoGenerator should have headers"
     assert hasattr(gen, 'generate'), "VideoGenerator should have generate method"
-    assert "https://api.yesai.pro/api/v1" in gen.base_url, "base_url should use new endpoint"
+    assert "https://yesai.su/api/v1" in gen.base_url, "base_url should use correct endpoint"
     
     # Check headers are properly set
     assert 'Authorization' in gen.headers, "Headers should include Authorization"
