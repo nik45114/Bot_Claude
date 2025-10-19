@@ -26,6 +26,7 @@ class VideoGenerator:
         Args:
             config_or_api_key: Either a dict with video config or api_key string (for backwards compatibility)
             base_url: API base URL (default: https://api.yesai.pro/api/v1)
+                     Note: Changed from https://api.yesai.io/v1 to use the correct endpoint
         """
         if isinstance(config_or_api_key, dict):
             # New way: config dict
@@ -108,7 +109,21 @@ class VideoGenerator:
             return {'error': f'An unexpected error occurred: {str(e)}'}
 
     def _poll_for_completion(self, task_id: str, duration: int, resolution: str):
-        """Poll the API for the video generation result."""
+        """
+        Poll the API for the video generation result.
+        
+        Args:
+            task_id: The ID of the video generation task
+            duration: Video duration in seconds (used for result metadata)
+            resolution: Video resolution (used for result metadata)
+            
+        Returns:
+            dict with 'video_url', 'duration', 'resolution' on success or 'error' on failure.
+        """
+        if not task_id:
+            logger.error("❌ Invalid task_id provided to polling")
+            return {'error': 'Invalid task_id'}
+        
         status_url = f'{self.base_url}/video/status/{task_id}'
         max_attempts = 24  # 24 * 5 sec = 2 min
         
