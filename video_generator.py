@@ -76,7 +76,7 @@ class VideoGenerator:
         if self.force_tlsv1_2 or enforce_network_options:
             flags.append('--tlsv1.2')
         
-        if self.ipv4_only:
+        if self.ipv4_only or enforce_network_options:
             flags.append('--ipv4')
         
         return flags
@@ -93,7 +93,8 @@ class VideoGenerator:
         Returns:
             Tuple of (success: bool, response_data: dict or None, error_msg: str or None)
         """
-        for attempt in range(self.retries + 1):
+        attempt = 0
+        while attempt <= self.retries:
             if attempt > 0:
                 backoff = self.retry_backoff_sec * (2 ** (attempt - 1))  # Exponential backoff
                 logger.info(f"⏳ Retry {attempt}/{self.retries} after {backoff}s backoff...")
@@ -101,8 +102,8 @@ class VideoGenerator:
             
             # Build command with network flags
             # Enforce network options on retry or if requested
-            enforce_options = enforce_fallback or attempt > 0
-            network_flags = self._build_curl_flags(enforce_network_options=enforce_options)
+            should_enforce_network_options = enforce_fallback or attempt > 0
+            network_flags = self._build_curl_flags(enforce_network_options=should_enforce_network_options)
             
             # Insert network flags after curl but before -X
             full_command = curl_command[:1] + network_flags + curl_command[1:]
@@ -118,15 +119,16 @@ class VideoGenerator:
                     if 'unrecognized name' in error_detail.lower() or result.returncode == 35:
                         logger.warning(f"⚠️ TLS/SNI error detected: {error_detail}")
                         if not enforce_fallback and attempt == 0:
-                            logger.info(f"🔄 Retrying with enforced network options...")
+                            logger.info(f"🔄 Retrying immediately with enforced network options...")
                             enforce_fallback = True
-                            # Continue to next retry immediately
+                            # Don't increment attempt counter for this immediate retry
                             continue
                     
                     logger.warning(f"⚠️ {operation_name} attempt {attempt + 1} failed: {error_detail}")
                     
-                    # If this was the last retry, return error
-                    if attempt == self.retries:
+                    # Increment attempt counter and continue to next retry
+                    attempt += 1
+                    if attempt > self.retries:
                         return False, None, f'Curl error: {error_detail}'
                     
                     continue
@@ -138,8 +140,9 @@ class VideoGenerator:
                 except json_module.JSONDecodeError as e:
                     logger.warning(f"⚠️ JSON parse error on attempt {attempt + 1}: {str(e)}")
                     
-                    # If this was the last retry, return error
-                    if attempt == self.retries:
+                    # Increment attempt counter and continue to next retry
+                    attempt += 1
+                    if attempt > self.retries:
                         return False, None, f'Invalid JSON response: {str(e)}'
                     
                     continue
@@ -147,16 +150,18 @@ class VideoGenerator:
             except subprocess.TimeoutExpired:
                 logger.warning(f"⚠️ {operation_name} timeout on attempt {attempt + 1}")
                 
-                # If this was the last retry, return error
-                if attempt == self.retries:
+                # Increment attempt counter and continue to next retry
+                attempt += 1
+                if attempt > self.retries:
                     return False, None, 'Request timeout'
                 
                 continue
             except Exception as e:
                 logger.warning(f"⚠️ {operation_name} error on attempt {attempt + 1}: {e}")
                 
-                # If this was the last retry, return error
-                if attempt == self.retries:
+                # Increment attempt counter and continue to next retry
+                attempt += 1
+                if attempt > self.retries:
                     return False, None, str(e)
                 
                 continue

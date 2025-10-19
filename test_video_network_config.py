@@ -134,7 +134,8 @@ def test_build_curl_flags():
                 'network': {
                     'bypass_proxy': False,
                     'force_http1_1': False,
-                    'force_tlsv1_2': False
+                    'force_tlsv1_2': False,
+                    'ipv4_only': False
                 }
             }
         }
@@ -144,7 +145,8 @@ def test_build_curl_flags():
     assert '--noproxy' in flags_enforced, "Should include --noproxy when enforced"
     assert '--http1.1' in flags_enforced, "Should include --http1.1 when enforced"
     assert '--tlsv1.2' in flags_enforced, "Should include --tlsv1.2 when enforced"
-    print("  ✅ Enforcement works correctly for fallback mode")
+    assert '--ipv4' in flags_enforced, "Should include --ipv4 when enforced"
+    print("  ✅ Enforcement works correctly for fallback mode (including IPv4)")
     
     # Test 4: Selective options
     config_selective = {
