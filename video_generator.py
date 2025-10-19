@@ -67,15 +67,20 @@ class VideoGenerator:
                 f'{self.base_url}/video/generation',
                 '-H', f'Authorization: Bearer {self.api_key}',
                 '-H', 'Content-Type: application/json',
+                '-H', 'Accept: application/json',
+                '-H', 'User-Agent: BotClaude/1.0 (+github.com/nik45114/Bot_Claude)',
                 '-d', json_module.dumps(data),
                 '--connect-timeout', '30',
-                '--silent'
+                '--silent',
+                '--show-error',
+                '--fail'
             ]
             
             result = subprocess.run(curl_command, capture_output=True, text=True, timeout=30)
             
             if result.returncode != 0:
-                error_msg = f'Curl error: {result.stderr}'
+                error_detail = result.stderr.strip() or result.stdout.strip() or f'exit code {result.returncode}'
+                error_msg = f'Curl error: {error_detail}'
                 logger.error(f"❌ {error_msg}")
                 return {'error': error_msg}
             
@@ -106,15 +111,20 @@ class VideoGenerator:
                     'curl', '-k', '-X', 'GET',
                     f'{self.base_url}/video/status/{task_id}',
                     '-H', f'Authorization: Bearer {self.api_key}',
+                    '-H', 'Accept: application/json',
+                    '-H', 'User-Agent: BotClaude/1.0 (+github.com/nik45114/Bot_Claude)',
                     '--connect-timeout', '10',
-                    '--silent'
+                    '--silent',
+                    '--show-error',
+                    '--fail'
                 ]
                 
                 try:
                     status_result = subprocess.run(curl_status_command, capture_output=True, text=True, timeout=10)
                     
                     if status_result.returncode != 0:
-                        logger.warning(f"⚠️ Status check failed: {status_result.stderr}")
+                        error_detail = status_result.stderr.strip() or status_result.stdout.strip() or f'exit code {status_result.returncode}'
+                        logger.warning(f"⚠️ Status check failed: {error_detail}")
                         continue
                     
                     status_data = json_module.loads(status_result.stdout)
