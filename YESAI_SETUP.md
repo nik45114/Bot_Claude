@@ -34,8 +34,47 @@ The Yes Ai API key is configured in `config.json`:
 - **enabled** (boolean): Enable/disable video generation
 - **provider** (string): Video generation provider (currently "yesai")
 - **api_key** (string): Your Yes Ai API key (format: `yes-xxxxxx...`)
+- **base_url** (string): Base URL for the API (default: "https://api.yesai.io/v1")
 - **duration** (integer): Default video duration in seconds (5 or 10)
 - **resolution** (string): Default video resolution ("720p" or "1080p")
+- **network** (object): Network tuning options for reliability
+
+#### Network Configuration
+
+The `network` section provides advanced options to handle network and TLS issues:
+
+```json
+{
+  "content_generation": {
+    "video": {
+      "enabled": true,
+      "provider": "yesai",
+      "api_key": "yes-xxxxxx...",
+      "base_url": "https://api.yesai.io/v1",
+      "duration": 5,
+      "resolution": "1080p",
+      "network": {
+        "bypass_proxy": false,
+        "force_http1_1": false,
+        "force_tlsv1_2": false,
+        "ipv4_only": false,
+        "retries": 2,
+        "retry_backoff_sec": 2,
+        "base_url_candidates": []
+      }
+    }
+  }
+}
+```
+
+Network Options:
+- **bypass_proxy** (boolean): Bypass system proxy settings (adds `--noproxy '*'`)
+- **force_http1_1** (boolean): Force HTTP/1.1 protocol (adds `--http1.1`)
+- **force_tlsv1_2** (boolean): Force TLS 1.2 (adds `--tlsv1.2`)
+- **ipv4_only** (boolean): Use IPv4 only (adds `--ipv4`)
+- **retries** (integer): Number of retry attempts (default: 2)
+- **retry_backoff_sec** (integer): Base backoff in seconds between retries (default: 2, exponential)
+- **base_url_candidates** (array): Alternative base URLs to try if primary fails
 
 ## Usage
 
@@ -112,7 +151,59 @@ Yes Ai API has the following restrictions:
    - API communication error
    - Solution: Check internet connection, try again
 
+6. **"curl: (35) error:0A000458:SSL routines::tlsv1 unrecognized name"**
+   - TLS/SNI error due to network configuration
+   - Solution: See [TLS/SNI Errors](#tlssni-errors-curl-35-error0a000458ssl-routinestlsv1-unrecognized-name) section above
+
 ## Troubleshooting
+
+### TLS/SNI Errors (curl: (35) error:0A000458:SSL routines::tlsv1 unrecognized name)
+
+Some network environments (proxies, accelerators, certain ISPs) may encounter TLS Server Name Indication (SNI) errors when connecting to the Yes Ai API. This manifests as:
+
+```
+curl: (35) error:0A000458:SSL routines::tlsv1 unrecognized name
+```
+
+**Solution**: Enable network resilience options in your config.json:
+
+```json
+{
+  "content_generation": {
+    "video": {
+      "network": {
+        "bypass_proxy": true,
+        "force_http1_1": true,
+        "force_tlsv1_2": true,
+        "retries": 3
+      }
+    }
+  }
+}
+```
+
+The bot will:
+1. Automatically detect TLS errors and retry with enforced network options
+2. Log fallback attempts for debugging
+3. Try alternative base URLs if configured in `base_url_candidates`
+
+**Alternative Base URLs**: If you have access to an alternative endpoint or proxy:
+
+```json
+{
+  "content_generation": {
+    "video": {
+      "base_url": "https://api.yesai.io/v1",
+      "network": {
+        "base_url_candidates": [
+          "https://backup-api.example.com/v1",
+          "https://api-proxy.example.com/yesai/v1"
+        ]
+      }
+    }
+  }
+}
+```
 
 ### Video generation is disabled
 

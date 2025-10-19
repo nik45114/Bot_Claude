@@ -30,8 +30,18 @@
       "enabled": true,
       "provider": "yesai",
       "api_key": "yes-06b045099e782bd35a48c69699e8d77a6a23f69983a02d06caacceb8aaa4",
+      "base_url": "https://api.yesai.io/v1",
       "duration": 5,
-      "resolution": "1080p"
+      "resolution": "1080p",
+      "network": {
+        "bypass_proxy": false,
+        "force_http1_1": false,
+        "force_tlsv1_2": false,
+        "ipv4_only": false,
+        "retries": 2,
+        "retry_backoff_sec": 2,
+        "base_url_candidates": []
+      }
     }
   }
 }

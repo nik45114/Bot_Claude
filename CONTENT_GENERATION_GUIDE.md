@@ -96,10 +96,41 @@ Admins can change the active GPT model:
     "enabled": true,
     "text_max_tokens": 1000,
     "image_model": "dall-e-3",
-    "image_size": "1024x1024"
+    "image_size": "1024x1024",
+    "video": {
+      "enabled": true,
+      "provider": "yesai",
+      "api_key": "yes-xxxxxx...",
+      "base_url": "https://api.yesai.io/v1",
+      "duration": 5,
+      "resolution": "1080p",
+      "network": {
+        "bypass_proxy": false,
+        "force_http1_1": false,
+        "force_tlsv1_2": false,
+        "ipv4_only": false,
+        "retries": 2,
+        "retry_backoff_sec": 2,
+        "base_url_candidates": []
+      }
+    }
   }
 }
 ```
+
+### Video Network Options
+
+For environments with network or TLS issues, the `network` section provides reliability options:
+
+- **bypass_proxy**: Bypass system proxy (useful for proxy-related TLS errors)
+- **force_http1_1**: Force HTTP/1.1 (some proxies don't support HTTP/2 properly)
+- **force_tlsv1_2**: Force TLS 1.2 (resolve protocol negotiation issues)
+- **ipv4_only**: Use IPv4 only (avoid IPv6 routing issues)
+- **retries**: Number of retry attempts on failure (default: 2)
+- **retry_backoff_sec**: Exponential backoff starting value (default: 2 seconds)
+- **base_url_candidates**: Alternative API endpoints to try if primary fails
+
+See [YESAI_SETUP.md](YESAI_SETUP.md) for detailed troubleshooting of network issues.
 
 ## Database Schema
 
@@ -175,6 +206,24 @@ Status indicators:
 - DALL-E 3 typically takes 20-40 seconds
 - This is normal, please be patient
 - Complex images may take longer
+
+### Video Generation Fails with TLS Errors
+- Some environments may encounter TLS/SNI errors
+- Enable network resilience options in config.json:
+  ```json
+  {
+    "content_generation": {
+      "video": {
+        "network": {
+          "bypass_proxy": true,
+          "force_http1_1": true,
+          "force_tlsv1_2": true
+        }
+      }
+    }
+  }
+  ```
+- See [YESAI_SETUP.md](YESAI_SETUP.md) for detailed troubleshooting
 
 ### Model Change Not Working
 - Only admins can change models
