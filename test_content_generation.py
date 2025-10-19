@@ -16,8 +16,12 @@ def test_video_generator_api():
     
     # Mock the VideoGenerator class for testing
     class MockVideoGenerator:
-        def __init__(self, api_key):
-            self.api_key = api_key
+        def __init__(self, config_or_api_key):
+            if isinstance(config_or_api_key, dict):
+                video_config = config_or_api_key.get('content_generation', {}).get('video', {})
+                self.api_key = video_config.get('api_key', '')
+            else:
+                self.api_key = config_or_api_key
             self.base_url = "https://api.yesai.io/v1"
         
         def generate(self, prompt, duration=5, resolution="1080p"):
@@ -28,7 +32,19 @@ def test_video_generator_api():
                 'resolution': resolution
             }
     
-    gen = MockVideoGenerator("yes-test-key")
+    # Test with config dict (new way)
+    config = {
+        'content_generation': {
+            'video': {
+                'enabled': True,
+                'api_key': 'yes-test-key'
+            }
+        }
+    }
+    gen = MockVideoGenerator(config)
+    
+    # Test with api_key string (backwards compatibility)
+    gen_old = MockVideoGenerator("yes-test-key")
     
     # Test cases
     tests = [
@@ -47,6 +63,15 @@ def test_video_generator_api():
         else:
             print(f"  ❌ '{prompt[:40]}...' -> Failed validation")
             failed += 1
+    
+    # Test backwards compatibility
+    result_old = gen_old.generate("test", 5, "1080p")
+    if 'video_url' in result_old:
+        print(f"  ✅ Backwards compatibility works")
+        passed += 1
+    else:
+        print(f"  ❌ Backwards compatibility failed")
+        failed += 1
     
     print(f"\nResults: {passed} passed, {failed} failed")
     return failed == 0
