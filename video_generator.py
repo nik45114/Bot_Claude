@@ -44,14 +44,17 @@ class VideoGenerator:
             raise ValueError("Yes Ai API key is required for video generation")
         
         self.base_url = base_url
+        # Use headers that mimic a real web browser to bypass Cloudflare-like security
         self.headers = {
             'Authorization': f'Bearer {self.api_key}',
             'Content-Type': 'application/json',
-            'Accept': 'application/json',
-            'User-Agent': 'BotClaude/1.0 (+github.com/nik45114/Bot_Claude)'
+            'Accept': 'application/json, text/plain, */*',
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36',
+            'Origin': 'https://www.yesai.pro',
+            'Referer': 'https://www.yesai.pro/',
         }
         
-        logger.info("🎬 VideoGenerator initialized (using requests)")
+        logger.info("🎬 VideoGenerator initialized (using requests with browser headers)")
         logger.info(f"  - Provider: Yes Ai")
         logger.info(f"  - Endpoint: {self.base_url}")
     
