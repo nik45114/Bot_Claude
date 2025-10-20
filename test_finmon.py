@@ -195,10 +195,12 @@ try:
             self.client = None
             self.spreadsheet = None
         
-        def append_shift(self, shift_data, club_name):
+        def append_shift(self, shift_data: dict, club_name: str) -> bool:
+            """Mock append_shift - always returns False"""
             return False
         
-        def update_balances(self, balances):
+        def update_balances(self, balances: list) -> bool:
+            """Mock update_balances - always returns False"""
             return False
     
     sheets_mock = MockGoogleSheets()

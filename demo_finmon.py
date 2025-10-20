@@ -138,11 +138,13 @@ class MockGoogleSheets:
         self.client = None
         self.spreadsheet = None
     
-    def append_shift(self, shift_data, club_name):
-        return False  # Mock implementation
+    def append_shift(self, shift_data: dict, club_name: str) -> bool:
+        """Mock append_shift - returns False (not configured)"""
+        return False
     
-    def update_balances(self, balances):
-        return False  # Mock implementation
+    def update_balances(self, balances: list) -> bool:
+        """Mock update_balances - returns False (not configured)"""
+        return False
 
 sheets = MockGoogleSheets()
 wizard = FinMonWizard(db, sheets, [999999])
