@@ -186,13 +186,23 @@ except Exception as e:
 # Test wizard helper functions
 print("\n7. Testing wizard functions...")
 try:
-    sheets_dummy = GoogleSheetsSync.__new__(GoogleSheetsSync)
-    sheets_dummy.credentials_path = None
-    sheets_dummy.sheet_name = "Test"
-    sheets_dummy.client = None
-    sheets_dummy.spreadsheet = None
+    # Create a mock sheets object
+    class MockGoogleSheets:
+        """Mock GoogleSheetsSync for testing"""
+        def __init__(self):
+            self.credentials_path = None
+            self.sheet_name = "Test"
+            self.client = None
+            self.spreadsheet = None
+        
+        def append_shift(self, shift_data, club_name):
+            return False
+        
+        def update_balances(self, balances):
+            return False
     
-    wizard = FinMonWizard(db, sheets_dummy, [123456])
+    sheets_mock = MockGoogleSheets()
+    wizard = FinMonWizard(db, sheets_mock, [123456])
     
     # Test is_owner
     assert wizard.is_owner(123456) == True

@@ -129,14 +129,22 @@ for balance in balances:
 print("\n7. Example shift summary:")
 print("-" * 60)
 
-# Create dummy sheets object for wizard
-from modules.finmon.sheets import GoogleSheetsSync
-sheets = GoogleSheetsSync.__new__(GoogleSheetsSync)
-sheets.credentials_path = None
-sheets.sheet_name = "Demo"
-sheets.client = None
-sheets.spreadsheet = None
+# Create a mock sheets object for wizard
+class MockGoogleSheets:
+    """Mock GoogleSheetsSync for demo purposes"""
+    def __init__(self):
+        self.credentials_path = None
+        self.sheet_name = "Demo"
+        self.client = None
+        self.spreadsheet = None
+    
+    def append_shift(self, shift_data, club_name):
+        return False  # Mock implementation
+    
+    def update_balances(self, balances):
+        return False  # Mock implementation
 
+sheets = MockGoogleSheets()
 wizard = FinMonWizard(db, sheets, [999999])
 
 shift_data = {
