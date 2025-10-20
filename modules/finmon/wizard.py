@@ -11,6 +11,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from .models import Shift
 from .db import FinMonDB
 from .sheets import GoogleSheetsSync
+from . import formatters
 
 logger = logging.getLogger(__name__)
 
@@ -505,22 +506,7 @@ class FinMonWizard:
     async def cmd_balances(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать текущие балансы - /balances"""
         balances = self.db.get_balances()
-        
-        if not balances:
-            await update.message.reply_text("❌ Нет данных о балансах")
-            return
-        
-        text = "💰 ТЕКУЩИЕ БАЛАНСЫ КАСС\n\n"
-        
-        current_club = None
-        for balance in balances:
-            if current_club != balance['club_name']:
-                current_club = balance['club_name']
-                text += f"\n🏢 {current_club}\n"
-            
-            cash_type_label = "Официальная" if balance['cash_type'] == 'official' else "Коробка"
-            text += f"  {cash_type_label}: {balance['balance']:,.2f} ₽\n"
-        
+        text = formatters.format_balance_report(balances)
         await update.message.reply_text(text)
     
     async def cmd_shifts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -534,20 +520,57 @@ class FinMonWizard:
             owner_ids=self.owner_ids
         )
         
-        if not shifts:
-            await update.message.reply_text("❌ Нет сданных смен")
+        text = formatters.format_shifts_list(shifts, self.db.get_club_display_name)
+        await update.message.reply_text(text)
+    
+    async def cmd_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать сводку по доходам/расходам - /summary"""
+        user_id = update.effective_user.id
+        
+        # Только владельцы могут видеть сводку
+        if not self.is_owner(user_id):
+            await update.message.reply_text("❌ Команда доступна только владельцам")
             return
         
-        text = "📊 ПОСЛЕДНИЕ СМЕНЫ\n\n"
+        # Кнопки для выбора периода
+        keyboard = [
+            [
+                InlineKeyboardButton("📅 Сегодня", callback_data="finmon_summary_today"),
+                InlineKeyboardButton("📆 Неделя", callback_data="finmon_summary_week")
+            ],
+            [
+                InlineKeyboardButton("📊 Месяц", callback_data="finmon_summary_month"),
+                InlineKeyboardButton("🗂 Всё время", callback_data="finmon_summary_all")
+            ]
+        ]
         
-        for shift in shifts:
-            club_name = self.db.get_club_display_name(shift['club_id'])
-            time_label = "Утро" if shift['shift_time'] == 'morning' else "Вечер"
-            date_str = datetime.fromisoformat(str(shift['shift_date'])).strftime('%d.%m.%Y')
-            
-            text += f"[{club_name}] {time_label} {date_str}\n"
-            text += f"  Админ: @{shift.get('admin_username', 'Unknown')}\n"
-            text += f"  Выручка: {shift['fact_cash']:,.0f} ₽ (нал) + {shift['fact_card']:,.0f} ₽ (б/н)\n"
-            text += "━━━━━━━━━━━━━━━━\n"
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "📈 Выберите период для сводки:",
+            reply_markup=reply_markup
+        )
+    
+    async def handle_summary_period(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработка выбора периода для сводки"""
+        query = update.callback_query
+        await query.answer()
         
-        await update.message.reply_text(text)
+        # Извлечь период из callback_data
+        period = query.data.split('_')[-1]  # today, week, month, all
+        
+        # Получить данные
+        summary_data = self.db.get_summary(period)
+        
+        # Название периода для отчёта
+        period_names = {
+            'today': 'за сегодня',
+            'week': 'за неделю',
+            'month': 'за месяц',
+            'all': 'за всё время'
+        }
+        period_name = period_names.get(period, 'за период')
+        
+        # Форматировать отчёт
+        text = formatters.format_summary(summary_data, period_name)
+        
+        await query.edit_message_text(text)

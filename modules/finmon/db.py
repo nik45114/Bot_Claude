@@ -194,3 +194,106 @@ class FinMonDB:
         except Exception as e:
             logger.error(f"❌ Error getting shifts: {e}")
             return []
+    
+    def get_summary(self, period: str = 'today') -> Dict[str, Any]:
+        """
+        Получить сводку по доходам/расходам за период
+        
+        Args:
+            period: 'today', 'week', 'month', 'all'
+        
+        Returns:
+            Словарь с данными сводки
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Определить фильтр по дате
+            if period == 'today':
+                date_filter = "date(s.shift_date) = date('now')"
+            elif period == 'week':
+                date_filter = "date(s.shift_date) >= date('now', '-7 days')"
+            elif period == 'month':
+                date_filter = "date(s.shift_date) >= date('now', '-30 days')"
+            else:  # all
+                date_filter = "1=1"
+            
+            # Получить данные по каждому клубу
+            query = f'''
+                SELECT 
+                    cl.name,
+                    cl.type,
+                    COUNT(s.id) as shift_count,
+                    SUM(s.fact_cash) as total_cash,
+                    SUM(s.fact_card) as total_card,
+                    SUM(s.qr) as total_qr,
+                    SUM(s.card2) as total_card2,
+                    SUM(s.compensations) as total_compensations,
+                    SUM(s.salary_payouts) as total_salary,
+                    SUM(s.other_expenses) as total_other_expenses
+                FROM finmon_shifts s
+                JOIN finmon_clubs cl ON s.club_id = cl.id
+                WHERE {date_filter}
+                GROUP BY cl.name, cl.type
+                ORDER BY cl.name, cl.type
+            '''
+            
+            cursor.execute(query)
+            club_rows = cursor.fetchall()
+            
+            # Получить общую сводку
+            total_query = f'''
+                SELECT 
+                    COUNT(s.id) as shift_count,
+                    SUM(s.fact_cash) as total_cash,
+                    SUM(s.fact_card) as total_card,
+                    SUM(s.qr) as total_qr,
+                    SUM(s.card2) as total_card2,
+                    SUM(s.compensations) as total_compensations,
+                    SUM(s.salary_payouts) as total_salary,
+                    SUM(s.other_expenses) as total_other_expenses
+                FROM finmon_shifts s
+                WHERE {date_filter}
+            '''
+            
+            cursor.execute(total_query)
+            total_row = cursor.fetchone()
+            
+            conn.close()
+            
+            # Форматирование результата
+            clubs = {}
+            for row in club_rows:
+                club_display = f"{row['name']} {'офиц' if row['type'] == 'official' else 'коробка'}"
+                clubs[club_display] = {
+                    'shift_count': row['shift_count'] or 0,
+                    'total_cash': row['total_cash'] or 0,
+                    'total_card': row['total_card'] or 0,
+                    'total_qr': row['total_qr'] or 0,
+                    'total_card2': row['total_card2'] or 0,
+                    'total_compensations': row['total_compensations'] or 0,
+                    'total_salary': row['total_salary'] or 0,
+                    'total_other_expenses': row['total_other_expenses'] or 0,
+                }
+            
+            total = {
+                'shift_count': total_row['shift_count'] or 0,
+                'total_cash': total_row['total_cash'] or 0,
+                'total_card': total_row['total_card'] or 0,
+                'total_qr': total_row['total_qr'] or 0,
+                'total_card2': total_row['total_card2'] or 0,
+                'total_compensations': total_row['total_compensations'] or 0,
+                'total_salary': total_row['total_salary'] or 0,
+                'total_other_expenses': total_row['total_other_expenses'] or 0,
+            }
+            
+            return {
+                'clubs': clubs,
+                'total': total
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting summary: {e}")
+            return {'clubs': {}, 'total': {}}
