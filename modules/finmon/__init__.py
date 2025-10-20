@@ -84,6 +84,10 @@ def register_finmon(application: Application, config: dict = None):
     # Регистрация обработчиков команд
     application.add_handler(CommandHandler("balances", wizard.cmd_balances))
     application.add_handler(CommandHandler("shifts", wizard.cmd_shifts))
+    application.add_handler(CommandHandler("summary", wizard.cmd_summary))
+    
+    # Обработчик для кнопок сводки
+    application.add_handler(CallbackQueryHandler(wizard.handle_summary_period, pattern="^finmon_summary_"))
     
     # ConversationHandler для сдачи смены
     shift_handler = ConversationHandler(

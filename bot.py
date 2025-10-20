@@ -43,7 +43,6 @@ try:
     from issue_commands import IssueCommands, ISSUE_SELECT_CLUB, ISSUE_ENTER_DESCRIPTION, ISSUE_EDIT_DESCRIPTION
     from content_generator import ContentGenerator
     from content_commands import ContentCommands
-    # from modules.finmon import register_finmon  # Временно отключено - модуль в разработке
 except ImportError as e:
     print(f"❌ Не найдены модули v4.10: {e}")
     sys.exit(1)
@@ -3205,19 +3204,21 @@ class ClubAssistantBot:
         )
         application.add_handler(report_handler)
         
-        # FinMon module - Financial Monitoring (ВРЕМЕННО ОТКЛЮЧЕНО)
-        # try:
-        #     finmon_config = {
-        #         'db_path': DB_PATH,
-        #         'google_sa_json': os.getenv('GOOGLE_SA_JSON'),
-        #         'sheet_name': os.getenv('FINMON_SHEET_NAME', 'ClubFinance'),
-        #         'owner_ids': str(self.owner_id) if hasattr(self, 'owner_id') else os.getenv('OWNER_TG_IDS', '')
-        #     }
-        #     register_finmon(application, finmon_config)
-        #     logger.info("✅ FinMon module registered")
-        # except Exception as e:
-        #     logger.warning(f"⚠️ FinMon module registration failed: {e}")
-        logger.info("ℹ️ FinMon module temporarily disabled - in development")
+        # FinMon module - Financial Monitoring
+        try:
+            from modules.finmon import register_finmon
+            finmon_config = {
+                'db_path': DB_PATH,
+                'google_sa_json': os.getenv('GOOGLE_SA_JSON'),
+                'sheet_name': os.getenv('FINMON_SHEET_NAME', 'ClubFinance'),
+                'owner_ids': str(self.owner_id) if hasattr(self, 'owner_id') else os.getenv('OWNER_TG_IDS', '')
+            }
+            register_finmon(application, finmon_config)
+            logger.info("✅ FinMon module registered")
+        except Exception as e:
+            logger.warning(f"⚠️ FinMon module registration failed: {e}")
+            import traceback
+            traceback.print_exc()
         
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
