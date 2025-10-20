@@ -173,6 +173,7 @@ shift_data = {
 }
 
 summary = wizard._format_shift_summary(shift_data)
+# Note: This is demo data only - in production, sensitive data should be handled carefully
 print(summary)
 print("-" * 60)
 
