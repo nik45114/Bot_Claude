@@ -15,6 +15,13 @@ from typing import List, Dict, Optional, Tuple
 import base64
 import subprocess
 
+# Load environment variables
+try:
+    from dotenv import load_dotenv
+    load_dotenv()
+except ImportError:
+    pass  # dotenv is optional
+
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -44,6 +51,7 @@ try:
     from content_generator import ContentGenerator
     from content_commands import ContentCommands
     # from modules.finmon import register_finmon  # Временно отключено - модуль в разработке
+    from modules.admins import register_admins
 except ImportError as e:
     print(f"❌ Не найдены модули v4.10: {e}")
     sys.exit(1)
@@ -732,6 +740,12 @@ class ClubAssistantBot:
         logger.info(f"   Записей: {self.kb.count()}")
     
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        # Check for admin invite deep link
+        if hasattr(self, 'admin_invite_interceptor') and context.args:
+            intercepted = await self.admin_invite_interceptor(update, context)
+            if intercepted:
+                return
+        
         text = self._get_main_menu_text()
         reply_markup = self._build_main_menu_keyboard(update.effective_user.id)
         await update.message.reply_text(text, reply_markup=reply_markup)
@@ -1781,6 +1795,8 @@ class ClubAssistantBot:
         # Финансовый мониторинг только для владельца
         if user_id == self.owner_id:
             keyboard.append([InlineKeyboardButton("💰 Финансовый мониторинг", callback_data="cash_menu")])
+            # Admin management for owner
+            keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
         
         return InlineKeyboardMarkup(keyboard)
     
@@ -3218,6 +3234,18 @@ class ClubAssistantBot:
         # except Exception as e:
         #     logger.warning(f"⚠️ FinMon module registration failed: {e}")
         logger.info("ℹ️ FinMon module temporarily disabled - in development")
+        
+        # Admin Management module
+        try:
+            admin_db, admin_wizard = register_admins(application, self.config, DB_PATH, self.bot_username)
+            # Store the admin invite interceptor
+            if 'admin_invite_interceptor' in application.bot_data:
+                self.admin_invite_interceptor = application.bot_data['admin_invite_interceptor']
+            logger.info("✅ Admin Management module registered")
+        except Exception as e:
+            logger.error(f"❌ Admin Management module registration failed: {e}")
+            import traceback
+            traceback.print_exc()
         
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
