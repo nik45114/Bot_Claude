@@ -8,7 +8,20 @@ Handles /shift command with step-by-step wizard
 import logging
 from datetime import datetime, date, timedelta
 from typing import Optional, Dict
-import pytz
+
+# Try to use zoneinfo (Python 3.9+), fallback to pytz if needed
+try:
+    from zoneinfo import ZoneInfo
+    PYTZ_AVAILABLE = False
+except ImportError:
+    try:
+        import pytz
+        PYTZ_AVAILABLE = True
+    except ImportError:
+        # Neither available, will use naive datetime
+        PYTZ_AVAILABLE = False
+        pytz = None
+
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 
@@ -32,8 +45,18 @@ GRACE_MINUTES = 60      # Grace period after close time
 
 def now_msk() -> datetime:
     """Get current time in Moscow timezone"""
-    msk = pytz.timezone(TIMEZONE)
-    return datetime.now(msk)
+    try:
+        if PYTZ_AVAILABLE:
+            msk = pytz.timezone(TIMEZONE)
+            return datetime.now(msk)
+        else:
+            # Use zoneinfo (Python 3.9+)
+            msk = ZoneInfo(TIMEZONE)
+            return datetime.now(msk)
+    except Exception as e:
+        # Fallback to naive datetime if timezone not available
+        logger.warning(f"⚠️ Timezone conversion failed: {e}, using naive datetime")
+        return datetime.now()
 
 
 def get_current_shift_window() -> Optional[Dict]:

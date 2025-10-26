@@ -22,7 +22,7 @@ try:
 except ImportError:
     pass  # dotenv is optional
 
-from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup, ReplyKeyboardMarkup, KeyboardButton
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -698,6 +698,23 @@ class ClubAssistantBot:
         self.v2ray_manager = V2RayManager(DB_PATH)
         self.v2ray_commands = V2RayCommands(self.v2ray_manager, self.admin_manager, owner_ids=owner_ids)
         
+        # Store owner IDs from environment
+        owner_ids_str = os.getenv('OWNER_TG_IDS', '')
+        self.owner_ids = []
+        if owner_ids_str:
+            try:
+                self.owner_ids = [int(id.strip()) for id in owner_ids_str.split(',') if id.strip()]
+            except ValueError:
+                logger.error("❌ Invalid OWNER_TG_IDS format")
+        
+        # Fallback to single owner from config
+        if not self.owner_ids:
+            logger.warning("⚠️ OWNER_TG_IDS not configured, using fallback from config")
+            self.owner_ids = [self.owner_id] if hasattr(self, 'owner_id') else []
+        
+        if not self.owner_ids:
+            logger.warning("⚠️ No owner IDs configured!")
+        
         # Club Manager (только для владельца)
         self.club_manager = ClubManager(DB_PATH)
         self.club_commands = ClubCommands(self.club_manager, self.owner_id)
@@ -756,6 +773,13 @@ class ClubAssistantBot:
         logger.info(f"   Векторов: {self.vector_store.stats()['total_vectors']}")
         logger.info(f"   Записей: {self.kb.count()}")
     
+    def is_owner(self, user_id: int) -> bool:
+        """Check if user is owner"""
+        if not self.owner_ids:
+            logger.warning("⚠️ No owner IDs configured")
+            return user_id == self.owner_id  # Fallback to legacy owner_id
+        return user_id in self.owner_ids
+    
     async def cmd_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Check for admin invite deep link
         if hasattr(self, 'admin_invite_interceptor') and context.args:
@@ -765,7 +789,22 @@ class ClubAssistantBot:
         
         text = self._get_main_menu_text()
         reply_markup = self._build_main_menu_keyboard(update.effective_user.id)
-        await update.message.reply_text(text, reply_markup=reply_markup)
+        
+        # Add reply keyboard with bottom buttons
+        reply_keyboard = self._build_reply_keyboard()
+        
+        # Send message with both inline and reply keyboards
+        await update.message.reply_text(
+            text, 
+            reply_markup=reply_markup
+        )
+        
+        # If in a club chat, show reply keyboard
+        if update.message.chat.type in ['group', 'supergroup']:
+            await update.message.reply_text(
+                "Используйте кнопки снизу для быстрого доступа к командам 👇",
+                reply_markup=reply_keyboard
+            )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"""📖 Справка - Club Assistant Bot v{VERSION}
@@ -1230,9 +1269,9 @@ class ClubAssistantBot:
             await update.message.reply_text("/addadmin <user_id>")
     
     async def cmd_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Owner-only restriction
-        if update.effective_user.id != self.owner_id:
-            await update.message.reply_text("❌ Доступ запрещён")
+        # Owner-only restriction with OWNER_TG_IDS
+        if not self.is_owner(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещён. Эта команда доступна только владельцу.")
             return
         
         admins = self.admin_manager.list_admins()
@@ -1821,6 +1860,14 @@ class ClubAssistantBot:
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
         
         return InlineKeyboardMarkup(keyboard)
+    
+    def _build_reply_keyboard(self) -> ReplyKeyboardMarkup:
+        """Build reply keyboard with bottom buttons"""
+        keyboard = [
+            [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")],
+            [KeyboardButton("💰 Сдать смену")]  # Replaced "Мои долги" with "Сдать смену"
+        ]
+        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     def _get_main_menu_text(self) -> str:
         """Получить текст главного меню"""
@@ -2951,6 +2998,22 @@ class ClubAssistantBot:
         message = update.message
         text = message.text.strip()
         
+        # Intercept reply keyboard buttons
+        if text == "💰 Сдать смену":
+            # Trigger shift wizard if available
+            if hasattr(self, 'shift_wizard') and self.shift_wizard:
+                await self.shift_wizard.cmd_shift(update, context)
+                return
+            else:
+                await message.reply_text("❌ Модуль сдачи смены недоступен")
+                return
+        elif text == "📊 Статистика":
+            await self.cmd_stats(update, context)
+            return
+        elif text == "❓ Помощь":
+            await self.cmd_help(update, context)
+            return
+        
         if len(text) < 3:
             return
         
@@ -3240,6 +3303,7 @@ class ClubAssistantBot:
             traceback.print_exc()
         
         # FinMon Simple module - Financial Monitoring (JSON/CSV based, no DB)
+        self.shift_wizard = None  # Initialize to None first
         try:
             from modules.finmon_simple import FinMonSimple
             from modules.finmon_schedule import FinMonSchedule
@@ -3264,15 +3328,27 @@ class ClubAssistantBot:
             if not owner_ids and hasattr(self, 'owner_id'):
                 owner_ids = [self.owner_id]
             
+            if not owner_ids:
+                logger.warning("⚠️ No OWNER_TG_IDS configured, using fallback from config")
+            
             # Initialize FinMon Simple components
             finmon_simple = FinMonSimple()
             
             # Initialize schedule (with Google Sheets if configured)
             google_sa_json = os.getenv('GOOGLE_SA_JSON')
-            finmon_schedule = FinMonSchedule(google_sa_json) if google_sa_json else None
+            finmon_schedule = None
+            if google_sa_json:
+                try:
+                    finmon_schedule = FinMonSchedule(google_sa_json)
+                    logger.info("✅ Google Sheets duty detection enabled")
+                except Exception as e:
+                    logger.warning(f"⚠️ Google Sheets duty detection disabled: {e}")
+            else:
+                logger.info("ℹ️ Google Sheets duty detection disabled (no GOOGLE_SA_JSON)")
             
             # Initialize shift wizard
             shift_wizard = ShiftWizard(finmon_simple, finmon_schedule, owner_ids)
+            self.shift_wizard = shift_wizard  # Store for button handler
             
             # Register /balances and /movements commands
             application.add_handler(CommandHandler("balances", shift_wizard.cmd_balances))
@@ -3334,7 +3410,10 @@ class ClubAssistantBot:
             )
             application.add_handler(shift_handler)
             
-            logger.info("✅ FinMon Simple module registered")
+            logger.info("✅ Shift wizard registered")
+            logger.info("   Commands: /shift, /balances, /movements")
+            logger.info("   Button: 💰 Сдать смену (reply keyboard)")
+            
         except Exception as e:
             logger.warning(f"⚠️ FinMon Simple module registration failed: {e}")
             import traceback
@@ -3374,6 +3453,17 @@ class ClubAssistantBot:
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_message))
+        
+        # Log registered commands summary
+        logger.info("=" * 60)
+        logger.info("📋 Registered commands summary:")
+        logger.info("   Core: /start, /help, /stats")
+        logger.info("   Content: /image, /video")
+        logger.info("   FinMon: /shift, /balances, /movements")
+        logger.info("   Owner: /apply_migrations, /migration, /backup")
+        logger.info("   Admin: /admins, /v2ray")
+        logger.info("   Reply keyboard: 💰 Сдать смену, 📊 Статистика, ❓ Помощь")
+        logger.info("=" * 60)
         
         logger.info(f"🤖 Бот v{VERSION} запущен!")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
