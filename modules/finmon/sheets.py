@@ -10,6 +10,12 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Shift time mapping constant
+SHIFT_TIME_MAPPING = {
+    'morning': 'Утро',
+    'evening': 'Вечер'
+}
+
 # Import conditionally since not all deployments may have Google Sheets configured
 try:
     import gspread
@@ -110,7 +116,7 @@ class GoogleSheetsSync:
             shifts_ws = self.spreadsheet.worksheet("Shifts")
             
             # Форматирование данных для строки
-            shift_time_label = "Утро" if shift_data.get('shift_time') == 'morning' else "Вечер"
+            shift_time_label = SHIFT_TIME_MAPPING.get(shift_data.get('shift_time'), shift_data.get('shift_time', ''))
             toilet_paper = "есть" if shift_data.get('toilet_paper') else "нет"
             paper_towels = "есть" if shift_data.get('paper_towels') else "нет"
             
@@ -174,3 +180,100 @@ class GoogleSheetsSync:
         except Exception as e:
             logger.error(f"❌ Error updating balances in Google Sheets: {e}")
             return False
+    
+    def get_duty_admin_for_shift(self, club_name: str, shift_date: str, shift_time: str) -> Optional[str]:
+        """
+        Получить имя админа на дежурстве из Google Sheets расписания
+        
+        Args:
+            club_name: Название клуба (например, "Рио", "Север")
+            shift_date: Дата смены в формате YYYY-MM-DD
+            shift_time: Время смены ('morning' или 'evening')
+        
+        Returns:
+            Имя админа или None, если не найдено
+        """
+        if not GSPREAD_AVAILABLE or not self.spreadsheet:
+            logger.debug("⚠️ Google Sheets not configured - cannot get duty admin")
+            return None
+        
+        try:
+            # Попытаться найти лист Schedule
+            try:
+                schedule_ws = self.spreadsheet.worksheet("Schedule")
+            except (gspread.exceptions.WorksheetNotFound, Exception) as e:
+                logger.debug(f"⚠️ Schedule worksheet not found: {e}")
+                return None
+            
+            # Получить все данные из листа
+            all_values = schedule_ws.get_all_values()
+            
+            if not all_values or len(all_values) < 2:
+                logger.debug("⚠️ Schedule worksheet is empty")
+                return None
+            
+            # Первая строка - заголовки
+            headers = all_values[0]
+            
+            # Попытаться найти колонки
+            # Ожидаемые колонки: Дата, Клуб, Смена, Админ
+            try:
+                date_col = headers.index('Дата')
+                club_col = headers.index('Клуб')
+                shift_col = headers.index('Смена')
+                admin_col = headers.index('Админ')
+            except ValueError:
+                logger.warning("⚠️ Schedule worksheet missing required columns (Дата, Клуб, Смена, Админ)")
+                return None
+            
+            # Преобразовать shift_time в русское название
+            shift_time_ru = SHIFT_TIME_MAPPING.get(shift_time, shift_time)
+            
+            # Преобразовать дату в формат, используемый в таблице (например, "01.01.2024")
+            from datetime import datetime
+            try:
+                date_obj = datetime.fromisoformat(shift_date)
+                date_formatted = date_obj.strftime('%d.%m.%Y')
+            except (ValueError, TypeError):
+                date_formatted = shift_date
+            
+            # Искать в строках
+            for row in all_values[1:]:
+                if len(row) <= max(date_col, club_col, shift_col, admin_col):
+                    continue
+                
+                # Проверить совпадение по дате, клубу и смене
+                # Use exact match for club name (strip whitespace)
+                if (row[date_col].strip() == date_formatted and 
+                    row[club_col].strip() == club_name and 
+                    row[shift_col].strip() == shift_time_ru):
+                    admin_name = row[admin_col].strip()
+                    if admin_name:
+                        logger.info(f"✅ Found duty admin from schedule: {admin_name}")
+                        return admin_name
+            
+            logger.debug(f"⚠️ No duty admin found for {club_name} {shift_time_ru} {date_formatted}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"❌ Error getting duty admin from schedule: {e}")
+            return None
+    
+    def get_service_account_email(self) -> Optional[str]:
+        """
+        Получить email сервисного аккаунта для инструкций
+        
+        Returns:
+            Email сервисного аккаунта или None
+        """
+        if not GSPREAD_AVAILABLE or not self.credentials_path:
+            return None
+        
+        try:
+            import json
+            with open(self.credentials_path, 'r') as f:
+                creds_data = json.load(f)
+                return creds_data.get('client_email')
+        except Exception as e:
+            logger.error(f"❌ Error reading service account email: {e}")
+            return None
