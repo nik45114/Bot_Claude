@@ -13,6 +13,7 @@ from telegram.ext import ContextTypes, ConversationHandler
 from .models import Shift
 from .db import FinMonDB
 from .sheets import GoogleSheetsSync
+from .formatters import get_shift_emoji, get_shift_label, format_date_short, format_shift_badge
 
 logger = logging.getLogger(__name__)
 
@@ -197,16 +198,14 @@ class FinMonWizard:
         message = "📊 СДАЧА СМЕНЫ\n\n"
         
         if detected_shift:
-            shift_emoji = "☀️" if detected_shift['shift_time'] == 'morning' else "🌙"
-            shift_label = "Утро" if detected_shift['shift_time'] == 'morning' else "Вечер"
-            date_str = detected_shift['shift_date'].strftime('%d.%m')
+            badge = format_shift_badge(detected_shift['shift_time'], detected_shift['shift_date'])
             
             if detected_shift['reason'] == 'early':
-                message += f"⏱️ Можно закрыть смену раньше:\n{shift_emoji} {shift_label} {date_str}\n\n"
+                message += f"⏱️ Можно закрыть смену раньше:\n{badge}\n\n"
             elif detected_shift['reason'] == 'grace':
-                message += f"⏰ Период закрытия смены:\n{shift_emoji} {shift_label} {date_str}\n\n"
+                message += f"⏰ Период закрытия смены:\n{badge}\n\n"
             else:
-                message += f"✅ Время закрытия смены:\n{shift_emoji} {shift_label} {date_str}\n\n"
+                message += f"✅ Время закрытия смены:\n{badge}\n\n"
             
             # Store detected shift in context for later use
             context.user_data['detected_shift'] = detected_shift
@@ -236,11 +235,9 @@ class FinMonWizard:
         
         if detected_shift:
             # Show auto-detected shift as primary option
-            shift_emoji = "☀️" if detected_shift['shift_time'] == 'morning' else "🌙"
-            shift_label = "Утро" if detected_shift['shift_time'] == 'morning' else "Вечер"
-            date_str = detected_shift['shift_date'].strftime('%d.%m')
+            badge = format_shift_badge(detected_shift['shift_time'], detected_shift['shift_date'])
             
-            button_text = f"Закрыть смену ({shift_emoji} {shift_label} {date_str})"
+            button_text = f"Закрыть смену ({badge})"
             keyboard.append([
                 InlineKeyboardButton(button_text, callback_data="finmon_close_auto")
             ])
@@ -279,7 +276,7 @@ class FinMonWizard:
         context.user_data['shift_data']['shift_time'] = detected_shift['shift_time']
         context.user_data['shift_data']['shift_date'] = detected_shift['shift_date']
         
-        time_label = "Утро" if detected_shift['shift_time'] == "morning" else "Вечер"
+        time_label = get_shift_label(detected_shift['shift_time'])
         club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
@@ -301,7 +298,7 @@ class FinMonWizard:
         club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
-            f"📊 {club_name} - Утро\n\n"
+            f"📊 {club_name} - {get_shift_label('morning')}\n\n"
             "💰 Введите ВЫРУЧКУ НАЛИЧНЫМИ (факт):\n"
             "(например: 2640 или 0)"
         )
@@ -319,7 +316,7 @@ class FinMonWizard:
         club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
-            f"📊 {club_name} - Вечер\n\n"
+            f"📊 {club_name} - {get_shift_label('evening')}\n\n"
             "💰 Введите ВЫРУЧКУ НАЛИЧНЫМИ (факт):\n"
             "(например: 2640 или 0)"
         )
@@ -370,12 +367,11 @@ class FinMonWizard:
         context.user_data['shift_data']['shift_time'] = shift_time
         context.user_data['shift_data']['shift_date'] = shift_date
         
-        time_label = "Утро" if shift_time == "morning" else "Вечер"
-        date_str = shift_date.strftime('%d.%m')
+        badge = format_shift_badge(shift_time, shift_date)
         club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
-            f"📊 {club_name} - {time_label} {date_str}\n\n"
+            f"📊 {club_name} - {badge}\n\n"
             "💰 Введите ВЫРУЧКУ НАЛИЧНЫМИ (факт):\n"
             "(например: 2640 или 0)"
         )
