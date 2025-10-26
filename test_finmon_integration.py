@@ -10,13 +10,14 @@ import sys
 import tempfile
 from datetime import date, datetime
 from unittest.mock import AsyncMock, MagicMock, patch
+import pytz
 
 # Add parent directory to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from modules.finmon_simple import FinMonSimple
 from modules.finmon_schedule import FinMonSchedule
-from modules.finmon_shift_wizard import ShiftWizard
+from modules.finmon_shift_wizard import ShiftWizard, get_current_shift_window, now_msk
 
 
 def test_shift_wizard_integration():
@@ -110,9 +111,6 @@ def test_chat_club_mapping():
 def test_time_detection():
     """Test shift time window detection"""
     print("Testing time detection...")
-    
-    from modules.finmon_shift_wizard import get_current_shift_window, now_msk
-    import pytz
     
     # Get current time in MSK
     current = now_msk()
