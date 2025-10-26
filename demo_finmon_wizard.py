@@ -7,11 +7,12 @@ Demonstrates the new button-based wizard flow
 
 import os
 import sys
+from pathlib import Path
 import tempfile
 from datetime import date
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from modules.finmon_simple import FinMonSimple
 

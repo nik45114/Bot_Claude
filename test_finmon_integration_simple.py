@@ -7,9 +7,10 @@ Verify that the wizard is properly registered and configured
 
 import os
 import sys
+from pathlib import Path
 
 # Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 
 def test_import_wizard():
@@ -76,8 +77,10 @@ def test_bot_import():
     
     # This just verifies the bot file has no syntax errors
     # We don't actually run it since it requires config
+    bot_path = Path(__file__).parent / 'bot.py'
+    
     try:
-        with open('bot.py', 'r') as f:
+        with open(bot_path, 'r') as f:
             code = f.read()
         
         # Check that required imports are present
