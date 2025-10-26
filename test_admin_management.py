@@ -10,8 +10,9 @@ import os
 import tempfile
 import sqlite3
 
-# Add parent directory to path
-sys.path.insert(0, '/home/runner/work/Bot_Claude/Bot_Claude')
+# Add parent directory to path (get project root dynamically)
+project_root = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, project_root)
 
 def test_imports():
     """Test that all modules can be imported"""
