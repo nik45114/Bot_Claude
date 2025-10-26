@@ -3190,33 +3190,7 @@ class ClubAssistantBot:
         
         # === END CONVERSATION HANDLERS ===
         
-        # Admin Management module (MUST be registered BEFORE general CallbackQueryHandler)
-        try:
-            admin_db, admin_wizard = register_admins(application, self.config, DB_PATH, self.bot_username)
-            # Store the admin invite interceptor
-            if 'admin_invite_interceptor' in application.bot_data:
-                self.admin_invite_interceptor = application.bot_data['admin_invite_interceptor']
-            logger.info("✅ Admin Management module registered")
-        except Exception as e:
-            logger.error(f"❌ Admin Management module registration failed: {e}")
-            import traceback
-            traceback.print_exc()
-        
-        # FinMon module - Financial Monitoring
-        try:
-            from modules.finmon import register_finmon
-            finmon_config = {
-                'db_path': DB_PATH,
-                'google_sa_json': os.getenv('GOOGLE_SA_JSON'),
-                'sheet_name': os.getenv('FINMON_SHEET_NAME', 'ClubFinance'),
-                'owner_ids': str(self.owner_id) if hasattr(self, 'owner_id') else os.getenv('OWNER_TG_IDS', '')
-            }
-            register_finmon(application, finmon_config)
-            logger.info("✅ FinMon module registered")
-        except Exception as e:
-            logger.warning(f"⚠️ FinMon module registration failed: {e}")
-        
-        # Обработчик inline-кнопок (must be AFTER ConversationHandlers and module registrations)
+        # Обработчик inline-кнопок (must be AFTER ConversationHandlers)
         application.add_handler(CallbackQueryHandler(self.handle_callback))
         
         # V2Ray команды
@@ -3246,6 +3220,32 @@ class ClubAssistantBot:
             fallbacks=[CommandHandler("cancel", self.club_commands.cmd_cancel)]
         )
         application.add_handler(report_handler)
+        
+        # FinMon module - Financial Monitoring (ВРЕМЕННО ОТКЛЮЧЕНО)
+        # try:
+        #     finmon_config = {
+        #         'db_path': DB_PATH,
+        #         'google_sa_json': os.getenv('GOOGLE_SA_JSON'),
+        #         'sheet_name': os.getenv('FINMON_SHEET_NAME', 'ClubFinance'),
+        #         'owner_ids': str(self.owner_id) if hasattr(self, 'owner_id') else os.getenv('OWNER_TG_IDS', '')
+        #     }
+        #     register_finmon(application, finmon_config)
+        #     logger.info("✅ FinMon module registered")
+        # except Exception as e:
+        #     logger.warning(f"⚠️ FinMon module registration failed: {e}")
+        logger.info("ℹ️ FinMon module temporarily disabled - in development")
+        
+        # Admin Management module
+        try:
+            admin_db, admin_wizard = register_admins(application, self.config, DB_PATH, self.bot_username)
+            # Store the admin invite interceptor
+            if 'admin_invite_interceptor' in application.bot_data:
+                self.admin_invite_interceptor = application.bot_data['admin_invite_interceptor']
+            logger.info("✅ Admin Management module registered")
+        except Exception as e:
+            logger.error(f"❌ Admin Management module registration failed: {e}")
+            import traceback
+            traceback.print_exc()
         
         application.add_handler(MessageHandler(filters.Document.ALL, self.handle_document))
         application.add_handler(MessageHandler(filters.PHOTO, self.handle_photo))

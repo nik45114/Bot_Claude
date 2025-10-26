@@ -175,61 +175,11 @@ class FinMonWizard:
     async def cmd_shift(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Начать сдачу смены - /shift"""
         user_id = update.effective_user.id
-        chat_id = update.effective_chat.id
         
         # Инициализация данных в context
         context.user_data['shift_data'] = {}
         
-        # Check if this chat has a club mapping
-        mapped_club_id = self.db.get_club_for_chat(chat_id)
-        
-        if mapped_club_id:
-            # Auto-select the mapped club
-            context.user_data['shift_data']['club_id'] = mapped_club_id
-            club_name = self.db.get_club_display_name(mapped_club_id)
-            
-            # Skip to time selection
-            detected_shift = get_current_shift_for_close()
-            
-            keyboard = []
-            message = f"📊 Клуб: {club_name}\n\n"
-            
-            if detected_shift:
-                # Show auto-detected shift as primary option
-                badge = format_shift_badge(detected_shift['shift_time'], detected_shift['shift_date'])
-                
-                button_text = f"Закрыть смену ({badge})"
-                if detected_shift['reason'] == 'early':
-                    button_text += " ⏱️"
-                elif detected_shift['reason'] == 'grace':
-                    button_text += " ⏰"
-                
-                keyboard.append([
-                    InlineKeyboardButton(button_text, callback_data=f"finmon_time_{detected_shift['shift_time']}_{detected_shift['shift_date']}")
-                ])
-                
-                # Store detected shift in context
-                context.user_data['detected_shift'] = detected_shift
-                
-                message += f"Рекомендуется: {badge}\n\n"
-            
-            # Manual selection options
-            keyboard.append([
-                InlineKeyboardButton("Выбрать вручную", callback_data="finmon_choose_manual")
-            ])
-            keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="finmon_cancel")])
-            
-            if detected_shift:
-                message += "Нажмите для быстрой сдачи или выберите вручную."
-            else:
-                message += "Выберите время сдачи смены."
-            
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(message, reply_markup=reply_markup)
-            
-            return SELECT_TIME
-        
-        # No mapping - show club selection
+        # Выбор клуба
         clubs = self.db.get_clubs()
         
         # Auto-detect current shift
@@ -778,30 +728,6 @@ class FinMonWizard:
         shift_data = context.user_data['shift_data']
         user = update.effective_user
         
-        # Попытаться получить информацию о дежурном админе из расписания
-        duty_admin = None
-        if self.sheets:
-            # Extract base club name (e.g., "Рио" from "Рио офиц" or "Рио коробка")
-            # Display name format is "Name type", we need just the name part
-            club_display_name = self.db.get_club_display_name(shift_data['club_id'])
-            club_name_parts = club_display_name.split()
-            club_name = club_name_parts[0] if club_name_parts else club_display_name
-            
-            duty_admin = self.sheets.get_duty_admin_for_shift(
-                club_name, 
-                str(shift_data['shift_date']), 
-                shift_data['shift_time']
-            )
-        
-        # Добавить информацию о дежурном в notes если найдена
-        notes = shift_data.get('notes', '')
-        if duty_admin:
-            duty_note = f"По расписанию дежурил: {duty_admin}"
-            if notes:
-                notes = f"{notes}\n\n{duty_note}"
-            else:
-                notes = duty_note
-        
         # Создать объект Shift
         shift = Shift(
             club_id=shift_data['club_id'],
@@ -825,7 +751,7 @@ class FinMonWizard:
             games_count=shift_data.get('games_count', 0),
             toilet_paper=shift_data.get('toilet_paper', False),
             paper_towels=shift_data.get('paper_towels', False),
-            notes=notes
+            notes=shift_data.get('notes')
         )
         
         # Сохранить в базу
@@ -837,24 +763,15 @@ class FinMonWizard:
             
             # Синхронизация с Google Sheets
             club_name = self.db.get_club_display_name(shift_data['club_id'])
-            
-            # Обновить shift_data для sync с notes
-            shift_data['notes'] = notes
             self.sheets.append_shift(shift_data, club_name)
             
-            success_msg = (
+            await query.edit_message_text(
                 f"✅ Смена сдана успешно!\n\n"
                 f"ID: {shift_id}\n"
                 f"Клуб: {club_name}\n"
-                f"Дата: {shift_data['shift_date']}\n"
+                f"Дата: {shift_data['shift_date']}\n\n"
+                f"Данные сохранены в базу и синхронизированы с Google Sheets."
             )
-            
-            if duty_admin:
-                success_msg += f"👤 По расписанию дежурил: {duty_admin}\n"
-            
-            success_msg += "\nДанные сохранены в базу и синхронизированы с Google Sheets."
-            
-            await query.edit_message_text(success_msg)
         else:
             await query.edit_message_text(
                 "❌ Ошибка при сохранении смены. Попробуйте позже."
@@ -948,175 +865,5 @@ class FinMonWizard:
             text += f"  Админ: @{shift.get('admin_username', 'Unknown')}\n"
             text += f"  Выручка: {shift['fact_cash']:,.0f} ₽ (нал) + {shift['fact_card']:,.0f} ₽ (б/н)\n"
             text += "━━━━━━━━━━━━━━━━\n"
-        
-        await update.message.reply_text(text)
-    
-    async def cmd_finmon_map(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать маппинги чат → клуб (только для владельцев)"""
-        user_id = update.effective_user.id
-        
-        if not self.is_owner(user_id):
-            await update.message.reply_text("❌ Только для владельцев")
-            return
-        
-        mappings = self.db.get_all_chat_club_mappings()
-        
-        text = "🗺️ МАППИНГ ЧАТОВ НА КЛУБЫ\n\n"
-        
-        if mappings:
-            for m in mappings:
-                club_label = f"{m['name']} ({m['type']})"
-                text += f"• Chat {m['chat_id']} → {club_label}\n"
-            text += "\n"
-        else:
-            text += "Нет маппингов\n\n"
-        
-        text += "Команды:\n"
-        text += "/finmon_bind <chat_id> <club_id> - привязать чат к клубу\n"
-        text += "/finmon_unbind <chat_id> - отвязать чат\n"
-        text += "/finmon_bind_here <club_id> - привязать текущий чат\n\n"
-        text += "Пример: /finmon_bind 5329834944 1\n"
-        
-        await update.message.reply_text(text)
-    
-    async def cmd_finmon_bind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Привязать чат к клубу (только для владельцев)"""
-        user_id = update.effective_user.id
-        
-        if not self.is_owner(user_id):
-            await update.message.reply_text("❌ Только для владельцев")
-            return
-        
-        if len(context.args) < 2:
-            await update.message.reply_text(
-                "Использование: /finmon_bind <chat_id> <club_id>\n\n"
-                "Пример: /finmon_bind 5329834944 1"
-            )
-            return
-        
-        try:
-            chat_id = int(context.args[0])
-            club_id = int(context.args[1])
-        except ValueError:
-            await update.message.reply_text("❌ chat_id и club_id должны быть числами")
-            return
-        
-        # Проверить что клуб существует
-        clubs = self.db.get_clubs()
-        if not any(c['id'] == club_id for c in clubs):
-            await update.message.reply_text(f"❌ Клуб с ID {club_id} не найден")
-            return
-        
-        success = self.db.set_chat_club_mapping(chat_id, club_id)
-        
-        if success:
-            club_name = self.db.get_club_display_name(club_id)
-            await update.message.reply_text(
-                f"✅ Чат {chat_id} привязан к клубу {club_name}"
-            )
-        else:
-            await update.message.reply_text("❌ Ошибка при привязке")
-    
-    async def cmd_finmon_bind_here(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Привязать текущий чат к клубу (только для владельцев)"""
-        user_id = update.effective_user.id
-        
-        if not self.is_owner(user_id):
-            await update.message.reply_text("❌ Только для владельцев")
-            return
-        
-        if len(context.args) < 1:
-            await update.message.reply_text(
-                "Использование: /finmon_bind_here <club_id>\n\n"
-                "Пример: /finmon_bind_here 1"
-            )
-            return
-        
-        try:
-            club_id = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("❌ club_id должен быть числом")
-            return
-        
-        # Проверить что клуб существует
-        clubs = self.db.get_clubs()
-        if not any(c['id'] == club_id for c in clubs):
-            await update.message.reply_text(f"❌ Клуб с ID {club_id} не найден")
-            return
-        
-        chat_id = update.effective_chat.id
-        success = self.db.set_chat_club_mapping(chat_id, club_id)
-        
-        if success:
-            club_name = self.db.get_club_display_name(club_id)
-            await update.message.reply_text(
-                f"✅ Этот чат ({chat_id}) привязан к клубу {club_name}\n\n"
-                f"Теперь команда /shift будет автоматически выбирать этот клуб."
-            )
-        else:
-            await update.message.reply_text("❌ Ошибка при привязке")
-    
-    async def cmd_finmon_unbind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Отвязать чат от клуба (только для владельцев)"""
-        user_id = update.effective_user.id
-        
-        if not self.is_owner(user_id):
-            await update.message.reply_text("❌ Только для владельцев")
-            return
-        
-        if len(context.args) < 1:
-            await update.message.reply_text(
-                "Использование: /finmon_unbind <chat_id>\n\n"
-                "Пример: /finmon_unbind 5329834944"
-            )
-            return
-        
-        try:
-            chat_id = int(context.args[0])
-        except ValueError:
-            await update.message.reply_text("❌ chat_id должен быть числом")
-            return
-        
-        success = self.db.delete_chat_club_mapping(chat_id)
-        
-        if success:
-            await update.message.reply_text(f"✅ Чат {chat_id} отвязан")
-        else:
-            await update.message.reply_text("❌ Ошибка при отвязке")
-    
-    async def cmd_finmon_schedule_setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Инструкции по настройке Google Sheets расписания (только для владельцев)"""
-        user_id = update.effective_user.id
-        
-        if not self.is_owner(user_id):
-            await update.message.reply_text("❌ Только для владельцев")
-            return
-        
-        service_account_email = self.sheets.get_service_account_email() if self.sheets else None
-        
-        text = "📋 НАСТРОЙКА GOOGLE SHEETS РАСПИСАНИЯ\n\n"
-        
-        if service_account_email:
-            text += f"1️⃣ Создайте или откройте Google Sheet\n\n"
-            text += f"2️⃣ Добавьте лист с названием 'Schedule'\n\n"
-            text += f"3️⃣ Создайте таблицу с колонками:\n"
-            text += f"   • Дата (формат: 01.01.2024)\n"
-            text += f"   • Клуб (название клуба)\n"
-            text += f"   • Смена (Утро или Вечер)\n"
-            text += f"   • Админ (имя админа)\n\n"
-            text += f"4️⃣ Поделитесь листом с:\n"
-            text += f"   📧 {service_account_email}\n"
-            text += f"   (дайте права 'Редактор' или 'Читатель')\n\n"
-            text += f"5️⃣ Заполните расписание в таблице\n\n"
-            text += f"Пример строки:\n"
-            text += f"01.01.2024 | Рио | Утро | Иван\n\n"
-            text += f"После настройки бот будет автоматически определять,\n"
-            text += f"кто должен был быть на смене по расписанию."
-        else:
-            text += "⚠️ Google Sheets не настроен\n\n"
-            text += "Для использования расписания необходимо:\n"
-            text += "1. Настроить сервисный аккаунт Google\n"
-            text += "2. Указать GOOGLE_SA_JSON в .env\n"
-            text += "3. Перезапустить бота"
         
         await update.message.reply_text(text)
