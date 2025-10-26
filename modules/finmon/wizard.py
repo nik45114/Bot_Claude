@@ -175,11 +175,61 @@ class FinMonWizard:
     async def cmd_shift(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Начать сдачу смены - /shift"""
         user_id = update.effective_user.id
+        chat_id = update.effective_chat.id
         
         # Инициализация данных в context
         context.user_data['shift_data'] = {}
         
-        # Выбор клуба
+        # Check if this chat has a club mapping
+        mapped_club_id = self.db.get_club_for_chat(chat_id)
+        
+        if mapped_club_id:
+            # Auto-select the mapped club
+            context.user_data['shift_data']['club_id'] = mapped_club_id
+            club_name = self.db.get_club_display_name(mapped_club_id)
+            
+            # Skip to time selection
+            detected_shift = get_current_shift_for_close()
+            
+            keyboard = []
+            message = f"📊 Клуб: {club_name}\n\n"
+            
+            if detected_shift:
+                # Show auto-detected shift as primary option
+                badge = format_shift_badge(detected_shift['shift_time'], detected_shift['shift_date'])
+                
+                button_text = f"Закрыть смену ({badge})"
+                if detected_shift['reason'] == 'early':
+                    button_text += " ⏱️"
+                elif detected_shift['reason'] == 'grace':
+                    button_text += " ⏰"
+                
+                keyboard.append([
+                    InlineKeyboardButton(button_text, callback_data=f"finmon_time_{detected_shift['shift_time']}_{detected_shift['shift_date']}")
+                ])
+                
+                # Store detected shift in context
+                context.user_data['detected_shift'] = detected_shift
+                
+                message += f"Рекомендуется: {badge}\n\n"
+            
+            # Manual selection options
+            keyboard.append([
+                InlineKeyboardButton("Выбрать вручную", callback_data="finmon_choose_manual")
+            ])
+            keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="finmon_cancel")])
+            
+            if detected_shift:
+                message += "Нажмите для быстрой сдачи или выберите вручную."
+            else:
+                message += "Выберите время сдачи смены."
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(message, reply_markup=reply_markup)
+            
+            return SELECT_TIME
+        
+        # No mapping - show club selection
         clubs = self.db.get_clubs()
         
         # Auto-detect current shift
@@ -867,3 +917,136 @@ class FinMonWizard:
             text += "━━━━━━━━━━━━━━━━\n"
         
         await update.message.reply_text(text)
+    
+    async def cmd_finmon_map(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать маппинги чат → клуб (только для владельцев)"""
+        user_id = update.effective_user.id
+        
+        if not self.is_owner(user_id):
+            await update.message.reply_text("❌ Только для владельцев")
+            return
+        
+        mappings = self.db.get_all_chat_club_mappings()
+        
+        text = "🗺️ МАППИНГ ЧАТОВ НА КЛУБЫ\n\n"
+        
+        if mappings:
+            for m in mappings:
+                club_label = f"{m['name']} ({m['type']})"
+                text += f"• Chat {m['chat_id']} → {club_label}\n"
+            text += "\n"
+        else:
+            text += "Нет маппингов\n\n"
+        
+        text += "Команды:\n"
+        text += "/finmon_bind <chat_id> <club_id> - привязать чат к клубу\n"
+        text += "/finmon_unbind <chat_id> - отвязать чат\n"
+        text += "/finmon_bind_here <club_id> - привязать текущий чат\n\n"
+        text += "Пример: /finmon_bind 5329834944 1\n"
+        
+        await update.message.reply_text(text)
+    
+    async def cmd_finmon_bind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Привязать чат к клубу (только для владельцев)"""
+        user_id = update.effective_user.id
+        
+        if not self.is_owner(user_id):
+            await update.message.reply_text("❌ Только для владельцев")
+            return
+        
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Использование: /finmon_bind <chat_id> <club_id>\n\n"
+                "Пример: /finmon_bind 5329834944 1"
+            )
+            return
+        
+        try:
+            chat_id = int(context.args[0])
+            club_id = int(context.args[1])
+        except ValueError:
+            await update.message.reply_text("❌ chat_id и club_id должны быть числами")
+            return
+        
+        # Проверить что клуб существует
+        clubs = self.db.get_clubs()
+        if not any(c['id'] == club_id for c in clubs):
+            await update.message.reply_text(f"❌ Клуб с ID {club_id} не найден")
+            return
+        
+        success = self.db.set_chat_club_mapping(chat_id, club_id)
+        
+        if success:
+            club_name = self.db.get_club_display_name(club_id)
+            await update.message.reply_text(
+                f"✅ Чат {chat_id} привязан к клубу {club_name}"
+            )
+        else:
+            await update.message.reply_text("❌ Ошибка при привязке")
+    
+    async def cmd_finmon_bind_here(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Привязать текущий чат к клубу (только для владельцев)"""
+        user_id = update.effective_user.id
+        
+        if not self.is_owner(user_id):
+            await update.message.reply_text("❌ Только для владельцев")
+            return
+        
+        if len(context.args) < 1:
+            await update.message.reply_text(
+                "Использование: /finmon_bind_here <club_id>\n\n"
+                "Пример: /finmon_bind_here 1"
+            )
+            return
+        
+        try:
+            club_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ club_id должен быть числом")
+            return
+        
+        # Проверить что клуб существует
+        clubs = self.db.get_clubs()
+        if not any(c['id'] == club_id for c in clubs):
+            await update.message.reply_text(f"❌ Клуб с ID {club_id} не найден")
+            return
+        
+        chat_id = update.effective_chat.id
+        success = self.db.set_chat_club_mapping(chat_id, club_id)
+        
+        if success:
+            club_name = self.db.get_club_display_name(club_id)
+            await update.message.reply_text(
+                f"✅ Этот чат ({chat_id}) привязан к клубу {club_name}\n\n"
+                f"Теперь команда /shift будет автоматически выбирать этот клуб."
+            )
+        else:
+            await update.message.reply_text("❌ Ошибка при привязке")
+    
+    async def cmd_finmon_unbind(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отвязать чат от клуба (только для владельцев)"""
+        user_id = update.effective_user.id
+        
+        if not self.is_owner(user_id):
+            await update.message.reply_text("❌ Только для владельцев")
+            return
+        
+        if len(context.args) < 1:
+            await update.message.reply_text(
+                "Использование: /finmon_unbind <chat_id>\n\n"
+                "Пример: /finmon_unbind 5329834944"
+            )
+            return
+        
+        try:
+            chat_id = int(context.args[0])
+        except ValueError:
+            await update.message.reply_text("❌ chat_id должен быть числом")
+            return
+        
+        success = self.db.delete_chat_club_mapping(chat_id)
+        
+        if success:
+            await update.message.reply_text(f"✅ Чат {chat_id} отвязан")
+        else:
+            await update.message.reply_text("❌ Ошибка при отвязке")

@@ -23,6 +23,7 @@ class FinMonDB:
     def _init_db(self):
         """Инициализация базы данных"""
         try:
+            # Run initial migration
             with open('migrations/finmon_001_init.sql', 'r') as f:
                 sql = f.read()
             
@@ -30,6 +31,17 @@ class FinMonDB:
             cursor = conn.cursor()
             cursor.executescript(sql)
             conn.commit()
+            
+            # Run chat-club mapping migration
+            try:
+                with open('migrations/finmon_002_chat_club_mapping.sql', 'r') as f:
+                    sql = f.read()
+                cursor.executescript(sql)
+                conn.commit()
+                logger.info("✅ FinMon chat-club mapping migration applied")
+            except Exception as e:
+                logger.warning(f"⚠️ Chat-club mapping migration skipped: {e}")
+            
             conn.close()
             logger.info("✅ FinMon database initialized")
         except Exception as e:
@@ -193,4 +205,78 @@ class FinMonDB:
             return shifts
         except Exception as e:
             logger.error(f"❌ Error getting shifts: {e}")
+            return []
+    
+    # ===== Chat-Club Mapping Methods =====
+    
+    def get_club_for_chat(self, chat_id: int) -> Optional[int]:
+        """Получить club_id для чата"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('SELECT club_id FROM finmon_chat_club_map WHERE chat_id = ?', (chat_id,))
+            row = cursor.fetchone()
+            conn.close()
+            
+            return row[0] if row else None
+        except Exception as e:
+            logger.error(f"❌ Error getting club for chat: {e}")
+            return None
+    
+    def set_chat_club_mapping(self, chat_id: int, club_id: int) -> bool:
+        """Установить маппинг чат → клуб"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                INSERT OR REPLACE INTO finmon_chat_club_map (chat_id, club_id, updated_at)
+                VALUES (?, ?, CURRENT_TIMESTAMP)
+            ''', (chat_id, club_id))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error setting chat-club mapping: {e}")
+            return False
+    
+    def delete_chat_club_mapping(self, chat_id: int) -> bool:
+        """Удалить маппинг чата"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('DELETE FROM finmon_chat_club_map WHERE chat_id = ?', (chat_id,))
+            
+            conn.commit()
+            conn.close()
+            
+            return True
+        except Exception as e:
+            logger.error(f"❌ Error deleting chat-club mapping: {e}")
+            return False
+    
+    def get_all_chat_club_mappings(self) -> List[Dict[str, Any]]:
+        """Получить все маппинги чат → клуб"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT m.chat_id, m.club_id, c.name, c.type, m.created_at, m.updated_at
+                FROM finmon_chat_club_map m
+                JOIN finmon_clubs c ON m.club_id = c.id
+                ORDER BY m.created_at DESC
+            ''')
+            
+            mappings = [dict(row) for row in cursor.fetchall()]
+            conn.close()
+            
+            return mappings
+        except Exception as e:
+            logger.error(f"❌ Error getting chat-club mappings: {e}")
             return []
