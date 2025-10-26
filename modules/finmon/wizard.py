@@ -5,14 +5,26 @@ FinMon Wizard - Conversation Handler for Shift Submission
 """
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
+from typing import Optional, Dict, Any
+import pytz
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from .models import Shift
 from .db import FinMonDB
 from .sheets import GoogleSheetsSync
+from .formatters import get_shift_emoji, get_shift_label, format_date_short, format_shift_badge
 
 logger = logging.getLogger(__name__)
+
+# Shift configuration constants
+TIMEZONE = 'Europe/Moscow'
+SHIFT_CLOSE_TIMES = {
+    'morning': '10:00',
+    'evening': '22:00'
+}
+EARLY_CLOSE_OFFSET_HOURS = 1  # Allow early close 1 hour before
+GRACE_MINUTES_AFTER_CLOSE = 60  # Grace period after official close time
 
 # Состояния conversation handler
 (SELECT_CLUB, SELECT_TIME, ENTER_FACT_CASH, ENTER_FACT_CARD, ENTER_QR, ENTER_CARD2,
@@ -21,6 +33,131 @@ logger = logging.getLogger(__name__)
  ENTER_JOYSTICKS_TOTAL, ENTER_JOYSTICKS_REPAIR, ENTER_JOYSTICKS_NEED, ENTER_GAMES,
  SELECT_TOILET_PAPER, SELECT_PAPER_TOWELS,
  ENTER_NOTES, CONFIRM_SHIFT) = range(20)
+
+
+def now_msk() -> datetime:
+    """Get current time in Moscow timezone"""
+    msk = pytz.timezone(TIMEZONE)
+    return datetime.now(msk)
+
+
+def parse_msk_time(time_str: str, ref_date: date = None) -> datetime:
+    """
+    Parse time string (HH:MM) to MSK datetime
+    
+    Args:
+        time_str: Time in format "HH:MM"
+        ref_date: Reference date (default: today in MSK)
+    
+    Returns:
+        datetime object in MSK timezone
+    """
+    if ref_date is None:
+        ref_date = now_msk().date()
+    
+    msk = pytz.timezone(TIMEZONE)
+    hour, minute = map(int, time_str.split(':'))
+    dt = datetime(ref_date.year, ref_date.month, ref_date.day, hour, minute)
+    return msk.localize(dt)
+
+
+def is_within_window(
+    now: datetime,
+    close_time_str: str,
+    early_offset_hours: int,
+    grace_minutes: int,
+    ref_date: date = None
+) -> bool:
+    """
+    Check if current time is within the shift close window
+    
+    Args:
+        now: Current datetime in MSK
+        close_time_str: Official close time (HH:MM)
+        early_offset_hours: Hours before close time for early closing
+        grace_minutes: Minutes after close time (grace period)
+        ref_date: Reference date for the shift
+    
+    Returns:
+        True if within window, False otherwise
+    """
+    if ref_date is None:
+        ref_date = now.date()
+    
+    close_time = parse_msk_time(close_time_str, ref_date)
+    early_time = close_time - timedelta(hours=early_offset_hours)
+    grace_end = close_time + timedelta(minutes=grace_minutes)
+    
+    return early_time <= now <= grace_end
+
+
+def get_current_shift_for_close() -> Optional[Dict[str, Any]]:
+    """
+    Auto-detect which shift should be closed based on current MSK time
+    
+    Returns:
+        Dictionary with shift_time, shift_date, and reason, or None if outside windows
+        {
+            'shift_time': 'morning' or 'evening',
+            'shift_date': date object,
+            'reason': 'auto' or 'early' or 'grace'
+        }
+    """
+    now = now_msk()
+    today = now.date()
+    current_hour = now.hour
+    current_minute = now.minute
+    
+    # Morning shift window: 09:00 - 11:00 (10:00 ± 1 hour + grace)
+    if is_within_window(now, SHIFT_CLOSE_TIMES['morning'], 
+                        EARLY_CLOSE_OFFSET_HOURS, GRACE_MINUTES_AFTER_CLOSE):
+        # Determine reason
+        close_time = parse_msk_time(SHIFT_CLOSE_TIMES['morning'], today)
+        early_time = close_time - timedelta(hours=EARLY_CLOSE_OFFSET_HOURS)
+        
+        if now < close_time:
+            reason = 'early' if now >= early_time else 'auto'
+        else:
+            reason = 'grace'
+        
+        return {
+            'shift_time': 'morning',
+            'shift_date': today,
+            'reason': reason
+        }
+    
+    # Evening shift window: 21:00 - 23:00 (22:00 ± 1 hour + grace)
+    # Plus grace window from 00:00 to 00:30 next day for late evening shifts
+    if is_within_window(now, SHIFT_CLOSE_TIMES['evening'],
+                        EARLY_CLOSE_OFFSET_HOURS, GRACE_MINUTES_AFTER_CLOSE):
+        close_time = parse_msk_time(SHIFT_CLOSE_TIMES['evening'], today)
+        early_time = close_time - timedelta(hours=EARLY_CLOSE_OFFSET_HOURS)
+        
+        if now < close_time:
+            reason = 'early' if now >= early_time else 'auto'
+        else:
+            reason = 'grace'
+        
+        return {
+            'shift_time': 'evening',
+            'shift_date': today,
+            'reason': reason
+        }
+    
+    # Special case: Very early morning (00:00 - 00:30) - might be closing yesterday's evening shift
+    if current_hour == 0 and current_minute <= 30:
+        yesterday = today - timedelta(days=1)
+        yesterday_evening_close = parse_msk_time(SHIFT_CLOSE_TIMES['evening'], yesterday)
+        grace_end = yesterday_evening_close + timedelta(minutes=GRACE_MINUTES_AFTER_CLOSE)
+        
+        if now <= grace_end:
+            return {
+                'shift_time': 'evening',
+                'shift_date': yesterday,
+                'reason': 'grace'
+            }
+    
+    return None
 
 
 class FinMonWizard:
@@ -45,6 +182,9 @@ class FinMonWizard:
         # Выбор клуба
         clubs = self.db.get_clubs()
         
+        # Auto-detect current shift
+        detected_shift = get_current_shift_for_close()
+        
         keyboard = []
         for club in clubs:
             club_label = self.db.get_club_display_name(club['id'])
@@ -54,12 +194,26 @@ class FinMonWizard:
         
         keyboard.append([InlineKeyboardButton("❌ Отмена", callback_data="finmon_cancel")])
         
+        # Build message with auto-detection info
+        message = "📊 СДАЧА СМЕНЫ\n\n"
+        
+        if detected_shift:
+            badge = format_shift_badge(detected_shift['shift_time'], detected_shift['shift_date'])
+            
+            if detected_shift['reason'] == 'early':
+                message += f"⏱️ Можно закрыть смену раньше:\n{badge}\n\n"
+            elif detected_shift['reason'] == 'grace':
+                message += f"⏰ Период закрытия смены:\n{badge}\n\n"
+            else:
+                message += f"✅ Время закрытия смены:\n{badge}\n\n"
+            
+            # Store detected shift in context for later use
+            context.user_data['detected_shift'] = detected_shift
+        
+        message += "Выберите клуб:"
+        
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(
-            "📊 СДАЧА СМЕНЫ\n\n"
-            "Выберите клуб:",
-            reply_markup=reply_markup
-        )
+        await update.message.reply_text(message, reply_markup=reply_markup)
         
         return SELECT_CLUB
     
@@ -73,21 +227,183 @@ class FinMonWizard:
         
         club_name = self.db.get_club_display_name(club_id)
         
-        # Выбор времени смены
+        # Check if we have a detected shift
+        detected_shift = context.user_data.get('detected_shift')
+        
+        keyboard = []
+        message = f"📊 Клуб: {club_name}\n\n"
+        
+        if detected_shift:
+            # Show auto-detected shift as primary option
+            badge = format_shift_badge(detected_shift['shift_time'], detected_shift['shift_date'])
+            
+            button_text = f"Закрыть смену ({badge})"
+            keyboard.append([
+                InlineKeyboardButton(button_text, callback_data="finmon_close_auto")
+            ])
+            
+            # Add manual override options
+            keyboard.append([InlineKeyboardButton("🔁 Выбрать вручную", callback_data="finmon_choose_manual")])
+            keyboard.append([InlineKeyboardButton("⏱️ Закрыть раньше", callback_data="finmon_close_early")])
+            
+            message += "Выберите действие:"
+        else:
+            # No auto-detection, show manual options
+            keyboard.append([InlineKeyboardButton("☀️ Закрыть утреннюю", callback_data="finmon_close_manual_morning")])
+            keyboard.append([InlineKeyboardButton("🌙 Закрыть вечернюю", callback_data="finmon_close_manual_evening")])
+            keyboard.append([InlineKeyboardButton("⏱️ Закрыть раньше", callback_data="finmon_close_early")])
+            
+            message += "Выберите смену для закрытия:"
+        
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="finmon_back_club")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(message, reply_markup=reply_markup)
+        
+        return SELECT_TIME
+    
+    async def close_auto(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Close shift using auto-detected time"""
+        query = update.callback_query
+        await query.answer()
+        
+        detected_shift = context.user_data.get('detected_shift')
+        if not detected_shift:
+            await query.edit_message_text("❌ Ошибка: смена не определена автоматически")
+            return ConversationHandler.END
+        
+        # Set shift time and date from detection
+        context.user_data['shift_data']['shift_time'] = detected_shift['shift_time']
+        context.user_data['shift_data']['shift_date'] = detected_shift['shift_date']
+        
+        time_label = get_shift_label(detected_shift['shift_time'])
+        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        
+        await query.edit_message_text(
+            f"📊 {club_name} - {time_label}\n\n"
+            "💰 Введите ВЫРУЧКУ НАЛИЧНЫМИ (факт):\n"
+            "(например: 2640 или 0)"
+        )
+        
+        return ENTER_FACT_CASH
+    
+    async def close_manual_morning(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Manually close morning shift"""
+        query = update.callback_query
+        await query.answer()
+        
+        context.user_data['shift_data']['shift_time'] = 'morning'
+        context.user_data['shift_data']['shift_date'] = now_msk().date()
+        
+        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        
+        await query.edit_message_text(
+            f"📊 {club_name} - {get_shift_label('morning')}\n\n"
+            "💰 Введите ВЫРУЧКУ НАЛИЧНЫМИ (факт):\n"
+            "(например: 2640 или 0)"
+        )
+        
+        return ENTER_FACT_CASH
+    
+    async def close_manual_evening(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Manually close evening shift"""
+        query = update.callback_query
+        await query.answer()
+        
+        context.user_data['shift_data']['shift_time'] = 'evening'
+        context.user_data['shift_data']['shift_date'] = now_msk().date()
+        
+        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        
+        await query.edit_message_text(
+            f"📊 {club_name} - {get_shift_label('evening')}\n\n"
+            "💰 Введите ВЫРУЧКУ НАЛИЧНЫМИ (факт):\n"
+            "(например: 2640 или 0)"
+        )
+        
+        return ENTER_FACT_CASH
+    
+    async def close_early(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Show options for early closure"""
+        query = update.callback_query
+        await query.answer()
+        
+        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        
+        # For early closure, show both shift options with today's date
         keyboard = [
-            [InlineKeyboardButton("🌅 Утро", callback_data="finmon_time_morning")],
-            [InlineKeyboardButton("🌆 Вечер", callback_data="finmon_time_evening")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="finmon_back_club")]
+            [InlineKeyboardButton("☀️ Утро (сегодня)", callback_data="finmon_early_morning_today")],
+            [InlineKeyboardButton("🌙 Вечер (сегодня)", callback_data="finmon_early_evening_today")],
+            [InlineKeyboardButton("☀️ Утро (вчера)", callback_data="finmon_early_morning_yesterday")],
+            [InlineKeyboardButton("🌙 Вечер (вчера)", callback_data="finmon_early_evening_yesterday")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="finmon_back_to_shift_select")]
         ]
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            f"📊 Клуб: {club_name}\n\n"
+            f"📊 {club_name}\n\n"
+            "⏱️ Выберите смену для раннего закрытия:",
+            reply_markup=reply_markup
+        )
+        
+        return SELECT_TIME
+    
+    async def early_shift_selected(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Handle early shift selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Parse callback data: finmon_early_{shift}_{when}
+        parts = query.data.split('_')
+        shift_time = parts[2]  # morning or evening
+        when = parts[3]  # today or yesterday
+        
+        today = now_msk().date()
+        if when == 'yesterday':
+            shift_date = today - timedelta(days=1)
+        else:
+            shift_date = today
+        
+        context.user_data['shift_data']['shift_time'] = shift_time
+        context.user_data['shift_data']['shift_date'] = shift_date
+        
+        badge = format_shift_badge(shift_time, shift_date)
+        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        
+        await query.edit_message_text(
+            f"📊 {club_name} - {badge}\n\n"
+            "💰 Введите ВЫРУЧКУ НАЛИЧНЫМИ (факт):\n"
+            "(например: 2640 или 0)"
+        )
+        
+        return ENTER_FACT_CASH
+    
+    async def choose_manual(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Switch to manual shift selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        
+        keyboard = [
+            [InlineKeyboardButton("☀️ Утро", callback_data="finmon_close_manual_morning")],
+            [InlineKeyboardButton("🌙 Вечер", callback_data="finmon_close_manual_evening")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="finmon_back_to_shift_select")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            f"📊 {club_name}\n\n"
             "Выберите время смены:",
             reply_markup=reply_markup
         )
         
         return SELECT_TIME
+    
+    async def back_to_shift_select(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Go back to shift selection"""
+        # Re-run select_club logic
+        return await self.select_club(update, context)
     
     async def select_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Выбор времени смены"""

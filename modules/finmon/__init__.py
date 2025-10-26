@@ -96,6 +96,13 @@ def register_finmon(application: Application, config: dict = None):
             ],
             SELECT_TIME: [
                 CallbackQueryHandler(wizard.select_time, pattern="^finmon_time_"),
+                CallbackQueryHandler(wizard.close_auto, pattern="^finmon_close_auto$"),
+                CallbackQueryHandler(wizard.close_manual_morning, pattern="^finmon_close_manual_morning$"),
+                CallbackQueryHandler(wizard.close_manual_evening, pattern="^finmon_close_manual_evening$"),
+                CallbackQueryHandler(wizard.close_early, pattern="^finmon_close_early$"),
+                CallbackQueryHandler(wizard.choose_manual, pattern="^finmon_choose_manual$"),
+                CallbackQueryHandler(wizard.early_shift_selected, pattern="^finmon_early_"),
+                CallbackQueryHandler(wizard.back_to_shift_select, pattern="^finmon_back_to_shift_select$"),
             ],
             ENTER_FACT_CASH: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, wizard.enter_fact_cash)
