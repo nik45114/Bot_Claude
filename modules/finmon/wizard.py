@@ -781,8 +781,12 @@ class FinMonWizard:
         # Попытаться получить информацию о дежурном админе из расписания
         duty_admin = None
         if self.sheets:
-            club_name_parts = self.db.get_club_display_name(shift_data['club_id']).split()
-            club_name = club_name_parts[0] if club_name_parts else ""
+            # Extract base club name (e.g., "Рио" from "Рио офиц" or "Рио коробка")
+            # Display name format is "Name type", we need just the name part
+            club_display_name = self.db.get_club_display_name(shift_data['club_id'])
+            club_name_parts = club_display_name.split()
+            club_name = club_name_parts[0] if club_name_parts else club_display_name
+            
             duty_admin = self.sheets.get_duty_admin_for_shift(
                 club_name, 
                 str(shift_data['shift_date']), 

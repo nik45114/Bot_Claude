@@ -10,6 +10,12 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# Shift time mapping constant
+SHIFT_TIME_MAPPING = {
+    'morning': 'Утро',
+    'evening': 'Вечер'
+}
+
 # Import conditionally since not all deployments may have Google Sheets configured
 try:
     import gspread
@@ -110,7 +116,7 @@ class GoogleSheetsSync:
             shifts_ws = self.spreadsheet.worksheet("Shifts")
             
             # Форматирование данных для строки
-            shift_time_label = "Утро" if shift_data.get('shift_time') == 'morning' else "Вечер"
+            shift_time_label = SHIFT_TIME_MAPPING.get(shift_data.get('shift_time'), shift_data.get('shift_time', ''))
             toilet_paper = "есть" if shift_data.get('toilet_paper') else "нет"
             paper_towels = "есть" if shift_data.get('paper_towels') else "нет"
             
@@ -195,8 +201,8 @@ class GoogleSheetsSync:
             # Попытаться найти лист Schedule
             try:
                 schedule_ws = self.spreadsheet.worksheet("Schedule")
-            except:
-                logger.debug("⚠️ Schedule worksheet not found")
+            except (gspread.exceptions.WorksheetNotFound, Exception) as e:
+                logger.debug(f"⚠️ Schedule worksheet not found: {e}")
                 return None
             
             # Получить все данные из листа
@@ -221,14 +227,14 @@ class GoogleSheetsSync:
                 return None
             
             # Преобразовать shift_time в русское название
-            shift_time_ru = "Утро" if shift_time == 'morning' else "Вечер"
+            shift_time_ru = SHIFT_TIME_MAPPING.get(shift_time, shift_time)
             
             # Преобразовать дату в формат, используемый в таблице (например, "01.01.2024")
             from datetime import datetime
             try:
                 date_obj = datetime.fromisoformat(shift_date)
                 date_formatted = date_obj.strftime('%d.%m.%Y')
-            except:
+            except (ValueError, TypeError):
                 date_formatted = shift_date
             
             # Искать в строках
@@ -237,9 +243,10 @@ class GoogleSheetsSync:
                     continue
                 
                 # Проверить совпадение по дате, клубу и смене
-                if (row[date_col] == date_formatted and 
-                    club_name in row[club_col] and 
-                    row[shift_col] == shift_time_ru):
+                # Use exact match for club name (strip whitespace)
+                if (row[date_col].strip() == date_formatted and 
+                    row[club_col].strip() == club_name and 
+                    row[shift_col].strip() == shift_time_ru):
                     admin_name = row[admin_col].strip()
                     if admin_name:
                         logger.info(f"✅ Found duty admin from schedule: {admin_name}")
