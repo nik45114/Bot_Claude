@@ -90,6 +90,7 @@ def register_finmon(application: Application, config: dict = None):
     application.add_handler(CommandHandler("finmon_bind", wizard.cmd_finmon_bind))
     application.add_handler(CommandHandler("finmon_bind_here", wizard.cmd_finmon_bind_here))
     application.add_handler(CommandHandler("finmon_unbind", wizard.cmd_finmon_unbind))
+    application.add_handler(CommandHandler("finmon_schedule_setup", wizard.cmd_finmon_schedule_setup))
     
     # ConversationHandler для сдачи смены
     shift_handler = ConversationHandler(

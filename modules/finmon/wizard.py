@@ -778,6 +778,26 @@ class FinMonWizard:
         shift_data = context.user_data['shift_data']
         user = update.effective_user
         
+        # Попытаться получить информацию о дежурном админе из расписания
+        duty_admin = None
+        if self.sheets:
+            club_name_parts = self.db.get_club_display_name(shift_data['club_id']).split()
+            club_name = club_name_parts[0] if club_name_parts else ""
+            duty_admin = self.sheets.get_duty_admin_for_shift(
+                club_name, 
+                str(shift_data['shift_date']), 
+                shift_data['shift_time']
+            )
+        
+        # Добавить информацию о дежурном в notes если найдена
+        notes = shift_data.get('notes', '')
+        if duty_admin:
+            duty_note = f"По расписанию дежурил: {duty_admin}"
+            if notes:
+                notes = f"{notes}\n\n{duty_note}"
+            else:
+                notes = duty_note
+        
         # Создать объект Shift
         shift = Shift(
             club_id=shift_data['club_id'],
@@ -801,7 +821,7 @@ class FinMonWizard:
             games_count=shift_data.get('games_count', 0),
             toilet_paper=shift_data.get('toilet_paper', False),
             paper_towels=shift_data.get('paper_towels', False),
-            notes=shift_data.get('notes')
+            notes=notes
         )
         
         # Сохранить в базу
@@ -813,15 +833,24 @@ class FinMonWizard:
             
             # Синхронизация с Google Sheets
             club_name = self.db.get_club_display_name(shift_data['club_id'])
+            
+            # Обновить shift_data для sync с notes
+            shift_data['notes'] = notes
             self.sheets.append_shift(shift_data, club_name)
             
-            await query.edit_message_text(
+            success_msg = (
                 f"✅ Смена сдана успешно!\n\n"
                 f"ID: {shift_id}\n"
                 f"Клуб: {club_name}\n"
-                f"Дата: {shift_data['shift_date']}\n\n"
-                f"Данные сохранены в базу и синхронизированы с Google Sheets."
+                f"Дата: {shift_data['shift_date']}\n"
             )
+            
+            if duty_admin:
+                success_msg += f"👤 По расписанию дежурил: {duty_admin}\n"
+            
+            success_msg += "\nДанные сохранены в базу и синхронизированы с Google Sheets."
+            
+            await query.edit_message_text(success_msg)
         else:
             await query.edit_message_text(
                 "❌ Ошибка при сохранении смены. Попробуйте позже."
@@ -1050,3 +1079,40 @@ class FinMonWizard:
             await update.message.reply_text(f"✅ Чат {chat_id} отвязан")
         else:
             await update.message.reply_text("❌ Ошибка при отвязке")
+    
+    async def cmd_finmon_schedule_setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Инструкции по настройке Google Sheets расписания (только для владельцев)"""
+        user_id = update.effective_user.id
+        
+        if not self.is_owner(user_id):
+            await update.message.reply_text("❌ Только для владельцев")
+            return
+        
+        service_account_email = self.sheets.get_service_account_email() if self.sheets else None
+        
+        text = "📋 НАСТРОЙКА GOOGLE SHEETS РАСПИСАНИЯ\n\n"
+        
+        if service_account_email:
+            text += f"1️⃣ Создайте или откройте Google Sheet\n\n"
+            text += f"2️⃣ Добавьте лист с названием 'Schedule'\n\n"
+            text += f"3️⃣ Создайте таблицу с колонками:\n"
+            text += f"   • Дата (формат: 01.01.2024)\n"
+            text += f"   • Клуб (название клуба)\n"
+            text += f"   • Смена (Утро или Вечер)\n"
+            text += f"   • Админ (имя админа)\n\n"
+            text += f"4️⃣ Поделитесь листом с:\n"
+            text += f"   📧 {service_account_email}\n"
+            text += f"   (дайте права 'Редактор' или 'Читатель')\n\n"
+            text += f"5️⃣ Заполните расписание в таблице\n\n"
+            text += f"Пример строки:\n"
+            text += f"01.01.2024 | Рио | Утро | Иван\n\n"
+            text += f"После настройки бот будет автоматически определять,\n"
+            text += f"кто должен был быть на смене по расписанию."
+        else:
+            text += "⚠️ Google Sheets не настроен\n\n"
+            text += "Для использования расписания необходимо:\n"
+            text += "1. Настроить сервисный аккаунт Google\n"
+            text += "2. Указать GOOGLE_SA_JSON в .env\n"
+            text += "3. Перезапустить бота"
+        
+        await update.message.reply_text(text)
