@@ -52,6 +52,7 @@ try:
     from content_commands import ContentCommands
     # from modules.finmon import register_finmon  # Временно отключено - модуль в разработке
     from modules.admins import register_admins
+    from modules.backup_commands import register_backup_commands
 except ImportError as e:
     print(f"❌ Не найдены модули v4.10: {e}")
     sys.exit(1)
@@ -3220,6 +3221,21 @@ class ClubAssistantBot:
             logger.info("✅ Admin Management module registered")
         except Exception as e:
             logger.error(f"❌ Admin Management module registration failed: {e}")
+            import traceback
+            traceback.print_exc()
+        
+        # Backup and Migration commands module
+        try:
+            backup_config = {
+                'db_path': DB_PATH,
+                'backup_dir': os.getenv('BACKUP_DIR', './backups'),
+                'owner_ids': os.getenv('OWNER_TG_IDS', ''),
+                'backup_interval_days': os.getenv('BACKUP_INTERVAL_DAYS', '14')
+            }
+            register_backup_commands(application, backup_config)
+            logger.info("✅ Backup commands module registered")
+        except Exception as e:
+            logger.error(f"❌ Backup commands module registration failed: {e}")
             import traceback
             traceback.print_exc()
         
