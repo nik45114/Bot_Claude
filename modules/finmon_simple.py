@@ -112,7 +112,11 @@ class FinMonSimple:
     
     def parse_shift_paste(self, text: str, club: str = None) -> Optional[Dict]:
         """
-        Parse shift data from pasted text format
+        DEPRECATED: Parse shift data from pasted text format
+        
+        This method is deprecated and no longer used by the wizard.
+        Use the button-based wizard instead (ShiftWizard in finmon_shift_wizard.py).
+        Kept for backward compatibility with tests only.
         
         Expected format (can be in one message):
         [Club name on first line if not auto-detected]
@@ -125,6 +129,7 @@ class FinMonSimple:
         
         Returns dict with parsed data or None if parsing fails
         """
+        logger.warning("⚠️ parse_shift_paste is deprecated. Use button-based wizard instead.")
         lines = text.strip().split('\n')
         data = {
             'club': club,

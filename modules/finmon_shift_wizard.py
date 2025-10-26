@@ -611,3 +611,54 @@ class ShiftWizard:
             text = self.finmon.format_movements(club, limit=10)
         
         await update.message.reply_text(text)
+    
+    async def cmd_shift_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show shift menu in club chats"""
+        chat_id = update.effective_chat.id
+        club = self.finmon.get_club_from_chat(chat_id)
+        
+        if not club:
+            await update.message.reply_text(
+                "⚠️ Эта команда доступна только в чатах клубов.\n"
+                "Используйте /shift для сдачи смены."
+            )
+            return
+        
+        msg = f"📋 Меню смены - {club}\n\n"
+        msg += "Доступные команды:\n"
+        msg += "• /shift - Сдать смену\n"
+        msg += "• /balances - Текущие остатки\n"
+        msg += "• /movements - Последние движения\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("📋 Сдать смену", callback_data="menu_shift")],
+            [InlineKeyboardButton("💰 Остатки", callback_data="menu_balances")],
+            [InlineKeyboardButton("📊 Движения", callback_data="menu_movements")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(msg, reply_markup=reply_markup)
+    
+    async def handle_menu_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle menu button callbacks"""
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == "menu_shift":
+            # Start shift wizard
+            await query.message.delete()
+            # Create a fake update for cmd_shift
+            fake_update = update
+            fake_update.message = query.message
+            return await self.cmd_shift(fake_update, context)
+        elif query.data == "menu_balances":
+            text = self.finmon.format_balances()
+            await query.edit_message_text(text)
+        elif query.data == "menu_movements":
+            chat_id = query.message.chat.id
+            club = self.finmon.get_club_from_chat(chat_id)
+            if club:
+                text = self.finmon.format_movements(club, limit=10)
+            else:
+                text = "Не удалось определить клуб"
+            await query.edit_message_text(text)
