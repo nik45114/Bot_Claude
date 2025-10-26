@@ -862,7 +862,8 @@ class AdminWizard:
         return ConversationHandler.END
     
     async def close_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Close admin menu"""
+        """Navigate back to main menu (not close)"""
         query = update.callback_query
         await query.answer()
-        await query.delete_message()
+        # Navigate back to main menu instead of deleting
+        await self.show_menu(update, context)

@@ -13,6 +13,7 @@ from datetime import datetime
 from pathlib import Path
 from telegram import Update, Document
 from telegram.ext import ContextTypes
+from .runtime_migrator import RuntimeMigrator
 
 logger = logging.getLogger(__name__)
 
@@ -36,10 +37,51 @@ class BackupCommands:
         
         # Ensure backup directory exists
         Path(self.backup_dir).mkdir(parents=True, exist_ok=True)
+        
+        # Initialize runtime migrator
+        self.migrator = RuntimeMigrator(db_path, self.migrations_dir)
     
     def is_owner(self, user_id: int) -> bool:
         """Check if user is owner"""
+        if not self.owner_ids:
+            logger.warning("⚠️ OWNER_TG_IDS not configured, denying access")
+            return False
         return user_id in self.owner_ids
+    
+    async def cmd_apply_migrations(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Apply pending migrations and runtime fixes
+        Usage: /apply_migrations
+        """
+        user_id = update.effective_user.id
+        
+        if not self.is_owner(user_id):
+            await update.message.reply_text("❌ Эта команда доступна только владельцу бота")
+            return
+        
+        try:
+            await update.message.reply_text("🔄 Применяю миграции...")
+            
+            # Apply migrations
+            success, messages = self.migrator.apply_all_migrations()
+            
+            # Format response
+            if not messages:
+                response = "ℹ️ Нет доступных миграций"
+            else:
+                response = "📋 Результаты миграции:\n\n" + "\n".join(messages)
+            
+            if success:
+                response += "\n\n✅ Миграции применены успешно"
+            else:
+                response += "\n\n⚠️ Некоторые миграции завершились с ошибками"
+            
+            await update.message.reply_text(response)
+            logger.info(f"✅ Migrations applied by user {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Error applying migrations: {e}")
+            await update.message.reply_text(f"❌ Ошибка применения миграций: {e}")
     
     async def cmd_migration(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -236,6 +278,7 @@ def register_backup_commands(application, config: dict = None):
     backup_commands = BackupCommands(db_path, backup_dir, owner_ids)
     
     # Register commands
+    application.add_handler(CommandHandler("apply_migrations", backup_commands.cmd_apply_migrations))
     application.add_handler(CommandHandler("migration", backup_commands.cmd_migration))
     application.add_handler(CommandHandler("backup", backup_commands.cmd_backup))
     
