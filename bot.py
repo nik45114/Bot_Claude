@@ -799,7 +799,14 @@ class ClubAssistantBot:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 /start - начало работы
 /help - эта справка
-/stats - статистика базы знаний"""
+/stats - статистика базы знаний
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 FinMon - Финансовый мониторинг:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/shift - сдать смену (кнопочный мастер)
+/balances - текущие остатки
+/movements - последние движения"""
 
         if self.admin_manager.is_admin(update.effective_user.id):
             text += "\n\n🔧 /admin - админ-панель (+ настройки GPT)"
@@ -839,7 +846,14 @@ class ClubAssistantBot:
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━
 /start - начало работы
 /help - эта справка
-/stats - статистика базы знаний"""
+/stats - статистика базы знаний
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 FinMon - Финансовый мониторинг:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━
+/shift - сдать смену (кнопочный мастер)
+/balances - текущие остатки
+/movements - последние движения"""
         return text
     
     async def cmd_stats(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -3213,7 +3227,13 @@ class ClubAssistantBot:
         try:
             from modules.finmon_simple import FinMonSimple
             from modules.finmon_schedule import FinMonSchedule
-            from modules.finmon_shift_wizard import ShiftWizard, WAITING_PASTE, CONFIRM_SHIFT
+            from modules.finmon_shift_wizard import (
+                ShiftWizard, SELECT_CLUB, SELECT_SHIFT_TIME, 
+                ENTER_FACT_CASH, ENTER_FACT_CARD, ENTER_QR, ENTER_CARD2,
+                ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA,
+                ENTER_GAMEPADS, ENTER_REPAIR, ENTER_NEED_REPAIR, ENTER_GAMES,
+                CONFIRM_SHIFT
+            )
             
             # Get owner IDs
             owner_ids_str = os.getenv('OWNER_TG_IDS', '')
@@ -3248,16 +3268,52 @@ class ClubAssistantBot:
                     CommandHandler("shift", shift_wizard.cmd_shift)
                 ],
                 states={
-                    WAITING_PASTE: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_paste)
+                    SELECT_CLUB: [
+                        CallbackQueryHandler(shift_wizard.select_club, pattern="^club_")
+                    ],
+                    SELECT_SHIFT_TIME: [
+                        CallbackQueryHandler(shift_wizard.select_shift_time, pattern="^shift_time_"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
+                    ],
+                    ENTER_FACT_CASH: [
+                        CallbackQueryHandler(shift_wizard.prompt_fact_cash, pattern="^enter_manual$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_fact_cash)
+                    ],
+                    ENTER_FACT_CARD: [
+                        CallbackQueryHandler(shift_wizard.prompt_fact_card, pattern="^enter_manual$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_fact_card)
+                    ],
+                    ENTER_QR: [
+                        CallbackQueryHandler(shift_wizard.prompt_qr, pattern="^enter_manual$|^value_0$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_qr)
+                    ],
+                    ENTER_CARD2: [
+                        CallbackQueryHandler(shift_wizard.prompt_card2, pattern="^enter_manual$|^value_0$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_card2)
+                    ],
+                    ENTER_SAFE: [
+                        CallbackQueryHandler(shift_wizard.prompt_safe, pattern="^enter_manual$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_safe)
+                    ],
+                    ENTER_BOX: [
+                        CallbackQueryHandler(shift_wizard.prompt_box, pattern="^enter_manual$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_box)
                     ],
                     CONFIRM_SHIFT: [
                         CallbackQueryHandler(shift_wizard.confirm_shift, pattern="^shift_confirm$"),
+                        CallbackQueryHandler(shift_wizard.edit_shift, pattern="^shift_edit$"),
                         CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
                     ]
                 },
                 fallbacks=[
-                    CommandHandler("cancel", shift_wizard.cancel_command)
+                    CommandHandler("cancel", shift_wizard.cancel_command),
+                    CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
                 ]
             )
             application.add_handler(shift_handler)
