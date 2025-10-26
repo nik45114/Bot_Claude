@@ -172,6 +172,11 @@ class FinMonWizard:
         """Проверка что пользователь - владелец"""
         return user_id in self.owner_ids
     
+    def _get_club_name(self, club_id: int) -> str:
+        """Получить название клуба по ID"""
+        club = self.db.get_club_by_id(club_id)
+        return club['name'] if club else "Unknown"
+    
     async def cmd_shift(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Начать сдачу смены - /shift"""
         user_id = update.effective_user.id
@@ -181,12 +186,13 @@ class FinMonWizard:
         context.user_data['shift_data'] = {}
         
         # Check if this chat has a club mapping
-        mapped_club_id = self.db.get_club_for_chat(chat_id)
+        mapped_club = self.db.get_club_from_chat(chat_id)
         
-        if mapped_club_id:
+        if mapped_club:
             # Auto-select the mapped club
-            context.user_data['shift_data']['club_id'] = mapped_club_id
-            club_name = self.db.get_club_display_name(mapped_club_id)
+            context.user_data['shift_data']['club_id'] = mapped_club['id']
+            context.user_data['shift_data']['chat_id'] = chat_id
+            club_name = mapped_club['name']
             
             # Skip to time selection
             detected_shift = get_current_shift_for_close()
@@ -237,7 +243,7 @@ class FinMonWizard:
         
         keyboard = []
         for club in clubs:
-            club_label = self.db.get_club_display_name(club['id'])
+            club_label = club['name']
             keyboard.append([
                 InlineKeyboardButton(club_label, callback_data=f"finmon_club_{club['id']}")
             ])
@@ -275,7 +281,7 @@ class FinMonWizard:
         club_id = int(query.data.split('_')[-1])
         context.user_data['shift_data']['club_id'] = club_id
         
-        club_name = self.db.get_club_display_name(club_id)
+        club_name = self._get_club_name(club_id)
         
         # Check if we have a detected shift
         detected_shift = context.user_data.get('detected_shift')
@@ -327,7 +333,7 @@ class FinMonWizard:
         context.user_data['shift_data']['shift_date'] = detected_shift['shift_date']
         
         time_label = get_shift_label(detected_shift['shift_time'])
-        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        club_name = self._get_club_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
             f"📊 {club_name} - {time_label}\n\n"
@@ -345,7 +351,7 @@ class FinMonWizard:
         context.user_data['shift_data']['shift_time'] = 'morning'
         context.user_data['shift_data']['shift_date'] = now_msk().date()
         
-        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        club_name = self._get_club_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
             f"📊 {club_name} - {get_shift_label('morning')}\n\n"
@@ -363,7 +369,7 @@ class FinMonWizard:
         context.user_data['shift_data']['shift_time'] = 'evening'
         context.user_data['shift_data']['shift_date'] = now_msk().date()
         
-        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        club_name = self._get_club_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
             f"📊 {club_name} - {get_shift_label('evening')}\n\n"
@@ -378,7 +384,7 @@ class FinMonWizard:
         query = update.callback_query
         await query.answer()
         
-        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        club_name = self._get_club_name(context.user_data['shift_data']['club_id'])
         
         # For early closure, show both shift options with today's date
         keyboard = [
@@ -418,7 +424,7 @@ class FinMonWizard:
         context.user_data['shift_data']['shift_date'] = shift_date
         
         badge = format_shift_badge(shift_time, shift_date)
-        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        club_name = self._get_club_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
             f"📊 {club_name} - {badge}\n\n"
@@ -433,7 +439,7 @@ class FinMonWizard:
         query = update.callback_query
         await query.answer()
         
-        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        club_name = self._get_club_name(context.user_data['shift_data']['club_id'])
         
         keyboard = [
             [InlineKeyboardButton("☀️ Утро", callback_data="finmon_close_manual_morning")],
@@ -465,7 +471,7 @@ class FinMonWizard:
         context.user_data['shift_data']['shift_date'] = date.today()
         
         time_label = "Утро" if shift_time == "morning" else "Вечер"
-        club_name = self.db.get_club_display_name(context.user_data['shift_data']['club_id'])
+        club_name = self._get_club_name(context.user_data['shift_data']['club_id'])
         
         await query.edit_message_text(
             f"📊 {club_name} - {time_label}\n\n"
@@ -531,9 +537,22 @@ class FinMonWizard:
             value = float(update.message.text.strip())
             context.user_data['shift_data']['card2'] = value
             
+            # Get previous balances to show to user
+            club_id = context.user_data['shift_data'].get('club_id')
+            prev_balances = self.db.get_balances(club_id) if club_id else None
+            
+            balance_info = ""
+            if prev_balances:
+                balance_info = (
+                    f"\n📊 Предыдущие балансы:\n"
+                    f"   💰 Сейф: {prev_balances['official']:.2f}\n"
+                    f"   📦 Коробка: {prev_balances['box']:.2f}\n\n"
+                )
+            
             await update.message.reply_text(
-                "🏦 Введите остаток в СЕЙФЕ на конец смены:\n"
-                "(например: 927)"
+                f"🏦 Введите остаток в СЕЙФЕ на конец смены:\n"
+                f"{balance_info}"
+                f"(например: 927)"
             )
             
             return ENTER_SAFE_CASH
@@ -781,11 +800,7 @@ class FinMonWizard:
         # Попытаться получить информацию о дежурном админе из расписания
         duty_admin = None
         if self.sheets:
-            # Extract base club name (e.g., "Рио" from "Рио офиц" or "Рио коробка")
-            # Display name format is "Name type", we need just the name part
-            club_display_name = self.db.get_club_display_name(shift_data['club_id'])
-            club_name_parts = club_display_name.split()
-            club_name = club_name_parts[0] if club_name_parts else club_display_name
+            club_name = self._get_club_name(shift_data['club_id'])
             
             duty_admin = self.sheets.get_duty_admin_for_shift(
                 club_name, 
@@ -802,57 +817,65 @@ class FinMonWizard:
             else:
                 notes = duty_note
         
-        # Создать объект Shift
-        shift = Shift(
-            club_id=shift_data['club_id'],
-            shift_date=shift_data['shift_date'],
-            shift_time=shift_data['shift_time'],
-            admin_tg_id=user.id,
-            admin_username=user.username or user.first_name,
-            fact_cash=shift_data.get('fact_cash', 0),
-            fact_card=shift_data.get('fact_card', 0),
-            qr=shift_data.get('qr', 0),
-            card2=shift_data.get('card2', 0),
-            safe_cash_end=shift_data.get('safe_cash_end', 0),
-            box_cash_end=shift_data.get('box_cash_end', 0),
-            goods_cash=shift_data.get('goods_cash', 0),
-            compensations=shift_data.get('compensations', 0),
-            salary_payouts=shift_data.get('salary_payouts', 0),
-            other_expenses=shift_data.get('other_expenses', 0),
-            joysticks_total=shift_data.get('joysticks_total', 0),
-            joysticks_in_repair=shift_data.get('joysticks_in_repair', 0),
-            joysticks_need_repair=shift_data.get('joysticks_need_repair', 0),
-            games_count=shift_data.get('games_count', 0),
-            toilet_paper=shift_data.get('toilet_paper', False),
-            paper_towels=shift_data.get('paper_towels', False),
-            notes=notes
-        )
+        # Prepare shift data for saving
+        save_data = {
+            'club_id': shift_data['club_id'],
+            'chat_id': shift_data.get('chat_id'),
+            'shift_date': shift_data['shift_date'],
+            'shift_time': shift_data['shift_time'],
+            'fact_cash': shift_data.get('fact_cash', 0),
+            'fact_card': shift_data.get('fact_card', 0),
+            'qr': shift_data.get('qr', 0),
+            'card2': shift_data.get('card2', 0),
+            'safe_cash_end': shift_data.get('safe_cash_end', 0),
+            'box_cash_end': shift_data.get('box_cash_end', 0),
+            'goods_cash': shift_data.get('goods_cash', 0),
+            'joysticks_total': shift_data.get('joysticks_total', 0),
+            'joysticks_in_repair': shift_data.get('joysticks_in_repair', 0),
+            'joysticks_need_repair': shift_data.get('joysticks_need_repair', 0),
+            'games_count': shift_data.get('games_count', 0),
+            'duty_name': duty_admin if duty_admin else (user.first_name or ''),
+            'duty_username': user.username,
+            'created_by': user.id,
+            'notes': notes
+        }
         
-        # Сохранить в базу
-        shift_id = self.db.save_shift(shift)
+        # Сохранить в базу (это также обновит балансы и создаст movement)
+        shift_id = self.db.save_shift(save_data)
         
         if shift_id:
-            # Обновить балансы касс
-            # TODO: Implement cash balance logic based on business rules
-            
             # Синхронизация с Google Sheets
-            club_name = self.db.get_club_display_name(shift_data['club_id'])
+            club_name = self._get_club_name(shift_data['club_id'])
             
             # Обновить shift_data для sync с notes
             shift_data['notes'] = notes
-            self.sheets.append_shift(shift_data, club_name)
+            if self.sheets and hasattr(self.sheets, 'append_shift'):
+                self.sheets.append_shift(shift_data, club_name)
+            
+            # Get updated balances to show in success message
+            balances = self.db.get_balances(shift_data['club_id'])
             
             success_msg = (
                 f"✅ Смена сдана успешно!\n\n"
-                f"ID: {shift_id}\n"
-                f"Клуб: {club_name}\n"
-                f"Дата: {shift_data['shift_date']}\n"
+                f"🏢 Клуб: {club_name}\n"
+                f"📅 Дата: {shift_data['shift_date']}\n"
+                f"🆔 ID смены: {shift_id}\n\n"
             )
             
-            if duty_admin:
-                success_msg += f"👤 По расписанию дежурил: {duty_admin}\n"
+            if balances:
+                success_msg += (
+                    f"💰 Новые балансы:\n"
+                    f"   🏦 Сейф: {balances['official']:,.2f} ₽\n"
+                    f"   📦 Коробка: {balances['box']:,.2f} ₽\n\n"
+                )
             
-            success_msg += "\nДанные сохранены в базу и синхронизированы с Google Sheets."
+            if duty_admin:
+                success_msg += f"👤 По расписанию дежурил: {duty_admin}\n\n"
+            
+            success_msg += "Данные сохранены в базу"
+            if self.sheets and hasattr(self.sheets, 'append_shift'):
+                success_msg += " и синхронизированы с Google Sheets"
+            success_msg += "."
             
             await query.edit_message_text(success_msg)
         else:
@@ -879,46 +902,64 @@ class FinMonWizard:
     
     def _format_shift_summary(self, shift_data: dict) -> str:
         """Форматирование сводки смены"""
-        club_name = self.db.get_club_display_name(shift_data['club_id'])
+        club_id = shift_data['club_id']
+        club = self.db.get_club_by_id(club_id)
+        club_name = club['name'] if club else "Unknown"
+        
         time_label = "Утро" if shift_data['shift_time'] == 'morning' else "Вечер"
         date_str = shift_data['shift_date'].strftime('%d.%m')
         
         toilet = "есть" if shift_data.get('toilet_paper') else "нет"
         towels = "есть" if shift_data.get('paper_towels') else "нет"
         
-        summary = f"[{club_name}] {time_label} {date_str}\n"
+        # Get previous balances and calculate deltas
+        prev_balances = self.db.get_balances(club_id)
+        prev_official = prev_balances['official'] if prev_balances else 0.0
+        prev_box = prev_balances['box'] if prev_balances else 0.0
+        
+        new_official = shift_data.get('safe_cash_end', 0)
+        new_box = shift_data.get('box_cash_end', 0)
+        
+        delta_official = new_official - prev_official
+        delta_box = new_box - prev_box
+        
+        summary = f"📊 [{club_name}] {time_label} {date_str}\n"
         summary += "━━━━━━━━━━━━━━━━━━━━\n"
-        summary += f"Факт нал: {shift_data.get('fact_cash', 0):,.0f} ₽ | Сейф: {shift_data.get('safe_cash_end', 0):,.0f} ₽\n"
-        summary += f"Факт безнал: {shift_data.get('fact_card', 0):,.0f} ₽ | QR: {shift_data.get('qr', 0):,.0f} ₽ | Новая касса: {shift_data.get('card2', 0):,.0f} ₽\n"
-        summary += f"Товарка (нал): {shift_data.get('goods_cash', 0):,.0f} ₽ | Коробка (нал): {shift_data.get('box_cash_end', 0):,.0f} ₽\n"
-        summary += f"Комп/зп/прочие: -{shift_data.get('compensations', 0):,.0f} / {shift_data.get('salary_payouts', 0):,.0f} / {shift_data.get('other_expenses', 0):,.0f} ₽\n\n"
-        summary += f"Геймпады: {shift_data.get('joysticks_total', 0)} (ремонт: {shift_data.get('joysticks_in_repair', 0)}, требуется: {shift_data.get('joysticks_need_repair', 0)})\n"
-        summary += f"Игр: {shift_data.get('games_count', 0)}\n\n"
-        summary += f"Туалетка: {toilet} | Полотенца: {towels}\n"
+        summary += f"💵 Факт нал: {shift_data.get('fact_cash', 0):,.0f} ₽\n"
+        summary += f"💳 Факт безнал: {shift_data.get('fact_card', 0):,.0f} ₽\n"
+        summary += f"📱 QR: {shift_data.get('qr', 0):,.0f} ₽ | Новая касса: {shift_data.get('card2', 0):,.0f} ₽\n"
+        summary += f"🛒 Товарка: {shift_data.get('goods_cash', 0):,.0f} ₽\n\n"
+        
+        summary += "💰 КАССЫ\n"
+        summary += f"🏦 Сейф: {new_official:,.0f} ₽ (было: {prev_official:,.0f}, дельта: {delta_official:+,.0f})\n"
+        summary += f"📦 Коробка: {new_box:,.0f} ₽ (было: {prev_box:,.0f}, дельта: {delta_box:+,.0f})\n\n"
+        
+        summary += f"📉 Расходы: комп {shift_data.get('compensations', 0):,.0f} / зп {shift_data.get('salary_payouts', 0):,.0f} / прочие {shift_data.get('other_expenses', 0):,.0f} ₽\n\n"
+        summary += f"🎮 Геймпады: {shift_data.get('joysticks_total', 0)} (ремонт: {shift_data.get('joysticks_in_repair', 0)}, нужен: {shift_data.get('joysticks_need_repair', 0)})\n"
+        summary += f"🎯 Игр: {shift_data.get('games_count', 0)}\n\n"
+        summary += f"🧻 Туалетка: {toilet} | Полотенца: {towels}\n"
         
         if shift_data.get('notes'):
-            summary += f"\nПримечание: {shift_data['notes']}\n"
+            summary += f"\n📝 Примечание: {shift_data['notes']}\n"
         
         return summary
     
     async def cmd_balances(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать текущие балансы - /balances"""
-        balances = self.db.get_balances()
+        clubs = self.db.get_clubs()
         
-        if not balances:
-            await update.message.reply_text("❌ Нет данных о балансах")
+        if not clubs:
+            await update.message.reply_text("❌ Нет клубов в системе")
             return
         
         text = "💰 ТЕКУЩИЕ БАЛАНСЫ КАСС\n\n"
         
-        current_club = None
-        for balance in balances:
-            if current_club != balance['club_name']:
-                current_club = balance['club_name']
-                text += f"\n🏢 {current_club}\n"
-            
-            cash_type_label = "Официальная" if balance['cash_type'] == 'official' else "Коробка"
-            text += f"  {cash_type_label}: {balance['balance']:,.2f} ₽\n"
+        for club in clubs:
+            balances = self.db.get_balances(club['id'])
+            if balances:
+                text += f"🏢 {club['name']}\n"
+                text += f"   💼 Официальная: {balances['official']:,.2f} ₽\n"
+                text += f"   📦 Коробка: {balances['box']:,.2f} ₽\n\n"
         
         await update.message.reply_text(text)
     
@@ -926,12 +967,8 @@ class FinMonWizard:
         """Показать последние смены - /shifts"""
         user_id = update.effective_user.id
         
-        # Владельцы видят все смены, админы - только свои
-        shifts = self.db.get_shifts(
-            limit=10,
-            admin_id=user_id,
-            owner_ids=self.owner_ids
-        )
+        # Get last 10 shifts
+        shifts = self.db.get_shifts(limit=10)
         
         if not shifts:
             await update.message.reply_text("❌ Нет сданных смен")
@@ -940,13 +977,19 @@ class FinMonWizard:
         text = "📊 ПОСЛЕДНИЕ СМЕНЫ\n\n"
         
         for shift in shifts:
-            club_name = self.db.get_club_display_name(shift['club_id'])
+            club_name = shift.get('club_name', self._get_club_name(shift['club_id']))
             time_label = "Утро" if shift['shift_time'] == 'morning' else "Вечер"
-            date_str = datetime.fromisoformat(str(shift['shift_date'])).strftime('%d.%m.%Y')
+            
+            # Handle shift_date which might be string or date object
+            shift_date_str = str(shift['shift_date'])
+            if 'T' in shift_date_str:
+                date_str = datetime.fromisoformat(shift_date_str).strftime('%d.%m.%Y')
+            else:
+                date_str = shift_date_str
             
             text += f"[{club_name}] {time_label} {date_str}\n"
-            text += f"  Админ: @{shift.get('admin_username', 'Unknown')}\n"
-            text += f"  Выручка: {shift['fact_cash']:,.0f} ₽ (нал) + {shift['fact_card']:,.0f} ₽ (б/н)\n"
+            text += f"  Админ: @{shift.get('duty_username', 'Unknown')}\n"
+            text += f"  Выручка: {shift.get('fact_cash', 0):,.0f} ₽ (нал) + {shift.get('fact_card', 0):,.0f} ₽ (б/н)\n"
             text += "━━━━━━━━━━━━━━━━\n"
         
         await update.message.reply_text(text)
@@ -1010,7 +1053,7 @@ class FinMonWizard:
         success = self.db.set_chat_club_mapping(chat_id, club_id)
         
         if success:
-            club_name = self.db.get_club_display_name(club_id)
+            club_name = self._get_club_name(club_id)
             await update.message.reply_text(
                 f"✅ Чат {chat_id} привязан к клубу {club_name}"
             )
@@ -1048,7 +1091,7 @@ class FinMonWizard:
         success = self.db.set_chat_club_mapping(chat_id, club_id)
         
         if success:
-            club_name = self.db.get_club_display_name(club_id)
+            club_name = self._get_club_name(club_id)
             await update.message.reply_text(
                 f"✅ Этот чат ({chat_id}) привязан к клубу {club_name}\n\n"
                 f"Теперь команда /shift будет автоматически выбирать этот клуб."
