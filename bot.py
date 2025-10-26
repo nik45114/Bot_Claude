@@ -675,15 +675,31 @@ class ClubAssistantBot:
         self.rag = RAGAnswerer(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
         self.smart_learner = SmartAutoLearner(self.kb, config.get('gpt_model', 'gpt-4o-mini'))
         
+        # Get owner IDs from environment or config
+        owner_ids_str = os.getenv('OWNER_TG_IDS', '')
+        owner_ids = []
+        if owner_ids_str:
+            try:
+                owner_ids = [int(id.strip()) for id in owner_ids_str.split(',') if id.strip()]
+            except ValueError:
+                logger.error("❌ Invalid OWNER_TG_IDS format")
+        
+        # Fallback to config if no env variable
+        if not owner_ids:
+            owner_id = config.get('owner_id', config['admin_ids'][0] if config.get('admin_ids') else 0)
+            owner_ids = [owner_id] if owner_id else []
+        
+        # Store for use in other modules (backward compatibility)
+        self.owner_id = owner_ids[0] if owner_ids else 0
+        self.owner_ids = owner_ids
+        
         # V2Ray Manager (только для владельца)
         self.v2ray_manager = V2RayManager(DB_PATH)
-        owner_id = config.get('owner_id', config['admin_ids'][0] if config.get('admin_ids') else 0)
-        self.owner_id = owner_id  # Сохраняем для использования в других модулях
-        self.v2ray_commands = V2RayCommands(self.v2ray_manager, self.admin_manager, owner_id)
+        self.v2ray_commands = V2RayCommands(self.v2ray_manager, self.admin_manager, owner_ids=owner_ids)
         
         # Club Manager (только для владельца)
         self.club_manager = ClubManager(DB_PATH)
-        self.club_commands = ClubCommands(self.club_manager, owner_id)
+        self.club_commands = ClubCommands(self.club_manager, self.owner_id)
         
         # Cash Manager - финансовый мониторинг (только для владельца)
         self.cash_manager = CashManager(DB_PATH)
@@ -1199,7 +1215,9 @@ class ClubAssistantBot:
             await update.message.reply_text("/addadmin <user_id>")
     
     async def cmd_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if not self.admin_manager.is_admin(update.effective_user.id):
+        # Owner-only restriction
+        if update.effective_user.id != self.owner_id:
+            await update.message.reply_text("❌ Доступ запрещён")
             return
         
         admins = self.admin_manager.list_admins()
@@ -1209,18 +1227,7 @@ class ClubAssistantBot:
             return
         
         # For owner, show interactive list with stats
-        if update.effective_user.id == self.owner_id:
-            await self._show_admins_list(update, context)
-        else:
-            # For regular admins, show simple list
-            text = "👥 Админы:\n\n"
-            for user_id, username, full_name in admins:
-                text += f"• {user_id}"
-                if username:
-                    text += f" @{username}"
-                text += "\n"
-            
-            await update.message.reply_text(text)
+        await self._show_admins_list(update, context)
     
     async def cmd_savecreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -3202,19 +3209,64 @@ class ClubAssistantBot:
             import traceback
             traceback.print_exc()
         
-        # FinMon module - Financial Monitoring
+        # FinMon Simple module - Financial Monitoring (JSON/CSV based, no DB)
         try:
-            from modules.finmon import register_finmon
-            finmon_config = {
-                'db_path': DB_PATH,
-                'google_sa_json': os.getenv('GOOGLE_SA_JSON'),
-                'sheet_name': os.getenv('FINMON_SHEET_NAME', 'ClubFinance'),
-                'owner_ids': str(self.owner_id) if hasattr(self, 'owner_id') else os.getenv('OWNER_TG_IDS', '')
-            }
-            register_finmon(application, finmon_config)
-            logger.info("✅ FinMon module registered")
+            from modules.finmon_simple import FinMonSimple
+            from modules.finmon_schedule import FinMonSchedule
+            from modules.finmon_shift_wizard import ShiftWizard, WAITING_PASTE, CONFIRM_SHIFT
+            
+            # Get owner IDs
+            owner_ids_str = os.getenv('OWNER_TG_IDS', '')
+            owner_ids = []
+            if owner_ids_str:
+                try:
+                    owner_ids = [int(id.strip()) for id in owner_ids_str.split(',') if id.strip()]
+                except ValueError:
+                    logger.error("❌ Invalid OWNER_TG_IDS format")
+            
+            # If no owner IDs from env, use config
+            if not owner_ids and hasattr(self, 'owner_id'):
+                owner_ids = [self.owner_id]
+            
+            # Initialize FinMon Simple components
+            finmon_simple = FinMonSimple()
+            
+            # Initialize schedule (with Google Sheets if configured)
+            google_sa_json = os.getenv('GOOGLE_SA_JSON')
+            finmon_schedule = FinMonSchedule(google_sa_json) if google_sa_json else None
+            
+            # Initialize shift wizard
+            shift_wizard = ShiftWizard(finmon_simple, finmon_schedule, owner_ids)
+            
+            # Register /balances and /movements commands
+            application.add_handler(CommandHandler("balances", shift_wizard.cmd_balances))
+            application.add_handler(CommandHandler("movements", shift_wizard.cmd_movements))
+            
+            # Register /shift conversation handler
+            shift_handler = ConversationHandler(
+                entry_points=[
+                    CommandHandler("shift", shift_wizard.cmd_shift)
+                ],
+                states={
+                    WAITING_PASTE: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_paste)
+                    ],
+                    CONFIRM_SHIFT: [
+                        CallbackQueryHandler(shift_wizard.confirm_shift, pattern="^shift_confirm$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
+                    ]
+                },
+                fallbacks=[
+                    CommandHandler("cancel", shift_wizard.cancel_command)
+                ]
+            )
+            application.add_handler(shift_handler)
+            
+            logger.info("✅ FinMon Simple module registered")
         except Exception as e:
-            logger.warning(f"⚠️ FinMon module registration failed: {e}")
+            logger.warning(f"⚠️ FinMon Simple module registration failed: {e}")
+            import traceback
+            traceback.print_exc()
         
         # Обработчик inline-кнопок (must be AFTER ConversationHandlers and module registrations)
         application.add_handler(CallbackQueryHandler(self.handle_callback))

@@ -15,14 +15,20 @@ logger = logging.getLogger(__name__)
 class V2RayCommands:
     """Класс с командами V2Ray для бота (с REALITY)"""
     
-    def __init__(self, manager, admin_manager, owner_id: int):
+    def __init__(self, manager, admin_manager, owner_id: int = None, owner_ids: list = None):
         self.manager = manager
         self.admin_manager = admin_manager
-        self.owner_id = owner_id
+        # Support both single owner_id and list of owner_ids
+        if owner_ids:
+            self.owner_ids = owner_ids
+        elif owner_id:
+            self.owner_ids = [owner_id]
+        else:
+            self.owner_ids = []
     
     def is_owner(self, user_id: int) -> bool:
         """Проверка: является ли пользователь владельцем"""
-        return user_id == self.owner_id
+        return user_id in self.owner_ids
     
     async def cmd_v2ray(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Главное меню V2Ray"""

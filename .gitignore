@@ -6,6 +6,10 @@ config.json
 *.db
 *.sqlite*
 
+# FinMon data files
+finmon_balances.json
+finmon_log.csv
+
 # Python
 __pycache__/
 *.py[cod]
