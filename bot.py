@@ -3054,25 +3054,9 @@ class ClubAssistantBot:
         
         # Intercept reply keyboard buttons
         if text == "🔓 Открыть смену":
-            # Open shift
+            # Open shift (not in conversation, handled directly)
             if hasattr(self, 'shift_wizard') and self.shift_wizard:
                 await self.shift_wizard.cmd_open_shift(update, context)
-                return
-            else:
-                await message.reply_text("❌ Модуль смен недоступен")
-                return
-        elif text == "🔒 Закрыть смену" or text == "💰 Сдать смену":
-            # Close shift
-            if hasattr(self, 'shift_wizard') and self.shift_wizard:
-                await self.shift_wizard.cmd_shift(update, context)
-                return
-            else:
-                await message.reply_text("❌ Модуль смен недоступен")
-                return
-        elif text == "💸 Списать с кассы":
-            # Add expense
-            if hasattr(self, 'shift_wizard') and self.shift_wizard:
-                await self.shift_wizard.cmd_expense(update, context)
                 return
             else:
                 await message.reply_text("❌ Модуль смен недоступен")
@@ -3445,7 +3429,8 @@ class ClubAssistantBot:
             # Register /shift conversation handler (CLOSE shift)
             shift_handler = ConversationHandler(
                 entry_points=[
-                    CommandHandler("shift", shift_wizard.cmd_shift)
+                    CommandHandler("shift", shift_wizard.cmd_shift),
+                    MessageHandler(filters.TEXT & filters.Regex("^(🔒 Закрыть смену|💰 Сдать смену)$"), shift_wizard.cmd_shift)
                 ],
                 states={
                     ENTER_FACT_CASH: [
@@ -3486,7 +3471,8 @@ class ClubAssistantBot:
             # Register expense tracking conversation handler
             expense_handler = ConversationHandler(
                 entry_points=[
-                    CommandHandler("expense", shift_wizard.cmd_expense)
+                    CommandHandler("expense", shift_wizard.cmd_expense),
+                    MessageHandler(filters.TEXT & filters.Regex("^💸 Списать с кассы$"), shift_wizard.cmd_expense)
                 ],
                 states={
                     EXPENSE_SELECT_CASH_SOURCE: [
