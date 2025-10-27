@@ -1,0 +1,9 @@
+● club_assistant.service - Club Assistant Bot v2.1
+     Loaded: loaded (/etc/systemd/system/club_assistant.service; enabled; vendor preset: enabled)
+     Active: activating (auto-restart) (Result: exit-code) since Fri 2025-10-17 13:52:25 UTC; 5s ago
+    Process: 1344 ExecStart=/opt/club_assistant/venv/bin/python /opt/club_assistant/bot.py [0;1;31m(code=exited, status=1/FAILURE)[0m
+   Main PID: 1344 (code=exited, status=1/FAILURE)
+        CPU: 8ms
+
+Oct 17 13:52:25 happy-lichterman.1cent.network systemd[1]: [0;1;39m[0;1;31m[0;1;39mclub_assistant.service: Main process exited, code=exited, status=1/FAILURE[0m
+Oct 17 13:52:25 happy-lichterman.1cent.network systemd[1]: [0;1;38;5;185m[0;1;39m[0;1;38;5;185mclub_assistant.service: Failed with result 'exit-code'.[0m
