@@ -56,7 +56,7 @@ try:
     from modules.enhanced_admin_shift_integration import register_enhanced_admin_shift_management
     from modules.backup_commands import register_backup_commands
 except ImportError as e:
-    print(f"❌ Не найдены модули v4.10: {e}")
+    print(f"Ошибка: Не найдены модули v4.15: {e}")
     sys.exit(1)
 
 CONFIG_PATH = 'config.json'
@@ -3476,7 +3476,7 @@ class ClubAssistantBot:
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        print(f"❌ {CONFIG_PATH}")
+        print(f"Ошибка: {CONFIG_PATH}")
         sys.exit(1)
     
     with open(CONFIG_PATH, 'r') as f:
