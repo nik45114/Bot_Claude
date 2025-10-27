@@ -793,23 +793,22 @@ class ClubAssistantBot:
                 return
         
         text = self._get_main_menu_text()
-        reply_markup = self._build_main_menu_keyboard(update.effective_user.id)
+        inline_markup = self._build_main_menu_keyboard(update.effective_user.id)
         
         # Add reply keyboard with bottom buttons
         reply_keyboard = self._build_reply_keyboard(update.effective_user.id)
         
-        # Send message with both inline and reply keyboards
+        # Send inline menu first
         await update.message.reply_text(
             text, 
-            reply_markup=reply_markup
+            reply_markup=inline_markup
         )
         
-        # If in a club chat, show reply keyboard
-        if update.message.chat.type in ['group', 'supergroup']:
-            await update.message.reply_text(
-                "Используйте кнопки снизу для быстрого доступа к командам 👇",
-                reply_markup=reply_keyboard
-            )
+        # Then send reply keyboard for all users
+        await update.message.reply_text(
+            "Используйте кнопки снизу для быстрого доступа 👇",
+            reply_markup=reply_keyboard
+        )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"""📖 Справка - Club Assistant Bot v{VERSION}

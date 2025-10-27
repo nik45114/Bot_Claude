@@ -424,6 +424,20 @@ class ShiftWizard:
                 f"🔒 Закрыть смену"
             )
             
+            # Update reply keyboard to show new buttons
+            from telegram import KeyboardButton, ReplyKeyboardMarkup
+            keyboard = [
+                [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")],
+                [KeyboardButton("💸 Списать с кассы"), KeyboardButton("🔒 Закрыть смену")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await context.bot.send_message(
+                chat_id=user_id,
+                text="🔄 Клавиатура обновлена",
+                reply_markup=reply_markup
+            )
+            
             # Notify owner about shift opening
             if self.owner_ids:
                 for owner_id in self.owner_ids:
@@ -701,20 +715,44 @@ class ShiftWizard:
         )
         
         if success:
+            # Close shift in database
+            shift_id = context.user_data.get('active_shift_id')
+            if shift_id and self.shift_manager:
+                self.shift_manager.close_shift(shift_id)
+            
             # Get updated balances
             balances = self.finmon.get_club_balances(club)
             
-            total_expenses = sum(exp['amount'] for exp in expenses)
+            # Get shift expenses from DB
+            shift_expenses = []
+            if shift_id and self.shift_manager:
+                shift_expenses = self.shift_manager.get_shift_expenses(shift_id)
+            
+            total_expenses = sum(exp['amount'] for exp in shift_expenses)
             
             msg = "✅ Смена успешно сдана!\n\n"
             msg += f"🏢 {club}\n"
-            if expenses:
+            if shift_expenses:
                 msg += f"💸 Списано расходов: {total_expenses:,.0f} ₽\n"
             msg += f"💰 Остатки:\n"
             msg += f"  • Офиц (сейф): {balances['official']:,.0f} ₽\n"
             msg += f"  • Коробка: {balances['box']:,.0f} ₽\n"
             
             await query.edit_message_text(msg)
+            
+            # Update reply keyboard to show open shift button
+            from telegram import KeyboardButton, ReplyKeyboardMarkup
+            keyboard = [
+                [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")],
+                [KeyboardButton("🔓 Открыть смену")]
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+            
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text="🔄 Клавиатура обновлена",
+                reply_markup=reply_markup
+            )
         else:
             await query.edit_message_text("❌ Ошибка при сохранении смены")
         
