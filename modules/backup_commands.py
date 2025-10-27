@@ -235,6 +235,75 @@ class BackupCommands:
             
         except Exception as e:
             logger.error(f"Error in scheduled migration send: {e}")
+    
+    async def send_weekly_backup(self, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Scheduled job to send weekly backup to all owners
+        Called by JobQueue every 7 days
+        """
+        try:
+            # Create timestamped backup archive
+            timestamp = datetime.now().strftime('%Y%m%d')
+            archive_name = f'backup_weekly_{timestamp}.tar.gz'
+            archive_path = os.path.join(self.backup_dir, archive_name)
+            
+            logger.info(f"📦 Creating weekly backup: {archive_name}")
+            
+            # Create tar archive with important files
+            with tarfile.open(archive_path, 'w:gz') as tar:
+                # Add SQLite database
+                if os.path.exists(self.db_path):
+                    tar.add(self.db_path, arcname=os.path.basename(self.db_path))
+                    logger.info(f"  Added: {self.db_path}")
+                
+                # Add FinMon data files
+                finmon_files = ['finmon_balances.json', 'finmon_log.csv']
+                for file in finmon_files:
+                    if os.path.exists(file):
+                        tar.add(file, arcname=file)
+                        logger.info(f"  Added: {file}")
+                
+                # Add vector store if exists
+                vector_files = ['vector_index.faiss', 'vector_metadata.pkl']
+                for file in vector_files:
+                    if os.path.exists(file):
+                        tar.add(file, arcname=file)
+                        logger.info(f"  Added: {file}")
+            
+            # Get archive size
+            archive_size = os.path.getsize(archive_path)
+            size_mb = archive_size / (1024 * 1024)
+            
+            # Send to all owners
+            for owner_id in self.owner_ids:
+                try:
+                    with open(archive_path, 'rb') as f:
+                        await context.bot.send_document(
+                            chat_id=owner_id,
+                            document=f,
+                            filename=archive_name,
+                            caption=(
+                                f"💾 Еженедельный автобэкап\n"
+                                f"🕐 {datetime.now().strftime('%d.%m.%Y %H:%M')}\n"
+                                f"📊 Размер: {size_mb:.2f} МБ\n\n"
+                                f"Включено:\n"
+                                f"• База данных (knowledge.db)\n"
+                                f"• Финансовые данные (finmon_*.json/csv)\n"
+                                f"• Векторное хранилище"
+                            )
+                        )
+                    
+                    logger.info(f"✅ Weekly backup sent to owner {owner_id}, size: {size_mb:.2f} MB")
+                    
+                except Exception as e:
+                    logger.error(f"❌ Error sending weekly backup to owner {owner_id}: {e}")
+            
+            # Clean up archive
+            if os.path.exists(archive_path):
+                os.remove(archive_path)
+            
+        except Exception as e:
+            logger.error(f"❌ Error in weekly backup: {e}")
 
 
 def register_backup_commands(application, config: dict = None):
@@ -292,8 +361,17 @@ def register_backup_commands(application, config: dict = None):
             name='scheduled_migration_send'
         )
         logger.info(f"✅ Scheduled migration sending enabled (every {backup_interval_days} days)")
+        
+        # Send weekly backup every 7 days
+        application.job_queue.run_repeating(
+            backup_commands.send_weekly_backup,
+            interval=7 * 24 * 60 * 60,  # 7 days in seconds
+            first=3600,  # First run after 1 hour (3600 seconds)
+            name='weekly_backup'
+        )
+        logger.info(f"✅ Weekly backup enabled (every 7 days, starts in 1 hour)")
     else:
-        logger.warning("⚠️ JobQueue not available, scheduled migrations disabled")
+        logger.warning("⚠️ JobQueue not available, scheduled backups disabled")
     
     logger.info("✅ Backup commands registered")
 

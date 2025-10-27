@@ -28,10 +28,10 @@ from telegram.ext import ContextTypes, ConversationHandler
 logger = logging.getLogger(__name__)
 
 # Conversation states
-(SELECT_CLUB, SELECT_SHIFT_TIME, ENTER_FACT_CASH, ENTER_FACT_CARD, 
- ENTER_QR, ENTER_CARD2, ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA,
- ENTER_GAMEPADS, ENTER_REPAIR, ENTER_NEED_REPAIR, ENTER_GAMES,
- CONFIRM_SHIFT) = range(14)
+(SELECT_CLUB, SELECT_SHIFT_TIME, CONFIRM_IDENTITY, ENTER_FACT_CASH, ENTER_FACT_CARD, 
+ ENTER_QR, ENTER_CARD2, MANAGE_EXPENSES, ENTER_EXPENSE_AMOUNT, ENTER_EXPENSE_REASON,
+ ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA, ENTER_GAMEPADS, ENTER_REPAIR, 
+ ENTER_NEED_REPAIR, ENTER_GAMES, CONFIRM_SHIFT) = range(18)
 
 # Timezone and shift windows
 TIMEZONE = 'Europe/Moscow'
@@ -239,22 +239,63 @@ class ShiftWizard:
         context.user_data['prev_official'] = prev_official
         context.user_data['prev_box'] = prev_box
         
-        msg = f"📋 Сдача смены\n\n"
+        # Show identity confirmation
+        user = update.effective_user
+        username = f"@{user.username}" if user.username else "Без username"
+        full_name = user.full_name or "Без имени"
+        
+        # Get expected duty name from schedule if available
+        shift_window = context.user_data.get('shift_window')
+        shift_date = shift_window['shift_date'] if shift_window else date.today()
+        duty_name = ""
+        if self.schedule:
+            duty_name = self.schedule.get_duty_name(club, shift_date, shift_time) or ""
+        
+        msg = f"👤 Подтверждение личности\n\n"
         msg += f"🏢 Клуб: {club}\n"
         msg += f"⏰ Время: {shift_label}\n\n"
-        msg += f"📊 Прошлый раз:\n"
-        msg += f"  • Основная: {prev_official:,.0f} ₽\n"
-        msg += f"  • Коробка: {prev_box:,.0f} ₽\n\n"
-        msg += "Теперь введите данные смены.\n\n"
-        msg += "💰 Выручка - Наличка факт:"
+        msg += f"Вы: {full_name}\n"
+        msg += f"Telegram: {username}\n"
+        msg += f"ID: {user.id}\n\n"
+        
+        if duty_name:
+            msg += f"⚠️ По расписанию дежурный: {duty_name}\n\n"
+        
+        msg += "Подтвердите, что это вы сдаёте смену:"
         
         keyboard = [
-            [InlineKeyboardButton("Ввести вручную", callback_data="enter_manual")],
+            [InlineKeyboardButton("✅ Подтверждаю, это я", callback_data="confirm_identity")],
             [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await query.edit_message_text(msg, reply_markup=reply_markup)
+        return CONFIRM_IDENTITY
+    
+    async def confirm_identity(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle identity confirmation"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Store confirmation
+        context.user_data['identity_confirmed'] = True
+        context.user_data['confirmation_timestamp'] = datetime.now().isoformat()
+        
+        club = context.user_data['shift_club']
+        shift_time = context.user_data['shift_time']
+        shift_label = "☀️ Утро (ночная смена)" if shift_time == "morning" else "🌙 Вечер (дневная смена)"
+        prev_official = context.user_data.get('prev_official', 0)
+        prev_box = context.user_data.get('prev_box', 0)
+        
+        msg = f"📋 Сдача смены\n\n"
+        msg += f"🏢 Клуб: {club}\n"
+        msg += f"⏰ Время: {shift_label}\n\n"
+        msg += f"📊 Прошлые остатки:\n"
+        msg += f"  • Основная: {prev_official:,.0f} ₽\n"
+        msg += f"  • Коробка: {prev_box:,.0f} ₽\n\n"
+        msg += "💰 Введите наличку факт:\n\nПример: 3440"
+        
+        await query.edit_message_text(msg)
         return ENTER_FACT_CASH
     
     async def prompt_fact_cash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -380,18 +421,129 @@ class ShiftWizard:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['card2'] = value
             
-            return await self._continue_to_safe(update.message, context)
+            # Show expenses management menu
+            return await self._show_expenses_menu(update.message, context)
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_CARD2
     
-    async def _continue_to_safe(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
-        """Continue to safe input"""
+    # ===== Expenses Management =====
+    
+    async def _show_expenses_menu(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
+        """Show expenses management menu"""
+        expenses = context.user_data.get('expenses', [])
+        total_expenses = sum(exp['amount'] for exp in expenses)
+        
         msg = f"✅ Новая касса: {context.user_data['shift_data']['card2']:,.0f} ₽\n\n"
-        msg += "🔐 Остатки - Сейф (основная):"
+        msg += "💸 Управление расходами\n\n"
+        
+        if expenses:
+            msg += f"Списано наличных: {total_expenses:,.0f} ₽\n\n"
+            for i, exp in enumerate(expenses, 1):
+                msg += f"{i}. {exp['amount']:,.0f} ₽ - {exp['reason']}\n"
+            msg += "\n"
+        else:
+            msg += "Расходов пока нет\n\n"
+        
+        msg += "Выберите действие:"
         
         keyboard = [
-            [InlineKeyboardButton("Ввести вручную", callback_data="enter_manual")],
+            [InlineKeyboardButton("💸 Списать расход", callback_data="add_expense")],
+            [InlineKeyboardButton("➡️ Продолжить к остаткам", callback_data="skip_expenses")],
+            [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if hasattr(message_or_query, 'reply_text'):
+            await message_or_query.reply_text(msg, reply_markup=reply_markup)
+        else:
+            await message_or_query.edit_message_text(msg, reply_markup=reply_markup)
+        
+        return MANAGE_EXPENSES
+    
+    async def start_add_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start adding expense"""
+        query = update.callback_query
+        await query.answer()
+        
+        msg = "💸 Списание расхода\n\n"
+        msg += "Введите сумму которая была выдана из кассы:\n\nПример: 1500"
+        
+        await query.edit_message_text(msg)
+        return ENTER_EXPENSE_AMOUNT
+    
+    async def receive_expense_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive expense amount"""
+        try:
+            amount = float(update.message.text.replace(' ', '').replace(',', '.'))
+            if amount <= 0:
+                await update.message.reply_text("❌ Сумма должна быть больше 0. Попробуйте снова:")
+                return ENTER_EXPENSE_AMOUNT
+            
+            context.user_data['temp_expense_amount'] = amount
+            
+            msg = f"✅ Сумма: {amount:,.0f} ₽\n\n"
+            msg += "Введите причину списания:\n\n"
+            msg += "Примеры:\n"
+            msg += "• Выдано игроку\n"
+            msg += "• Оплата поставщику\n"
+            msg += "• Сдача клиенту\n"
+            msg += "• Расходы на закупку"
+            
+            await update.message.reply_text(msg)
+            return ENTER_EXPENSE_REASON
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат. Введите число:")
+            return ENTER_EXPENSE_AMOUNT
+    
+    async def receive_expense_reason(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive expense reason"""
+        reason = update.message.text.strip()
+        
+        if not reason or len(reason) > 200:
+            await update.message.reply_text(
+                "❌ Причина должна быть от 1 до 200 символов. Попробуйте снова:"
+            )
+            return ENTER_EXPENSE_REASON
+        
+        amount = context.user_data.get('temp_expense_amount', 0)
+        
+        # Add expense to list
+        if 'expenses' not in context.user_data:
+            context.user_data['expenses'] = []
+        
+        context.user_data['expenses'].append({
+            'amount': amount,
+            'reason': reason
+        })
+        
+        # Clear temp data
+        context.user_data.pop('temp_expense_amount', None)
+        
+        # Show expenses menu again
+        return await self._show_expenses_menu(update.message, context)
+    
+    async def skip_expenses(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Skip to safe input"""
+        query = update.callback_query
+        await query.answer()
+        
+        return await self._continue_to_safe(query, context)
+    
+    # ===== Safe and Box Input =====
+    
+    async def _continue_to_safe(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
+        """Continue to safe input"""
+        prev_official = context.user_data.get('prev_official', 0)
+        
+        msg = f"✅ Выручка введена\n\n"
+        msg += "🔐 Введите остаток в сейфе (основная касса):\n\n"
+        msg += f"Пример: 5000\n"
+        msg += f"Прошлый раз было: {prev_official:,.0f} ₽"
+        
+        keyboard = [
+            [InlineKeyboardButton("📦 Без изменений", callback_data="safe_no_change")],
             [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -403,14 +555,16 @@ class ShiftWizard:
         
         return ENTER_SAFE
     
-    async def prompt_safe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Prompt for safe balance input"""
+    async def handle_safe_no_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'no change' button for safe"""
         query = update.callback_query
         await query.answer()
         
-        msg = "🔐 Введите остаток в сейфе (только число):\n\nПример: 5000"
-        await query.edit_message_text(msg)
-        return ENTER_SAFE
+        # Use previous balance
+        prev_official = context.user_data.get('prev_official', 0)
+        context.user_data['shift_data']['safe_cash_end'] = prev_official
+        
+        return await self._continue_to_box(query, context)
     
     async def receive_safe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive safe balance"""
@@ -418,29 +572,45 @@ class ShiftWizard:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['safe_cash_end'] = value
             
-            msg = f"✅ Сейф: {value:,.0f} ₽\n\n"
-            msg += "📦 Введите остаток в коробке:"
-            
-            keyboard = [
-                [InlineKeyboardButton("Ввести вручную", callback_data="enter_manual")],
-                [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(msg, reply_markup=reply_markup)
-            return ENTER_BOX
+            return await self._continue_to_box(update.message, context)
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_SAFE
     
-    async def prompt_box(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Prompt for box balance input"""
+    async def _continue_to_box(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
+        """Continue to box input"""
+        prev_box = context.user_data.get('prev_box', 0)
+        safe_value = context.user_data['shift_data']['safe_cash_end']
+        
+        msg = f"✅ Сейф: {safe_value:,.0f} ₽\n\n"
+        msg += "📦 Введите остаток в коробке:\n\n"
+        msg += f"Пример: 2000\n"
+        msg += f"Прошлый раз было: {prev_box:,.0f} ₽"
+        
+        keyboard = [
+            [InlineKeyboardButton("📦 Без изменений", callback_data="box_no_change")],
+            [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if hasattr(message_or_query, 'reply_text'):
+            await message_or_query.reply_text(msg, reply_markup=reply_markup)
+        else:
+            await message_or_query.edit_message_text(msg, reply_markup=reply_markup)
+        
+        return ENTER_BOX
+    
+    async def handle_box_no_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'no change' button for box"""
         query = update.callback_query
         await query.answer()
         
-        msg = "📦 Введите остаток в коробке (только число):\n\nПример: 2000"
-        await query.edit_message_text(msg)
-        return ENTER_BOX
+        # Use previous balance
+        prev_box = context.user_data.get('prev_box', 0)
+        context.user_data['shift_data']['box_cash_end'] = prev_box
+        
+        # Move to summary
+        return await self._show_summary(query, context)
     
     async def receive_box(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive box balance"""
@@ -455,11 +625,12 @@ class ShiftWizard:
             return ENTER_BOX
     
     async def _show_summary(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
-        """Show summary with previous balances and deltas"""
+        """Show summary with previous balances, deltas and expenses"""
         club = context.user_data['shift_club']
         shift_time = context.user_data['shift_time']
         shift_label = "☀️ Утро (ночная смена)" if shift_time == "morning" else "🌙 Вечер (дневная смена)"
         data = context.user_data['shift_data']
+        expenses = context.user_data.get('expenses', [])
         
         prev_official = context.user_data.get('prev_official', 0)
         prev_box = context.user_data.get('prev_box', 0)
@@ -470,6 +641,9 @@ class ShiftWizard:
         delta_official = new_official - prev_official
         delta_box = new_box - prev_box
         
+        # Calculate total expenses
+        total_expenses = sum(exp['amount'] for exp in expenses)
+        
         msg = "📊 Сводка смены\n\n"
         msg += f"🏢 Клуб: {club}\n"
         msg += f"⏰ Время: {shift_label}\n\n"
@@ -478,9 +652,15 @@ class ShiftWizard:
         msg += f"  • Наличка факт: {data['fact_cash']:,.0f} ₽\n"
         msg += f"  • Карта факт: {data['fact_card']:,.0f} ₽\n"
         msg += f"  • QR: {data['qr']:,.0f} ₽\n"
-        msg += f"  • Новая касса: {data['card2']:,.0f} ₽\n\n"
+        msg += f"  • Новая касса: {data['card2']:,.0f} ₽\n"
         
-        msg += "🔐 Остатки:\n"
+        if expenses:
+            msg += f"\n💸 Расходы (списано):\n"
+            for exp in expenses:
+                msg += f"  • {exp['amount']:,.0f} ₽ - {exp['reason']}\n"
+            msg += f"  ИТОГО: {total_expenses:,.0f} ₽\n"
+        
+        msg += "\n🔐 Остатки:\n"
         msg += f"  • Сейф (офиц): {new_official:,.0f} ₽\n"
         msg += f"  • Коробка: {new_box:,.0f} ₽\n\n"
         
@@ -514,9 +694,11 @@ class ShiftWizard:
         data = context.user_data.get('shift_data')
         club = context.user_data.get('shift_club')
         shift_time = context.user_data.get('shift_time')
+        expenses = context.user_data.get('expenses', [])
         
-        # Add club to data
+        # Add club and expenses to data
         data['club'] = club
+        data['expenses'] = expenses
         
         # Get shift date
         shift_window = context.user_data.get('shift_window')
@@ -533,22 +715,32 @@ class ShiftWizard:
         admin_id = update.effective_user.id
         admin_username = update.effective_user.username or ""
         
-        # Submit shift
+        # Get identity confirmation data
+        identity_confirmed = context.user_data.get('identity_confirmed', False)
+        confirmation_timestamp = context.user_data.get('confirmation_timestamp', '')
+        
+        # Submit shift with expenses and confirmation
         success = self.finmon.submit_shift(
             data,
             admin_id,
             admin_username,
             shift_date,
             shift_time,
-            duty_name
+            duty_name,
+            identity_confirmed=identity_confirmed,
+            confirmation_timestamp=confirmation_timestamp
         )
         
         if success:
             # Get updated balances
             balances = self.finmon.get_club_balances(club)
             
+            total_expenses = sum(exp['amount'] for exp in expenses)
+            
             msg = "✅ Смена успешно сдана!\n\n"
             msg += f"🏢 {club}\n"
+            if expenses:
+                msg += f"💸 Списано расходов: {total_expenses:,.0f} ₽\n"
             msg += f"💰 Остатки:\n"
             msg += f"  • Офиц (сейф): {balances['official']:,.0f} ₽\n"
             msg += f"  • Коробка: {balances['box']:,.0f} ₽\n"
@@ -569,7 +761,7 @@ class ShiftWizard:
         
         club = context.user_data.get('shift_club')
         
-        # Clear shift data but keep club
+        # Clear shift data and expenses but keep club
         context.user_data['shift_data'] = {
             'fact_cash': 0.0,
             'fact_card': 0.0,
@@ -583,6 +775,7 @@ class ShiftWizard:
             'need_repair': 0,
             'games': 0
         }
+        context.user_data['expenses'] = []
         
         msg = f"📋 Сдача смены\n\n🏢 Клуб: {club}\n\nВыберите время смены:"
         
@@ -685,3 +878,154 @@ class ShiftWizard:
             else:
                 text = "Не удалось определить клуб"
             await query.edit_message_text(text)
+    
+    # ===== Financial Monitoring Analytics =====
+    
+    async def cmd_finmon(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show financial monitoring menu"""
+        # Owner only
+        if not self.is_owner(update.effective_user.id):
+            await update.message.reply_text("❌ Эта команда доступна только владельцу")
+            return
+        
+        if not ANALYTICS_AVAILABLE:
+            await update.message.reply_text("❌ Модуль аналитики недоступен")
+            return
+        
+        text = """📊 Финансовый мониторинг
+━━━━━━━━━━━━━━━━━━━━
+Выберите отчет:"""
+        
+        keyboard = [
+            [InlineKeyboardButton("📊 Выручка за период", callback_data="finmon_revenue")],
+            [InlineKeyboardButton("🏢 Разбивка по клубам", callback_data="finmon_clubs")],
+            [InlineKeyboardButton("👥 Сравнение админов", callback_data="finmon_admins")],
+            [InlineKeyboardButton("⚠️ Выявление аномалий", callback_data="finmon_anomalies")],
+            [InlineKeyboardButton("📈 История остатков", callback_data="finmon_history")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        if update.message:
+            await update.message.reply_text(text, reply_markup=reply_markup)
+        else:
+            await update.callback_query.edit_message_text(text, reply_markup=reply_markup)
+    
+    async def handle_finmon_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle finmon analytics callbacks"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(query.from_user.id):
+            await query.answer("❌ Только для владельца", show_alert=True)
+            return
+        
+        if not ANALYTICS_AVAILABLE:
+            await query.edit_message_text("❌ Модуль аналитики недоступен")
+            return
+        
+        analytics = FinMonAnalytics()
+        
+        # Revenue summary
+        if query.data == "finmon_revenue":
+            keyboard = [
+                [
+                    InlineKeyboardButton("День", callback_data="finmon_rev_day"),
+                    InlineKeyboardButton("Неделя", callback_data="finmon_rev_week"),
+                    InlineKeyboardButton("Месяц", callback_data="finmon_rev_month")
+                ],
+                [InlineKeyboardButton("◀️ Назад", callback_data="finmon_menu")]
+            ]
+            await query.edit_message_text(
+                "📊 Выберите период:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        elif query.data.startswith("finmon_rev_"):
+            period = query.data.split('_')[-1]  # day, week, month
+            summary = analytics.get_revenue_summary(period)
+            text = analytics.format_revenue_summary(summary)
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="finmon_revenue")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # Club breakdown
+        elif query.data == "finmon_clubs":
+            keyboard = [
+                [
+                    InlineKeyboardButton("День", callback_data="finmon_club_day"),
+                    InlineKeyboardButton("Неделя", callback_data="finmon_club_week"),
+                    InlineKeyboardButton("Месяц", callback_data="finmon_club_month")
+                ],
+                [InlineKeyboardButton("◀️ Назад", callback_data="finmon_menu")]
+            ]
+            await query.edit_message_text(
+                "🏢 Выберите период:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        elif query.data.startswith("finmon_club_"):
+            period = query.data.split('_')[-1]
+            breakdown = analytics.get_club_breakdown(period)
+            text = analytics.format_club_breakdown(breakdown, period)
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="finmon_clubs")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # Admin comparison
+        elif query.data == "finmon_admins":
+            keyboard = [
+                [InlineKeyboardButton("Все клубы", callback_data="finmon_adm_all")],
+                [InlineKeyboardButton("🏢 Рио", callback_data="finmon_adm_rio")],
+                [InlineKeyboardButton("🏢 Север", callback_data="finmon_adm_sever")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="finmon_menu")]
+            ]
+            await query.edit_message_text(
+                "👥 Выберите клуб:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        elif query.data.startswith("finmon_adm_"):
+            club_code = query.data.split('_')[-1]
+            club = None if club_code == 'all' else ('Рио' if club_code == 'rio' else 'Север')
+            
+            admins = analytics.get_admin_comparison('month', club, weekday=4)  # Friday
+            text = analytics.format_admin_comparison(admins, club, "Пятницы")
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="finmon_admins")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # Anomalies detection
+        elif query.data == "finmon_anomalies":
+            anomalies = analytics.detect_anomalies('month', threshold=0.15, min_shifts=3)
+            text = analytics.format_anomalies(anomalies)
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="finmon_menu")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # Balance history
+        elif query.data == "finmon_history":
+            keyboard = [
+                [InlineKeyboardButton("Все клубы", callback_data="finmon_hist_all")],
+                [InlineKeyboardButton("🏢 Рио", callback_data="finmon_hist_rio")],
+                [InlineKeyboardButton("🏢 Север", callback_data="finmon_hist_sever")],
+                [InlineKeyboardButton("◀️ Назад", callback_data="finmon_menu")]
+            ]
+            await query.edit_message_text(
+                "📈 Выберите клуб:",
+                reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        
+        elif query.data.startswith("finmon_hist_"):
+            club_code = query.data.split('_')[-1]
+            club = None if club_code == 'all' else ('Рио' if club_code == 'rio' else 'Север')
+            
+            history = analytics.get_balance_history(30, club)
+            text = analytics.format_balance_history(history, club)
+            
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="finmon_history")]]
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        
+        # Back to main menu
+        elif query.data == "finmon_menu":
+            await self.cmd_finmon(update, context)

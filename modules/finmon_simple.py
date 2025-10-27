@@ -183,17 +183,20 @@ class FinMonSimple:
         return data if data['club'] else None
     
     def submit_shift(self, data: Dict, admin_tg_id: int, admin_username: str = "",
-                    shift_date: date = None, shift_time: str = "evening", duty_name: str = "") -> bool:
+                    shift_date: date = None, shift_time: str = "evening", duty_name: str = "",
+                    identity_confirmed: bool = False, confirmation_timestamp: str = "") -> bool:
         """
         Submit shift and update balances
         
         Args:
-            data: Parsed shift data
+            data: Parsed shift data (includes 'expenses' list)
             admin_tg_id: Telegram ID of admin submitting shift
             admin_username: Telegram username
             shift_date: Date of shift (default: today)
             shift_time: 'morning' or 'evening'
             duty_name: Name of person on duty from schedule
+            identity_confirmed: Whether admin confirmed their identity
+            confirmation_timestamp: Timestamp of confirmation
         
         Returns:
             True if successful, False otherwise
@@ -205,6 +208,11 @@ class FinMonSimple:
         club = data['club']
         if shift_date is None:
             shift_date = date.today()
+        
+        # Get expenses
+        expenses = data.get('expenses', [])
+        expenses_total = sum(exp['amount'] for exp in expenses)
+        expenses_details = json.dumps(expenses, ensure_ascii=False) if expenses else ""
         
         # Load current balances
         balances = self.get_balances()
@@ -231,14 +239,25 @@ class FinMonSimple:
         
         # Append to CSV log
         try:
+            # Check if we need to add headers (file doesn't exist or is empty)
+            file_exists = os.path.exists(self.log_file)
+            fieldnames = [
+                'timestamp', 'club', 'shift_date', 'shift_time',
+                'admin_tg_id', 'admin_username', 'duty_name',
+                'safe_cash_end', 'box_cash_end',
+                'delta_official', 'delta_box',
+                'fact_cash', 'fact_card', 'qr', 'card2',
+                'expenses_total', 'expenses_details',
+                'identity_confirmed', 'confirmation_timestamp'
+            ]
+            
             with open(self.log_file, 'a', newline='', encoding='utf-8') as f:
-                writer = csv.DictWriter(f, fieldnames=[
-                    'timestamp', 'club', 'shift_date', 'shift_time',
-                    'admin_tg_id', 'admin_username', 'duty_name',
-                    'safe_cash_end', 'box_cash_end',
-                    'delta_official', 'delta_box',
-                    'fact_cash', 'fact_card', 'qr', 'card2'
-                ])
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                
+                # Write header if file is new or empty
+                if not file_exists or os.path.getsize(self.log_file) == 0:
+                    writer.writeheader()
+                
                 writer.writerow({
                     'timestamp': datetime.now().isoformat(),
                     'club': club,
@@ -254,9 +273,13 @@ class FinMonSimple:
                     'fact_cash': data.get('fact_cash', 0),
                     'fact_card': data.get('fact_card', 0),
                     'qr': data.get('qr', 0),
-                    'card2': data.get('card2', 0)
+                    'card2': data.get('card2', 0),
+                    'expenses_total': expenses_total,
+                    'expenses_details': expenses_details,
+                    'identity_confirmed': 1 if identity_confirmed else 0,
+                    'confirmation_timestamp': confirmation_timestamp
                 })
-            logger.info(f"✅ Shift logged for {club}")
+            logger.info(f"✅ Shift logged for {club} with {len(expenses)} expenses")
             return True
         except Exception as e:
             logger.error(f"❌ Error logging shift: {e}")
