@@ -3507,8 +3507,23 @@ class ClubAssistantBot:
                 pattern="^finmon_"
             ))
             
+            # Register schedule integration callbacks
+            application.add_handler(CallbackQueryHandler(
+                shift_wizard.handle_duty_replacement_response,
+                pattern="^duty_(confirm|reject)_"
+            ))
+            application.add_handler(CallbackQueryHandler(
+                shift_wizard.handle_owner_schedule_update,
+                pattern="^owner_schedule_(yes|no)_"
+            ))
+            
+            # Register schedule management commands
+            from modules.schedule_commands import ScheduleCommands
+            schedule_commands = ScheduleCommands(shift_manager, owner_ids)
+            application.add_handler(CommandHandler("schedule", schedule_commands.cmd_schedule))
+            
             logger.info("✅ Shift wizard registered")
-            logger.info("   Commands: /shift, /balances, /movements, /finmon")
+            logger.info("   Commands: /shift, /balances, /movements, /finmon, /schedule")
             logger.info("   Button: 💰 Сдать смену (reply keyboard)")
             
         except Exception as e:
@@ -3556,10 +3571,11 @@ class ClubAssistantBot:
         logger.info("📋 Registered commands summary:")
         logger.info("   Core: /start, /help, /stats")
         logger.info("   Content: /image, /video")
-        logger.info("   FinMon: /shift, /balances, /movements")
+        logger.info("   FinMon: /shift, /balances, /movements, /finmon")
+        logger.info("   Schedule: /schedule (add, week, today, remove, clear)")
         logger.info("   Owner: /apply_migrations, /migration, /backup")
         logger.info("   Admin: /admins, /v2ray")
-        logger.info("   Reply keyboard: 💰 Сдать смену, 📊 Статистика, ❓ Помощь")
+        logger.info("   Reply keyboard: 🔓 Открыть смену / 🔒 Закрыть смену, 💸 Списать с кассы, 📊 Статистика, ❓ Помощь")
         logger.info("=" * 60)
         
         logger.info(f"🤖 Бот v{VERSION} запущен!")

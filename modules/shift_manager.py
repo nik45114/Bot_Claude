@@ -6,7 +6,7 @@ Shift Manager - Управление открытыми сменами и спи
 
 import sqlite3
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
@@ -330,4 +330,150 @@ class ShiftManager:
         except Exception as e:
             logger.error(f"❌ Failed to clear duty schedule: {e}")
             return False
+    
+    def update_duty_schedule(self, duty_date: date, club: str, shift_type: str,
+                            admin_id: Optional[int] = None, admin_name: Optional[str] = None) -> bool:
+        """
+        Update existing duty schedule entry
+        
+        Args:
+            duty_date: Date of duty
+            club: Club name
+            shift_type: 'morning' or 'evening'
+            admin_id: New admin user ID
+            admin_name: New admin display name
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        date_str = duty_date.strftime('%Y-%m-%d')
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE duty_schedule
+                SET admin_id = ?, admin_name = ?, imported_at = CURRENT_TIMESTAMP
+                WHERE date = ? AND club = ? AND shift_type = ?
+            ''', (admin_id, admin_name, date_str, club, shift_type))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if rows_affected > 0:
+                logger.info(f"✅ Updated duty schedule: {date_str} {club} {shift_type} → {admin_name}")
+                return True
+            else:
+                logger.warning(f"⚠️ No duty schedule entry found to update: {date_str} {club} {shift_type}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to update duty schedule: {e}")
+            return False
+    
+    def check_schedule_match(self, admin_id: int, club: str, shift_type: str, 
+                            duty_date: Optional[date] = None) -> bool:
+        """
+        Check if admin matches the scheduled duty
+        
+        Args:
+            admin_id: Admin user ID to check
+            club: Club name
+            shift_type: 'morning' or 'evening'
+            duty_date: Date to check (default: today)
+        
+        Returns:
+            True if admin matches schedule, False otherwise
+        """
+        duty_info = self.get_expected_duty(club, shift_type, duty_date)
+        
+        if not duty_info:
+            # No schedule data - no match requirement
+            return True
+        
+        expected_id = duty_info.get('admin_id')
+        if not expected_id:
+            # Schedule has no admin_id - no match requirement
+            return True
+        
+        return expected_id == admin_id
+    
+    def remove_duty_schedule(self, duty_date: date, club: str, shift_type: str) -> bool:
+        """
+        Remove duty schedule entry
+        
+        Args:
+            duty_date: Date of duty
+            club: Club name
+            shift_type: 'morning' or 'evening'
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        date_str = duty_date.strftime('%Y-%m-%d')
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                DELETE FROM duty_schedule
+                WHERE date = ? AND club = ? AND shift_type = ?
+            ''', (date_str, club, shift_type))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if rows_affected > 0:
+                logger.info(f"✅ Removed duty schedule: {date_str} {club} {shift_type}")
+                return True
+            else:
+                logger.warning(f"⚠️ No duty schedule entry found: {date_str} {club} {shift_type}")
+                return False
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to remove duty schedule: {e}")
+            return False
+    
+    def get_week_schedule(self, start_date: Optional[date] = None, days: int = 7) -> List[Dict]:
+        """
+        Get schedule for a week
+        
+        Args:
+            start_date: Start date (default: today)
+            days: Number of days to fetch (default: 7)
+        
+        Returns:
+            List of duty schedule entries
+        """
+        if start_date is None:
+            start_date = date.today()
+        
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            end_date = start_date + timedelta(days=days)
+            start_str = start_date.strftime('%Y-%m-%d')
+            end_str = end_date.strftime('%Y-%m-%d')
+            
+            cursor.execute('''
+                SELECT id, date, club, shift_type, admin_id, admin_name, imported_at
+                FROM duty_schedule
+                WHERE date >= ? AND date < ?
+                ORDER BY date, club, shift_type
+            ''', (start_str, end_str))
+            
+            rows = cursor.fetchall()
+            conn.close()
+            
+            return [dict(row) for row in rows]
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to get week schedule: {e}")
+            return []
 

@@ -309,18 +309,27 @@ class ShiftWizard:
         msg += f"  • {username}\n"
         msg += f"  • ID: {user_id}\n\n"
         
+        # Check if it's a replacement
+        is_replacement = False
         if duty_info and duty_info.get('admin_name'):
             expected_name = duty_info['admin_name']
             expected_id = duty_info.get('admin_id')
             
-            msg += f"📋 По расписанию дежурный:\n  • {expected_name}"
+            msg += f"📋 По расписанию:\n  • {expected_name}"
             if expected_id:
                 msg += f" (ID: {expected_id})"
+                # Check if opener is different from expected
+                if expected_id != user_id:
+                    is_replacement = True
+                    msg += "\n\n⚠️ ЗАМЕНА"
             msg += "\n\n"
             
             # Will send confirmation request to duty person
             context.user_data['expected_duty_id'] = expected_id
             context.user_data['expected_duty_name'] = expected_name
+            context.user_data['is_replacement'] = is_replacement
+        else:
+            msg += f"📋 По расписанию: нет данных\n\n"
         
         msg += "Подтвердите открытие смены:"
         
@@ -438,6 +447,13 @@ class ShiftWizard:
                 reply_markup=reply_markup
             )
             
+            # Check if this is a replacement
+            is_replacement = context.user_data.get('is_replacement', False)
+            duty_info = {
+                'admin_id': expected_duty_id,
+                'admin_name': expected_duty_name
+            } if expected_duty_id and expected_duty_name else None
+            
             # Notify owner about shift opening
             if self.owner_ids:
                 for owner_id in self.owner_ids:
@@ -449,7 +465,27 @@ class ShiftWizard:
                             notify_msg += f" (@{query.from_user.username})"
                         notify_msg += f"\nID: {user_id}"
                         
-                        await context.bot.send_message(chat_id=owner_id, text=notify_msg)
+                        # If replacement, ask owner to update schedule
+                        if is_replacement and duty_info:
+                            notify_msg += f"\n\n⚠️ ЗАМЕНА\n"
+                            notify_msg += f"По расписанию: {duty_info['admin_name']} (ID: {duty_info['admin_id']})\n\n"
+                            notify_msg += "Обновить расписание?"
+                            
+                            keyboard = [
+                                [InlineKeyboardButton("✅ Да, обновить", 
+                                                    callback_data=f"owner_schedule_yes_{shift_id}_{club}_{shift_type}_{user_id}")],
+                                [InlineKeyboardButton("❌ Нет, разовая замена", 
+                                                    callback_data=f"owner_schedule_no_{shift_id}")]
+                            ]
+                            reply_markup = InlineKeyboardMarkup(keyboard)
+                            
+                            await context.bot.send_message(
+                                chat_id=owner_id, 
+                                text=notify_msg,
+                                reply_markup=reply_markup
+                            )
+                        else:
+                            await context.bot.send_message(chat_id=owner_id, text=notify_msg)
                     except:
                         pass
         else:
@@ -1233,3 +1269,122 @@ class ShiftWizard:
         # Back to main menu
         elif query.data == "finmon_menu":
             await self.cmd_finmon(update, context)
+    
+    # ===== Schedule Integration Handlers =====
+    
+    async def handle_duty_replacement_response(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle response from scheduled duty person about replacement"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Parse callback data: duty_confirm/duty_reject_opener_id_club_shift_type
+        parts = query.data.split('_')
+        if len(parts) < 5:
+            await query.edit_message_text("❌ Ошибка данных")
+            return
+        
+        action = parts[1]  # confirm or reject
+        opener_id = int(parts[2])
+        club = parts[3]
+        shift_type = parts[4]
+        
+        shift_label = "☀️ Утро" if shift_type == "morning" else "🌙 Вечер"
+        
+        if action == "confirm":
+            # Duty person confirms the replacement is okay
+            await query.edit_message_text(
+                f"✅ Замена подтверждена\n\n"
+                f"🏢 {club} | {shift_label}\n"
+                f"Смена будет открыта"
+            )
+            
+            # Notify the opener
+            try:
+                await context.bot.send_message(
+                    chat_id=opener_id,
+                    text=f"✅ Дежурный подтвердил замену\n\nМожете продолжать работу"
+                )
+            except:
+                pass
+            
+        elif action == "reject":
+            # Duty person says it's an error
+            await query.edit_message_text(
+                f"❌ Замена отклонена\n\n"
+                f"Вы отметили это как ошибку"
+            )
+            
+            # Notify the opener
+            try:
+                await context.bot.send_message(
+                    chat_id=opener_id,
+                    text=f"⚠️ Дежурный по расписанию отклонил замену\n\n"
+                    f"Возможно произошла ошибка.\n"
+                    f"Свяжитесь с администрацией."
+                )
+            except:
+                pass
+            
+            # Notify owner
+            if self.owner_ids:
+                for owner_id in self.owner_ids:
+                    try:
+                        await context.bot.send_message(
+                            chat_id=owner_id,
+                            text=f"⚠️ ОТКЛОНЕНА ЗАМЕНА\n\n"
+                            f"🏢 {club} | {shift_label}\n"
+                            f"Дежурный по расписанию отклонил открытие смены пользователем {opener_id}\n\n"
+                            f"Проверьте ситуацию!"
+                        )
+                    except:
+                        pass
+    
+    async def handle_owner_schedule_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle owner's decision to update schedule after replacement"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Parse callback data
+        if query.data.startswith("owner_schedule_yes_"):
+            # owner_schedule_yes_shift_id_club_shift_type_user_id
+            parts = query.data.split('_')
+            if len(parts) < 7:
+                await query.edit_message_text("❌ Ошибка данных")
+                return
+            
+            shift_id = int(parts[3])
+            club = parts[4]
+            shift_type = parts[5]
+            new_admin_id = int(parts[6])
+            
+            # Get admin info
+            admin_name = query.message.text.split("👤 ")[1].split("\n")[0] if "👤 " in query.message.text else "Неизвестно"
+            
+            # Update schedule
+            if self.shift_manager:
+                success = self.shift_manager.update_duty_schedule(
+                    duty_date=date.today(),
+                    club=club,
+                    shift_type=shift_type,
+                    admin_id=new_admin_id,
+                    admin_name=admin_name
+                )
+                
+                if success:
+                    await query.edit_message_text(
+                        query.message.text + "\n\n✅ Расписание обновлено"
+                    )
+                else:
+                    await query.edit_message_text(
+                        query.message.text + "\n\n❌ Не удалось обновить расписание"
+                    )
+            else:
+                await query.edit_message_text(
+                    query.message.text + "\n\n❌ Модуль расписания недоступен"
+                )
+        
+        elif query.data.startswith("owner_schedule_no_"):
+            # owner_schedule_no_shift_id
+            await query.edit_message_text(
+                query.message.text + "\n\n✅ Разовая замена (расписание не изменено)"
+            )
