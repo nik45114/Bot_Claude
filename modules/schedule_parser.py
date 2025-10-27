@@ -305,6 +305,8 @@ class ScheduleParser:
                 logger.warning(f"⚠️ No date headers found in sheet")
                 return result
             
+            logger.info(f"📅 Date headers: {list(date_headers.values())[:5]}... (showing first 5)")
+            
             # Find column for target date
             target_col = None
             for col_index, header_date in date_headers.items():
@@ -313,24 +315,32 @@ class ScheduleParser:
                     break
             
             if target_col is None:
-                logger.info(f"📅 Date {target_date} not found in sheet headers")
+                logger.warning(f"📅 Date {target_date} NOT found in sheet headers")
+                logger.info(f"   Available dates: {sorted([d.strftime('%d.%m.%Y') for d in date_headers.values()])[:10]}")
                 return result
             
             logger.info(f"🎯 Found target date in column {target_col}")
             
             # Get all values from the sheet (more efficient than row-by-row)
             all_values = worksheet.get_all_values()
+            logger.info(f"📊 Total rows in sheet: {len(all_values)}")
             
             # Parse each row (skip header row)
             duties_found = 0
+            rows_checked = 0
             for row_index, row_values in enumerate(all_values[1:], start=2):
+                rows_checked += 1
+                
                 # Get full name from column A (index 0)
                 full_name = row_values[0].strip() if row_values else ''
                 if not full_name or full_name == '.':
+                    logger.debug(f"  Row {row_index}: skipped (empty name)")
                     continue
                 
                 # Get cell value for target date
                 cell_value = row_values[target_col - 1].strip() if len(row_values) >= target_col else ''
+                
+                logger.debug(f"  Row {row_index}: name='{full_name}', cell='{cell_value}'")
                 
                 if not cell_value or cell_value == '.':
                     continue
@@ -350,9 +360,11 @@ class ScheduleParser:
                     }
                     
                     duties_found += 1
-                    logger.info(f"  Row {row_index}: {full_name} → {cell_value} ({club}, {shift_type})")
+                    logger.info(f"  ✅ Row {row_index}: {full_name} → {cell_value} ({club}, {shift_type})")
+                else:
+                    logger.debug(f"  ⚠️ Row {row_index}: unknown value '{cell_value}' (not in SHIFT_MAPPINGS)")
             
-            logger.info(f"✅ Parsed {duties_found} duties for {target_date}")
+            logger.info(f"✅ Checked {rows_checked} rows, found {duties_found} duties for {target_date}")
             
             # Update cache
             self._cache[cache_key] = result
