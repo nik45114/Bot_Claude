@@ -124,9 +124,9 @@ def get_shift_type_for_opening() -> str:
     now = now_msk()
     current_hour = now.hour
     
-    # 00:00-15:00 = morning shift (will close at 10:00)
-    # 15:00-23:59 = evening shift (will close at 22:00)
-    if 0 <= current_hour < 15:
+    # 10:00-22:00 = morning shift (дневная смена, закроется в 22:00)
+    # 22:00-10:00 = evening shift (ночная смена, закроется в 10:00 следующего дня)
+    if 10 <= current_hour < 22:
         return 'morning'
     else:
         return 'evening'
@@ -205,7 +205,7 @@ class ShiftWizard:
         context.user_data['shift_expenses'] = expenses
         
         # Start from cash input
-        shift_label = "☀️ Утро (ночная смена)" if shift_type == "morning" else "🌙 Вечер (дневная смена)"
+        shift_label = "☀️ Утро (дневная смена)" if shift_type == "morning" else "🌙 Вечер (ночная смена)"
         
         msg = f"📋 Закрытие смены\n\n"
         msg += f"🏢 Клуб: {club}\n"
@@ -288,8 +288,8 @@ class ShiftWizard:
         
         # Auto-detect shift type based on time
         shift_type = get_shift_type_for_opening()
-        shift_label = "☀️ Утро (ночная смена)" if shift_type == "morning" else "🌙 Вечер (дневная смена)"
-        close_time = "10:00" if shift_type == "morning" else "22:00"
+        shift_label = "☀️ Утро (дневная смена)" if shift_type == "morning" else "🌙 Вечер (ночная смена)"
+        close_time = "22:00" if shift_type == "morning" else "10:00"
         
         # Check if there's an expected duty person
         duty_info = None
@@ -647,7 +647,7 @@ class ShiftWizard:
         """Show summary with previous balances, deltas and expenses"""
         club = context.user_data['shift_club']
         shift_time = context.user_data['shift_time']
-        shift_label = "☀️ Утро (ночная смена)" if shift_time == "morning" else "🌙 Вечер (дневная смена)"
+        shift_label = "☀️ Утро (дневная смена)" if shift_time == "morning" else "🌙 Вечер (ночная смена)"
         data = context.user_data['shift_data']
         expenses = context.user_data.get('expenses', [])
         
@@ -804,7 +804,7 @@ class ShiftWizard:
         
         club = context.user_data.get('shift_club')
         shift_time = context.user_data.get('shift_time')
-        shift_label = "☀️ Утро (ночная смена)" if shift_time == "morning" else "🌙 Вечер (дневная смена)"
+        shift_label = "☀️ Утро (дневная смена)" if shift_time == "morning" else "🌙 Вечер (ночная смена)"
         
         # Clear shift data but keep club and shift_time
         context.user_data['shift_data'] = {
