@@ -1268,10 +1268,40 @@ class ClubAssistantBot:
         
         try:
             new_admin_id = int(context.args[0])
-            self.admin_manager.add_admin(new_admin_id, added_by=update.effective_user.id)
-            await update.message.reply_text(f"✅ Админ: {new_admin_id}")
-        except:
-            await update.message.reply_text("/addadmin <user_id>")
+            
+            # Use new AdminDB system if available
+            if hasattr(self, 'admin_db') and self.admin_db:
+                # Add admin with default role 'staff'
+                if self.admin_db.add_admin(
+                    user_id=new_admin_id,
+                    role='staff',
+                    added_by=update.effective_user.id,
+                    active=1
+                ):
+                    # Log the action
+                    self.admin_db.log_action(
+                        update.effective_user.id,
+                        'add_admin',
+                        new_admin_id,
+                        {'via': 'command'}
+                    )
+                    await update.message.reply_text(
+                        f"✅ Админ добавлен: {new_admin_id}\n"
+                        f"🔖 Роль: staff\n\n"
+                        f"Используйте /admins для управления правами"
+                    )
+                else:
+                    await update.message.reply_text(f"❌ Ошибка при добавлении админа {new_admin_id}")
+            else:
+                # Fallback to old system
+                self.admin_manager.add_admin(new_admin_id, added_by=update.effective_user.id)
+                await update.message.reply_text(f"✅ Админ: {new_admin_id}")
+        except (IndexError, ValueError):
+            await update.message.reply_text(
+                "❌ Неверный формат\n\n"
+                "Использование: /addadmin <user_id>\n"
+                "Пример: /addadmin 123456789"
+            )
     
     async def cmd_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Owner-only restriction with OWNER_TG_IDS
@@ -3283,6 +3313,8 @@ class ClubAssistantBot:
         # Admin Management module (MUST be registered BEFORE general CallbackQueryHandler)
         try:
             admin_db, admin_wizard = register_admins(application, self.config, DB_PATH, self.bot_username)
+            # Store admin_db for use in commands
+            self.admin_db = admin_db
             # Store the admin invite interceptor
             if 'admin_invite_interceptor' in application.bot_data:
                 self.admin_invite_interceptor = application.bot_data['admin_invite_interceptor']

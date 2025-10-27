@@ -228,8 +228,6 @@ def register_admins(application: Application, config: dict, db_path: str, bot_us
         # Admin menu and navigation
         if data == "adm_menu":
             await wizard.show_menu(update, context)
-        elif data == "adm_close":
-            await wizard.close_menu(update, context)
         
         # Add admin flows
         elif data == "adm_add_main":

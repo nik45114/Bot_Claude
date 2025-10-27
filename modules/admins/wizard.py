@@ -64,7 +64,7 @@ class AdminWizard:
         if self.is_owner(user_id):
             keyboard.append([InlineKeyboardButton("⚙️ Роли и права", callback_data="adm_roles_info")])
         
-        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="adm_close")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="main_menu")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -860,10 +860,3 @@ class AdminWizard:
             ]])
         )
         return ConversationHandler.END
-    
-    async def close_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Navigate back to main menu (not close)"""
-        query = update.callback_query
-        await query.answer()
-        # Navigate back to main menu instead of deleting
-        await self.show_menu(update, context)
