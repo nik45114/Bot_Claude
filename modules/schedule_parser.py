@@ -334,13 +334,14 @@ class ScheduleParser:
                 # Get full name from column A (index 0)
                 full_name = row_values[0].strip() if row_values else ''
                 if not full_name or full_name == '.':
-                    logger.debug(f"  Row {row_index}: skipped (empty name)")
                     continue
                 
                 # Get cell value for target date
                 cell_value = row_values[target_col - 1].strip() if len(row_values) >= target_col else ''
                 
-                logger.debug(f"  Row {row_index}: name='{full_name}', cell='{cell_value}'")
+                # Log first 5 rows for debugging
+                if rows_checked <= 5:
+                    logger.info(f"  Row {row_index}: name='{full_name}', cell='{cell_value}'")
                 
                 if not cell_value or cell_value == '.':
                     continue
@@ -361,8 +362,8 @@ class ScheduleParser:
                     
                     duties_found += 1
                     logger.info(f"  ✅ Row {row_index}: {full_name} → {cell_value} ({club}, {shift_type})")
-                else:
-                    logger.debug(f"  ⚠️ Row {row_index}: unknown value '{cell_value}' (not in SHIFT_MAPPINGS)")
+                elif cell_value and duties_found < 3:  # Log first few unknown values
+                    logger.warning(f"  ⚠️ Row {row_index}: unknown value '{cell_value}' (expected: Д(С), Н(С), Д(Р), Н(Р))")
             
             logger.info(f"✅ Checked {rows_checked} rows, found {duties_found} duties for {target_date}")
             
