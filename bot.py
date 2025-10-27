@@ -796,7 +796,7 @@ class ClubAssistantBot:
         reply_markup = self._build_main_menu_keyboard(update.effective_user.id)
         
         # Add reply keyboard with bottom buttons
-        reply_keyboard = self._build_reply_keyboard()
+        reply_keyboard = self._build_reply_keyboard(update.effective_user.id)
         
         # Send message with both inline and reply keyboards
         await update.message.reply_text(
@@ -1896,12 +1896,32 @@ class ClubAssistantBot:
         
         return InlineKeyboardMarkup(keyboard)
     
-    def _build_reply_keyboard(self) -> ReplyKeyboardMarkup:
-        """Build reply keyboard with bottom buttons"""
+    def _build_reply_keyboard(self, user_id: int = None) -> ReplyKeyboardMarkup:
+        """Build reply keyboard with bottom buttons (dynamic based on shift status)"""
         keyboard = [
-            [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")],
-            [KeyboardButton("💰 Сдать смену")]  # Replaced "Мои долги" with "Сдать смену"
+            [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")]
         ]
+        
+        # Add shift buttons for admins
+        if user_id and self.admin_manager.is_admin(user_id):
+            # Check if user has an active shift
+            active_shift = None
+            if hasattr(self, 'shift_manager') and self.shift_manager:
+                try:
+                    active_shift = self.shift_manager.get_active_shift(user_id)
+                except:
+                    pass
+            
+            if active_shift:
+                # User has open shift - show close and expense buttons
+                keyboard.append([
+                    KeyboardButton("💸 Списать с кассы"),
+                    KeyboardButton("🔒 Закрыть смену")
+                ])
+            else:
+                # No open shift - show open button
+                keyboard.append([KeyboardButton("🔓 Открыть смену")])
+        
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
     def _get_main_menu_text(self) -> str:
@@ -3034,13 +3054,29 @@ class ClubAssistantBot:
         text = message.text.strip()
         
         # Intercept reply keyboard buttons
-        if text == "💰 Сдать смену":
-            # Trigger shift wizard if available
+        if text == "🔓 Открыть смену":
+            # Open shift
+            if hasattr(self, 'shift_wizard') and self.shift_wizard:
+                await self.shift_wizard.cmd_open_shift(update, context)
+                return
+            else:
+                await message.reply_text("❌ Модуль смен недоступен")
+                return
+        elif text == "🔒 Закрыть смену" or text == "💰 Сдать смену":
+            # Close shift
             if hasattr(self, 'shift_wizard') and self.shift_wizard:
                 await self.shift_wizard.cmd_shift(update, context)
                 return
             else:
-                await message.reply_text("❌ Модуль сдачи смены недоступен")
+                await message.reply_text("❌ Модуль смен недоступен")
+                return
+        elif text == "💸 Списать с кассы":
+            # Add expense
+            if hasattr(self, 'shift_wizard') and self.shift_wizard:
+                await self.shift_wizard.cmd_expense(update, context)
+                return
+            else:
+                await message.reply_text("❌ Модуль смен недоступен")
                 return
         elif text == "📊 Статистика":
             await self.cmd_stats(update, context)
@@ -3344,13 +3380,15 @@ class ClubAssistantBot:
         try:
             from modules.finmon_simple import FinMonSimple
             from modules.finmon_schedule import FinMonSchedule
+            from modules.shift_manager import ShiftManager
+            from modules.schedule_parser import ScheduleParser
             from modules.finmon_shift_wizard import (
-                ShiftWizard, SELECT_CLUB, SELECT_SHIFT_TIME, CONFIRM_IDENTITY,
+                ShiftWizard, SELECT_CLUB, CONFIRM_IDENTITY,
                 ENTER_FACT_CASH, ENTER_FACT_CARD, ENTER_QR, ENTER_CARD2,
-                MANAGE_EXPENSES, ENTER_EXPENSE_AMOUNT, ENTER_EXPENSE_REASON,
                 ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA,
                 ENTER_GAMEPADS, ENTER_REPAIR, ENTER_NEED_REPAIR, ENTER_GAMES,
-                CONFIRM_SHIFT
+                CONFIRM_SHIFT,
+                EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM
             )
             
             # Get owner IDs
@@ -3372,6 +3410,13 @@ class ClubAssistantBot:
             # Initialize FinMon Simple components
             finmon_simple = FinMonSimple()
             
+            # Initialize shift manager
+            shift_manager = ShiftManager(DB_PATH)
+            self.shift_manager = shift_manager  # Store for keyboard updates
+            
+            # Initialize schedule parser
+            schedule_parser = ScheduleParser(shift_manager)
+            
             # Initialize schedule (with Google Sheets if configured)
             google_sa_json = os.getenv('GOOGLE_SA_JSON')
             finmon_schedule = None
@@ -3384,32 +3429,26 @@ class ClubAssistantBot:
             else:
                 logger.info("ℹ️ Google Sheets duty detection disabled (no GOOGLE_SA_JSON)")
             
-            # Initialize shift wizard
-            shift_wizard = ShiftWizard(finmon_simple, finmon_schedule, owner_ids)
+            # Initialize shift wizard with managers
+            shift_wizard = ShiftWizard(
+                finmon_simple=finmon_simple,
+                schedule=finmon_schedule,
+                shift_manager=shift_manager,
+                schedule_parser=schedule_parser,
+                owner_ids=owner_ids
+            )
             self.shift_wizard = shift_wizard  # Store for button handler
             
             # Register /balances and /movements commands
             application.add_handler(CommandHandler("balances", shift_wizard.cmd_balances))
             application.add_handler(CommandHandler("movements", shift_wizard.cmd_movements))
             
-            # Register /shift conversation handler
+            # Register /shift conversation handler (CLOSE shift)
             shift_handler = ConversationHandler(
                 entry_points=[
                     CommandHandler("shift", shift_wizard.cmd_shift)
                 ],
                 states={
-                    SELECT_CLUB: [
-                        CallbackQueryHandler(shift_wizard.select_club, pattern="^club_"),
-                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
-                    ],
-                    SELECT_SHIFT_TIME: [
-                        CallbackQueryHandler(shift_wizard.select_shift_time, pattern="^shift_time_"),
-                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
-                    ],
-                    CONFIRM_IDENTITY: [
-                        CallbackQueryHandler(shift_wizard.confirm_identity, pattern="^confirm_identity$"),
-                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
-                    ],
                     ENTER_FACT_CASH: [
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_fact_cash)
                     ],
@@ -3421,17 +3460,6 @@ class ClubAssistantBot:
                     ],
                     ENTER_CARD2: [
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_card2)
-                    ],
-                    MANAGE_EXPENSES: [
-                        CallbackQueryHandler(shift_wizard.start_add_expense, pattern="^add_expense$"),
-                        CallbackQueryHandler(shift_wizard.skip_expenses, pattern="^skip_expenses$"),
-                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$")
-                    ],
-                    ENTER_EXPENSE_AMOUNT: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_expense_amount)
-                    ],
-                    ENTER_EXPENSE_REASON: [
-                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_expense_reason)
                     ],
                     ENTER_SAFE: [
                         CallbackQueryHandler(shift_wizard.handle_safe_no_change, pattern="^safe_no_change$"),
@@ -3455,6 +3483,35 @@ class ClubAssistantBot:
                 ]
             )
             application.add_handler(shift_handler)
+            
+            # Register expense tracking conversation handler
+            expense_handler = ConversationHandler(
+                entry_points=[
+                    CommandHandler("expense", shift_wizard.cmd_expense)
+                ],
+                states={
+                    EXPENSE_SELECT_CASH_SOURCE: [
+                        CallbackQueryHandler(shift_wizard.expense_select_cash_source, pattern="^expense_")
+                    ],
+                    EXPENSE_ENTER_AMOUNT: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.expense_receive_amount)
+                    ],
+                    EXPENSE_ENTER_REASON: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.expense_receive_reason)
+                    ],
+                    EXPENSE_CONFIRM: [
+                        CallbackQueryHandler(shift_wizard.expense_confirm, pattern="^expense_")
+                    ]
+                },
+                fallbacks=[
+                    CommandHandler("cancel", shift_wizard.cancel_command)
+                ]
+            )
+            application.add_handler(expense_handler)
+            
+            # Register callback handlers for shift opening (not in conversation)
+            application.add_handler(CallbackQueryHandler(shift_wizard.handle_open_club_selection, pattern="^open_"))
+            application.add_handler(CallbackQueryHandler(shift_wizard.handle_confirm_open_shift, pattern="^confirm_open_"))
             
             # Register /finmon command for analytics
             application.add_handler(CommandHandler("finmon", shift_wizard.cmd_finmon))
