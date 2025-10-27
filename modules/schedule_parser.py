@@ -37,12 +37,23 @@ MONTH_NAMES = {
     12: 'Декабрь'
 }
 
-# Shift type and club mappings
+# Shift type and club mappings (case-insensitive)
 SHIFT_MAPPINGS = {
+    # Заглавные буквы
     'Д(С)': ('Север', 'morning'),
     'Н(С)': ('Север', 'evening'),
     'Д(Р)': ('Рио', 'morning'),
     'Н(Р)': ('Рио', 'evening'),
+    # Строчные буквы
+    'д(с)': ('Север', 'morning'),
+    'н(с)': ('Север', 'evening'),
+    'д(р)': ('Рио', 'morning'),
+    'н(р)': ('Рио', 'evening'),
+    # Смешанный регистр (на всякий случай)
+    'Д(с)': ('Север', 'morning'),
+    'Н(с)': ('Север', 'evening'),
+    'Д(р)': ('Рио', 'morning'),
+    'Н(р)': ('Рио', 'evening'),
 }
 
 
