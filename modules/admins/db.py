@@ -79,17 +79,17 @@ class AdminDB:
                 # Update existing admin
                 cursor.execute('''
                     UPDATE admins 
-                    SET username = ?, full_name = ?, role = ?, active = ?, updated_at = CURRENT_TIMESTAMP
+                    SET username = ?, full_name = ?, role = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ?
                 ''', (username, full_name, role, active, user_id))
             else:
                 # Insert new admin
                 cursor.execute('''
                     INSERT INTO admins 
-                    (user_id, username, full_name, role, added_by, active, 
-                     can_teach, can_import, can_manage_admins, is_active, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, ?, CURRENT_TIMESTAMP)
-                ''', (user_id, username, full_name, role, added_by, active, active))
+                    (user_id, username, full_name, role, added_by, is_active, 
+                     can_teach, can_import, can_manage_admins, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, 1, 1, 0, CURRENT_TIMESTAMP)
+                ''', (user_id, username, full_name, role, added_by, active))
             
             conn.commit()
             conn.close()
@@ -104,7 +104,7 @@ class AdminDB:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT user_id, username, full_name, role, permissions, active, notes, 
+                SELECT user_id, username, full_name, role, permissions, is_active as active, notes, 
                        added_by, created_at, updated_at
                 FROM admins 
                 WHERE user_id = ?
@@ -139,7 +139,7 @@ class AdminDB:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT user_id, username, full_name, role, permissions, active, notes, 
+                SELECT user_id, username, full_name, role, permissions, is_active as active, notes, 
                        added_by, created_at, updated_at
                 FROM admins 
                 WHERE username = ?
@@ -181,7 +181,7 @@ class AdminDB:
                 params.append(role)
             
             if active is not None:
-                where_clauses.append('active = ?')
+                where_clauses.append('is_active = ?')
                 params.append(active)
             
             where_sql = ' AND '.join(where_clauses) if where_clauses else '1=1'
@@ -193,7 +193,7 @@ class AdminDB:
             # Get paginated results
             offset = (page - 1) * per_page
             cursor.execute(f'''
-                SELECT user_id, username, full_name, role, permissions, active, notes, 
+                SELECT user_id, username, full_name, role, permissions, is_active as active, notes, 
                        added_by, created_at, updated_at
                 FROM admins 
                 WHERE {where_sql}
@@ -249,7 +249,7 @@ class AdminDB:
             # Get paginated results
             offset = (page - 1) * per_page
             cursor.execute(f'''
-                SELECT user_id, username, full_name, role, permissions, active, notes, 
+                SELECT user_id, username, full_name, role, permissions, is_active as active, notes, 
                        added_by, created_at, updated_at
                 FROM admins 
                 WHERE username LIKE ? OR full_name LIKE ? {user_id_condition}
@@ -373,7 +373,7 @@ class AdminDB:
             cursor = conn.cursor()
             cursor.execute('''
                 UPDATE admins 
-                SET active = ?, updated_at = CURRENT_TIMESTAMP
+                SET is_active = ?, updated_at = CURRENT_TIMESTAMP
                 WHERE user_id = ?
             ''', (active, user_id))
             conn.commit()
