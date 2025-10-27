@@ -52,6 +52,8 @@ try:
     from content_commands import ContentCommands
     # from modules.finmon import register_finmon  # Временно отключено - модуль в разработке
     from modules.admins import register_admins
+    # Улучшенные модули управления админами и сменами
+    from modules.enhanced_admin_shift_integration import register_enhanced_admin_shift_management
     from modules.backup_commands import register_backup_commands
 except ImportError as e:
     print(f"❌ Не найдены модули v4.10: {e}")
@@ -66,7 +68,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "4.10"
+VERSION = "4.15"
 
 
 class AdminManager:
@@ -662,6 +664,9 @@ class RAGAnswerer:
 class ClubAssistantBot:
     def __init__(self, config: dict):
         self.config = config
+        
+        # Инициализация улучшенной системы управления админами и сменами
+        self.enhanced_admin_shift_integration = None
         
         logger.info("🚀 Инициализация v4.8...")
         
