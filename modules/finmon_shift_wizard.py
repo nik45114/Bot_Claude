@@ -298,15 +298,6 @@ class ShiftWizard:
         await query.edit_message_text(msg)
         return ENTER_FACT_CASH
     
-    async def prompt_fact_cash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Prompt for cash revenue input"""
-        query = update.callback_query
-        await query.answer()
-        
-        msg = "💰 Введите наличку факт (только число):\n\nПример: 3440"
-        await query.edit_message_text(msg)
-        return ENTER_FACT_CASH
-    
     async def receive_fact_cash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive cash revenue"""
         try:
@@ -314,28 +305,13 @@ class ShiftWizard:
             context.user_data['shift_data']['fact_cash'] = value
             
             msg = f"✅ Наличка факт: {value:,.0f} ₽\n\n"
-            msg += "💳 Введите карту факт:"
+            msg += "💳 Введите карту факт:\n\nПример: 12345"
             
-            keyboard = [
-                [InlineKeyboardButton("Ввести вручную", callback_data="enter_manual")],
-                [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(msg, reply_markup=reply_markup)
+            await update.message.reply_text(msg)
             return ENTER_FACT_CARD
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_FACT_CASH
-    
-    async def prompt_fact_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Prompt for card revenue input"""
-        query = update.callback_query
-        await query.answer()
-        
-        msg = "💳 Введите карту факт (только число):\n\nПример: 12345"
-        await query.edit_message_text(msg)
-        return ENTER_FACT_CARD
     
     async def receive_fact_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive card revenue"""
@@ -344,33 +320,13 @@ class ShiftWizard:
             context.user_data['shift_data']['fact_card'] = value
             
             msg = f"✅ Карта факт: {value:,.0f} ₽\n\n"
-            msg += "📱 Введите QR:"
+            msg += "📱 Введите QR:\n\nПример: 500 (или 0 если нет)"
             
-            keyboard = [
-                [InlineKeyboardButton("Ввести вручную", callback_data="enter_manual")],
-                [InlineKeyboardButton("0 (нет)", callback_data="value_0")],
-                [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
-            ]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            
-            await update.message.reply_text(msg, reply_markup=reply_markup)
+            await update.message.reply_text(msg)
             return ENTER_QR
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_FACT_CARD
-    
-    async def prompt_qr(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Prompt for QR revenue input"""
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == "value_0":
-            context.user_data['shift_data']['qr'] = 0.0
-            return await self._continue_to_card2(query, context)
-        
-        msg = "📱 Введите QR (только число):\n\nПример: 500"
-        await query.edit_message_text(msg)
-        return ENTER_QR
     
     async def receive_qr(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive QR revenue"""
@@ -378,42 +334,14 @@ class ShiftWizard:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['qr'] = value
             
-            return await self._continue_to_card2(update.message, context)
+            msg = f"✅ QR: {value:,.0f} ₽\n\n"
+            msg += "💳 Введите Новую кассу (Карта2):\n\nПример: 1000 (или 0 если не работает)"
+            
+            await update.message.reply_text(msg)
+            return ENTER_CARD2
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_QR
-    
-    async def _continue_to_card2(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
-        """Continue to card2 input"""
-        msg = f"✅ QR: {context.user_data['shift_data']['qr']:,.0f} ₽\n\n"
-        msg += "💳 Введите Новую кассу (Карта2):"
-        
-        keyboard = [
-            [InlineKeyboardButton("Ввести вручную", callback_data="enter_manual")],
-            [InlineKeyboardButton("0 (не работает)", callback_data="value_0")],
-            [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        if hasattr(message_or_query, 'reply_text'):
-            await message_or_query.reply_text(msg, reply_markup=reply_markup)
-        else:
-            await message_or_query.edit_message_text(msg, reply_markup=reply_markup)
-        
-        return ENTER_CARD2
-    
-    async def prompt_card2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Prompt for card2 revenue input"""
-        query = update.callback_query
-        await query.answer()
-        
-        if query.data == "value_0":
-            context.user_data['shift_data']['card2'] = 0.0
-            return await self._continue_to_safe(query, context)
-        
-        msg = "💳 Введите Новую кассу (только число):\n\nПример: 1000"
-        await query.edit_message_text(msg)
-        return ENTER_CARD2
     
     async def receive_card2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive card2 revenue"""
