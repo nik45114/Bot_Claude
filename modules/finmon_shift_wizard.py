@@ -485,8 +485,8 @@ class ShiftWizard:
                 'admin_name': expected_duty_name
             } if expected_duty_id and expected_duty_name else None
             
-            # Notify owner about shift opening
-            if self.owner_ids:
+            # Notify owner ONLY about replacements (not regular shift openings)
+            if self.owner_ids and is_replacement and duty_info:
                 for owner_id in self.owner_ids:
                     try:
                         notify_msg = f"🔓 Открыта смена #{shift_id}\n\n"
@@ -495,28 +495,23 @@ class ShiftWizard:
                         if query.from_user.username:
                             notify_msg += f" (@{query.from_user.username})"
                         notify_msg += f"\nID: {user_id}"
+                        notify_msg += f"\n\n⚠️ ЗАМЕНА\n"
+                        notify_msg += f"По расписанию: {duty_info['admin_name']} (ID: {duty_info['admin_id']})\n\n"
+                        notify_msg += "Обновить расписание?"
                         
-                        # If replacement, ask owner to update schedule
-                        if is_replacement and duty_info:
-                            notify_msg += f"\n\n⚠️ ЗАМЕНА\n"
-                            notify_msg += f"По расписанию: {duty_info['admin_name']} (ID: {duty_info['admin_id']})\n\n"
-                            notify_msg += "Обновить расписание?"
-                            
-                            keyboard = [
-                                [InlineKeyboardButton("✅ Да, обновить", 
-                                                    callback_data=f"owner_schedule_yes_{shift_id}_{club}_{shift_type}_{user_id}")],
-                                [InlineKeyboardButton("❌ Нет, разовая замена", 
-                                                    callback_data=f"owner_schedule_no_{shift_id}")]
-                            ]
-                            reply_markup = InlineKeyboardMarkup(keyboard)
-                            
-                            await context.bot.send_message(
-                                chat_id=owner_id, 
-                                text=notify_msg,
-                                reply_markup=reply_markup
-                            )
-                        else:
-                            await context.bot.send_message(chat_id=owner_id, text=notify_msg)
+                        keyboard = [
+                            [InlineKeyboardButton("✅ Да, обновить", 
+                                                callback_data=f"owner_schedule_yes_{shift_id}_{club}_{shift_type}_{user_id}")],
+                            [InlineKeyboardButton("❌ Нет, разовая замена", 
+                                                callback_data=f"owner_schedule_no_{shift_id}")]
+                        ]
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        
+                        await context.bot.send_message(
+                            chat_id=owner_id, 
+                            text=notify_msg,
+                            reply_markup=reply_markup
+                        )
                     except:
                         pass
         else:

@@ -19,3 +19,4 @@ env/
 # Системное
 .DS_Store
 *.log
+google_credentials.json

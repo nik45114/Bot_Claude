@@ -131,21 +131,28 @@ class ScheduleParser:
         try:
             spreadsheet = self._get_spreadsheet()
             
-            # Build sheet name: "Октябрь 2025"
             month_name = MONTH_NAMES.get(target_date.month, '')
             year = target_date.year
-            sheet_name = f"{month_name} {year}"
             
-            logger.info(f"🔍 Looking for sheet: {sheet_name}")
+            # Try multiple sheet name formats
+            possible_names = [
+                f"{month_name} {year}",  # "Октябрь 2025"
+                month_name,              # "Октябрь"
+                f"{month_name} {str(year)[2:]}",  # "Октябрь 25"
+            ]
             
-            # Try to find the sheet
-            try:
-                worksheet = spreadsheet.worksheet(sheet_name)
-                logger.info(f"✅ Found sheet: {sheet_name}")
-                return worksheet
-            except gspread.exceptions.WorksheetNotFound:
-                logger.warning(f"⚠️ Sheet not found: {sheet_name}")
-                return None
+            for sheet_name in possible_names:
+                logger.info(f"🔍 Looking for sheet: {sheet_name}")
+                try:
+                    worksheet = spreadsheet.worksheet(sheet_name)
+                    logger.info(f"✅ Found sheet: {sheet_name}")
+                    return worksheet
+                except gspread.exceptions.WorksheetNotFound:
+                    logger.debug(f"   Not found: {sheet_name}")
+                    continue
+            
+            logger.warning(f"⚠️ Sheet not found for {target_date.month}/{target_date.year}")
+            return None
                 
         except Exception as e:
             logger.error(f"❌ Error accessing sheet: {e}")
@@ -169,6 +176,23 @@ class ScheduleParser:
             
             logger.info(f"📅 Parsing {len(first_row)} header cells")
             
+            # Determine year from sheet title or use current year
+            sheet_title = worksheet.title
+            year = date.today().year  # Default to current year
+            
+            # Try to extract year from sheet title
+            if ' ' in sheet_title:
+                last_part = sheet_title.split()[-1]
+                if last_part.isdigit():
+                    year_candidate = int(last_part)
+                    # If it's 2-digit year (e.g., "25"), assume 20xx
+                    if year_candidate < 100:
+                        year = 2000 + year_candidate
+                    else:
+                        year = year_candidate
+            
+            logger.info(f"📅 Using year: {year} (from sheet '{sheet_title}')")
+            
             # Parse each cell (starting from column B, index 1)
             for col_index, cell_value in enumerate(first_row[1:], start=2):
                 if not cell_value or cell_value.strip() == '':
@@ -179,10 +203,9 @@ class ScheduleParser:
                 if match:
                     day = int(match.group(1))
                     month = int(match.group(2))
-                    year = worksheet.title.split()[-1] if ' ' in worksheet.title else date.today().year
                     
                     try:
-                        parsed_date = date(int(year), month, day)
+                        parsed_date = date(year, month, day)
                         date_headers[col_index] = parsed_date
                         logger.debug(f"  Column {col_index}: {cell_value} → {parsed_date}")
                     except ValueError as e:
