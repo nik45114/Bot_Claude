@@ -794,21 +794,20 @@ class ClubAssistantBot:
         
         text = self._get_main_menu_text()
         inline_markup = self._build_main_menu_keyboard(update.effective_user.id)
-        
-        # Add reply keyboard with bottom buttons
         reply_keyboard = self._build_reply_keyboard(update.effective_user.id)
         
-        # Send inline menu first
+        # Send inline menu
         await update.message.reply_text(
             text, 
             reply_markup=inline_markup
         )
         
-        # Then send reply keyboard for all users
-        await update.message.reply_text(
-            "Используйте кнопки снизу для быстрого доступа 👇",
-            reply_markup=reply_keyboard
-        )
+        # Update reply keyboard with separate short message
+        if self.admin_manager.is_admin(update.effective_user.id):
+            await update.message.reply_text(
+                "🔄", 
+                reply_markup=reply_keyboard
+            )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"""📖 Справка - Club Assistant Bot v{VERSION}
@@ -1897,9 +1896,7 @@ class ClubAssistantBot:
     
     def _build_reply_keyboard(self, user_id: int = None) -> ReplyKeyboardMarkup:
         """Build reply keyboard with bottom buttons (dynamic based on shift status)"""
-        keyboard = [
-            [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")]
-        ]
+        keyboard = []
         
         # Add shift buttons for admins
         if user_id and self.admin_manager.is_admin(user_id):
@@ -1908,8 +1905,9 @@ class ClubAssistantBot:
             if hasattr(self, 'shift_manager') and self.shift_manager:
                 try:
                     active_shift = self.shift_manager.get_active_shift(user_id)
-                except:
-                    pass
+                    logger.info(f"🔍 Keyboard check for user {user_id}: active_shift={active_shift}")
+                except Exception as e:
+                    logger.error(f"❌ Failed to get active shift for {user_id}: {e}")
             
             if active_shift:
                 # User has open shift - show close and expense buttons
@@ -1920,6 +1918,10 @@ class ClubAssistantBot:
             else:
                 # No open shift - show open button
                 keyboard.append([KeyboardButton("🔓 Открыть смену")])
+        
+        # If no buttons added (not admin or error), show minimal keyboard
+        if not keyboard:
+            keyboard.append([KeyboardButton("📊 Меню")])
         
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
     
@@ -3061,11 +3063,8 @@ class ClubAssistantBot:
             else:
                 await message.reply_text("❌ Модуль смен недоступен")
                 return
-        elif text == "📊 Статистика":
-            await self.cmd_stats(update, context)
-            return
-        elif text == "❓ Помощь":
-            await self.cmd_help(update, context)
+        elif text == "📊 Меню":
+            await self.cmd_start(update, context)
             return
         
         if len(text) < 3:
@@ -3575,7 +3574,7 @@ class ClubAssistantBot:
         logger.info("   Schedule: /schedule (add, week, today, remove, clear)")
         logger.info("   Owner: /apply_migrations, /migration, /backup")
         logger.info("   Admin: /admins, /v2ray")
-        logger.info("   Reply keyboard: 🔓 Открыть смену / 🔒 Закрыть смену, 💸 Списать с кассы, 📊 Статистика, ❓ Помощь")
+        logger.info("   Reply keyboard: 🔓 Открыть смену / 🔒 Закрыть смену, 💸 Списать с кассы (динамическая)")
         logger.info("=" * 60)
         
         logger.info(f"🤖 Бот v{VERSION} запущен!")
