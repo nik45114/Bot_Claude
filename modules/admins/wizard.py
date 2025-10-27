@@ -21,7 +21,8 @@ from .formatters import (
 
 # Conversation states
 (WAITING_USERNAME, WAITING_BULK_USERNAMES, WAITING_NOTES,
- WAITING_SEARCH_QUERY, WAITING_INVITE_ROLE, WAITING_REQUEST_MESSAGE) = range(6)
+ WAITING_SEARCH_QUERY, WAITING_INVITE_ROLE, WAITING_REQUEST_MESSAGE, 
+ WAITING_EDIT_NAME) = range(7)
 
 
 class AdminWizard:
@@ -290,8 +291,8 @@ class AdminWizard:
         else:
             keyboard.append([InlineKeyboardButton("✅ Активировать", callback_data=f"adm_activate_{user_id}")])
         
-        # Notes
-        keyboard.append([InlineKeyboardButton("📝 Заметки", callback_data=f"adm_notes_{user_id}")])
+        # Edit name
+        keyboard.append([InlineKeyboardButton("✏️ Редактировать имя", callback_data=f"adm_edit_name_{user_id}")])
         
         # Remove (owner only, not self)
         if self.is_owner(update.effective_user.id) and user_id != update.effective_user.id:
@@ -848,6 +849,98 @@ class AdminWizard:
             await self.show_invites_list(update, context, page=1)
         else:
             await query.answer("❌ Ошибка при отзыве приглашения", show_alert=True)
+    
+    # ===== Utility =====
+    
+    # ===== Edit Name =====
+    
+    async def start_edit_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Start editing admin's display name"""
+        query = update.callback_query
+        await query.answer()
+        
+        admin = self.db.get_admin(user_id)
+        if not admin:
+            await query.edit_message_text("❌ Админ не найден")
+            return ConversationHandler.END
+        
+        # Store user_id in context for later
+        context.user_data['editing_admin_id'] = user_id
+        
+        current_name = admin.get('full_name') or admin.get('username') or str(user_id)
+        
+        text = f"""✏️ Редактирование имени
+━━━━━━━━━━━━━━━━━━━━
+Админ: {current_name}
+ID: {user_id}
+
+Введите новое отображаемое имя:
+(Это имя будет видно в списке админов)
+
+Отправьте /cancel для отмены"""
+        
+        await query.edit_message_text(text)
+        return WAITING_EDIT_NAME
+    
+    async def receive_edit_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive new name and update admin"""
+        new_name = update.message.text.strip()
+        user_id = context.user_data.get('editing_admin_id')
+        
+        if not user_id:
+            await update.message.reply_text("❌ Ошибка: не найден ID админа")
+            return ConversationHandler.END
+        
+        if not new_name or len(new_name) > 100:
+            await update.message.reply_text(
+                "❌ Неверное имя. Должно быть от 1 до 100 символов.\nПопробуйте снова или /cancel",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Отмена", callback_data=f"adm_view_{user_id}")
+                ]])
+            )
+            return WAITING_EDIT_NAME
+        
+        # Update admin's full_name
+        admin = self.db.get_admin(user_id)
+        if admin:
+            success = self.db.add_admin(
+                user_id=user_id,
+                username=admin.get('username'),
+                full_name=new_name,
+                role=admin.get('role', 'staff'),
+                added_by=admin.get('added_by', 0),
+                active=admin.get('active', 1)
+            )
+            
+            if success:
+                # Log action
+                self.db.log_action(
+                    update.effective_user.id,
+                    'edit_name',
+                    user_id,
+                    {'new_name': new_name}
+                )
+                
+                await update.message.reply_text(
+                    f"✅ Имя обновлено: {new_name}",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("👁️ Просмотр", callback_data=f"adm_view_{user_id}"),
+                        InlineKeyboardButton("◀️ К списку", callback_data="adm_list_1")
+                    ]])
+                )
+            else:
+                await update.message.reply_text(
+                    "❌ Ошибка при обновлении имени",
+                    reply_markup=InlineKeyboardMarkup([[
+                        InlineKeyboardButton("◀️ Назад", callback_data=f"adm_view_{user_id}")
+                    ]])
+                )
+        else:
+            await update.message.reply_text("❌ Админ не найден")
+        
+        # Clear context
+        context.user_data.pop('editing_admin_id', None)
+        return ConversationHandler.END
     
     # ===== Utility =====
     

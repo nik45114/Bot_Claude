@@ -18,7 +18,8 @@ from typing import List
 from .db import AdminDB
 from .wizard import (
     AdminWizard, WAITING_USERNAME, WAITING_BULK_USERNAMES, WAITING_NOTES,
-    WAITING_SEARCH_QUERY, WAITING_INVITE_ROLE, WAITING_REQUEST_MESSAGE
+    WAITING_SEARCH_QUERY, WAITING_INVITE_ROLE, WAITING_REQUEST_MESSAGE,
+    WAITING_EDIT_NAME
 )
 
 
@@ -285,6 +286,11 @@ def register_admins(application: Application, config: dict, db_path: str, bot_us
             user_id = int(data.split('_')[2])
             await wizard.deactivate_admin(update, context, user_id)
         
+        # Edit name - this will start a conversation
+        elif data.startswith("adm_edit_name_"):
+            # This is handled in ConversationHandler, just acknowledge
+            await query.answer()
+        
         # Remove admin
         elif data.startswith("adm_remove_confirm_"):
             user_id = int(data.split('_')[3])
@@ -385,6 +391,21 @@ def register_admins(application: Application, config: dict, db_path: str, bot_us
         fallbacks=[CommandHandler("cancel", wizard.cancel)]
     )
     
+    # Edit admin name
+    async def edit_name_entry(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Entry point for edit name conversation"""
+        query = update.callback_query
+        user_id = int(query.data.split('_')[3])
+        return await wizard.start_edit_name(update, context, user_id)
+    
+    edit_name_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(edit_name_entry, pattern="^adm_edit_name_")],
+        states={
+            WAITING_EDIT_NAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, wizard.receive_edit_name)]
+        },
+        fallbacks=[CommandHandler("cancel", wizard.cancel)]
+    )
+    
     # ===== Register Handlers =====
     
     # Commands
@@ -396,6 +417,7 @@ def register_admins(application: Application, config: dict, db_path: str, bot_us
     application.add_handler(add_by_username_handler)
     application.add_handler(bulk_add_handler)
     application.add_handler(search_handler)
+    application.add_handler(edit_name_handler)
     
     # Callback query handler for all adm_ callbacks
     application.add_handler(CallbackQueryHandler(callback_router, pattern="^adm_"))
