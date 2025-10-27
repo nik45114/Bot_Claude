@@ -41,16 +41,18 @@ SHIFT_TYPE_ALIASES = {
 class ScheduleCommands:
     """Commands for managing duty schedule"""
     
-    def __init__(self, shift_manager, owner_ids: list = None):
+    def __init__(self, shift_manager, owner_ids: list = None, schedule_parser=None):
         """
         Initialize schedule commands
         
         Args:
             shift_manager: ShiftManager instance
             owner_ids: List of owner telegram IDs
+            schedule_parser: ScheduleParser instance (optional)
         """
         self.shift_manager = shift_manager
         self.owner_ids = owner_ids or []
+        self.schedule_parser = schedule_parser
     
     def is_owner(self, user_id: int) -> bool:
         """Check if user is owner"""
@@ -120,6 +122,7 @@ class ScheduleCommands:
             return
         
         if not context.args:
+            gs_status = "✅ Подключено" if self.schedule_parser else "❌ Не настроено"
             await update.message.reply_text(
                 "📅 Управление расписанием смен\n\n"
                 "Команды:\n"
@@ -127,7 +130,10 @@ class ScheduleCommands:
                 "/schedule week [дата_начала]\n"
                 "/schedule today\n"
                 "/schedule remove <дата> <клуб> <утро/вечер>\n"
-                "/schedule clear [old/week/all]\n\n"
+                "/schedule clear [old/week/all]\n"
+                "/schedule sync [дней] - синхронизация из Google Sheets\n"
+                "/schedule test [дата] - тест парсинга Google Sheets\n\n"
+                f"Google Sheets: {gs_status}\n\n"
                 "Пример:\n"
                 "/schedule add 27.10 rio evening Петров 123456"
             )
@@ -145,10 +151,14 @@ class ScheduleCommands:
             await self.cmd_schedule_remove(update, context)
         elif subcommand == 'clear':
             await self.cmd_schedule_clear(update, context)
+        elif subcommand == 'sync':
+            await self.cmd_schedule_sync(update, context)
+        elif subcommand == 'test':
+            await self.cmd_schedule_test(update, context)
         else:
             await update.message.reply_text(
                 f"❌ Неизвестная подкоманда: {subcommand}\n\n"
-                "Доступные: add, week, today, remove, clear"
+                "Доступные: add, week, today, remove, clear, sync, test"
             )
     
     async def cmd_schedule_add(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -411,4 +421,154 @@ class ScheduleCommands:
                 await update.message.reply_text("❌ Ошибка при очистке")
         else:
             await update.message.reply_text("⚠️ Частичная очистка пока не реализована")
+    
+    async def cmd_schedule_sync(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Sync schedule from Google Sheets
+        
+        Usage: /schedule sync [days]
+        """
+        if not self.is_owner(update.effective_user.id):
+            await update.message.reply_text("❌ Только для владельца")
+            return
+        
+        if not self.schedule_parser:
+            await update.message.reply_text(
+                "❌ Google Sheets парсер не настроен\n\n"
+                "Проверьте переменные окружения:\n"
+                "• GOOGLE_SA_JSON\n"
+                "• GOOGLE_SHEET_ID"
+            )
+            return
+        
+        # Get number of days (default 30)
+        args = context.args[1:] if len(context.args) > 1 else []
+        days = 30
+        if args:
+            try:
+                days = int(args[0])
+                days = max(1, min(days, 90))  # Limit 1-90 days
+            except ValueError:
+                pass
+        
+        await update.message.reply_text(
+            f"📊 Синхронизация расписания на {days} дней...\n"
+            f"Это может занять некоторое время..."
+        )
+        
+        try:
+            synced = 0
+            errors = 0
+            
+            for days_offset in range(days):
+                check_date = date.today() + timedelta(days=days_offset)
+                
+                try:
+                    # Parse schedule from Google Sheets
+                    schedule_data = self.schedule_parser.parse_for_date(check_date, use_cache=False)
+                    
+                    # Update DB
+                    for (club, shift_type), duty in schedule_data.items():
+                        success = self.shift_manager.add_duty_schedule(
+                            duty_date=check_date,
+                            club=club,
+                            shift_type=shift_type,
+                            admin_id=duty.get('admin_id'),
+                            admin_name=duty['admin_name']
+                        )
+                        if success:
+                            synced += 1
+                
+                except Exception as e:
+                    errors += 1
+                    logger.error(f"❌ Failed to sync {check_date}: {e}")
+            
+            # Clear cache after sync
+            self.schedule_parser.clear_cache()
+            
+            msg = f"✅ Синхронизация завершена!\n\n"
+            msg += f"📊 Записей синхронизировано: {synced}\n"
+            if errors > 0:
+                msg += f"⚠️ Ошибок: {errors}\n"
+            msg += f"📅 Период: {days} дней"
+            
+            await update.message.reply_text(msg)
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка синхронизации: {e}")
+            logger.error(f"❌ Sync error: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    async def cmd_schedule_test(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Test Google Sheets connection and parsing
+        
+        Usage: /schedule test [date]
+        """
+        if not self.is_owner(update.effective_user.id):
+            await update.message.reply_text("❌ Только для владельца")
+            return
+        
+        if not self.schedule_parser:
+            await update.message.reply_text("❌ Google Sheets парсер не настроен")
+            return
+        
+        # Parse target date
+        args = context.args[1:] if len(context.args) > 1 else []
+        if args:
+            target_date = self.parse_date(args[0])
+            if not target_date:
+                await update.message.reply_text(f"❌ Неверный формат даты: {args[0]}")
+                return
+        else:
+            target_date = date.today()
+        
+        await update.message.reply_text(
+            f"🔍 Тестирование парсинга для {target_date.strftime('%d.%m.%Y')}..."
+        )
+        
+        try:
+            # Test connection
+            if not self.schedule_parser.test_connection():
+                await update.message.reply_text("❌ Не удалось подключиться к Google Sheets")
+                return
+            
+            # Get available sheets
+            available_sheets = self.schedule_parser.get_available_months()
+            
+            # Parse schedule
+            schedule_data = self.schedule_parser.parse_for_date(target_date, use_cache=False)
+            
+            # Build result message
+            msg = f"✅ Тест успешен!\n\n"
+            msg += f"📅 Дата: {target_date.strftime('%d.%m.%Y')}\n"
+            msg += f"📊 Листы: {', '.join(available_sheets[:5])}\n"
+            if len(available_sheets) > 5:
+                msg += f"... и еще {len(available_sheets) - 5}\n"
+            msg += f"\n📋 Дежурства на {target_date.strftime('%d.%m')}:\n\n"
+            
+            if schedule_data:
+                for (club, shift_type), duty in schedule_data.items():
+                    shift_label = "☀️ Утро" if shift_type == "morning" else "🌙 Вечер"
+                    admin_name = duty['admin_name']
+                    admin_id = duty.get('admin_id')
+                    
+                    msg += f"🏢 {club} | {shift_label}\n"
+                    msg += f"👤 {admin_name}"
+                    if admin_id:
+                        msg += f" (ID: {admin_id})"
+                    else:
+                        msg += " (ID не найден в базе)"
+                    msg += "\n\n"
+            else:
+                msg += "Нет данных\n"
+            
+            await update.message.reply_text(msg)
+            
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка теста: {e}")
+            logger.error(f"❌ Test error: {e}")
+            import traceback
+            traceback.print_exc()
 

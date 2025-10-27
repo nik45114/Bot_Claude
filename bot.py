@@ -3396,20 +3396,42 @@ class ClubAssistantBot:
             shift_manager = ShiftManager(DB_PATH)
             self.shift_manager = shift_manager  # Store for keyboard updates
             
-            # Initialize schedule parser
-            schedule_parser = ScheduleParser(shift_manager)
-            
-            # Initialize schedule (with Google Sheets if configured)
+            # Initialize schedule parser with Google Sheets support
             google_sa_json = os.getenv('GOOGLE_SA_JSON')
+            google_sheet_id = os.getenv('GOOGLE_SHEET_ID', '19ILASe6UH7-j1okxg9mvz_GrkQAkCJLXA1mxwocLcV8')
+            
+            schedule_parser = None
             finmon_schedule = None
+            
             if google_sa_json:
                 try:
-                    finmon_schedule = FinMonSchedule(google_sa_json)
-                    logger.info("✅ Google Sheets duty detection enabled")
+                    # Get admin_db instance if available
+                    admin_db_instance = admin_db if hasattr(self, 'admin_db') else None
+                    
+                    # Create schedule parser with Google Sheets
+                    schedule_parser = ScheduleParser(
+                        shift_manager=shift_manager,
+                        admin_db=admin_db_instance,
+                        spreadsheet_id=google_sheet_id,
+                        credentials_path=google_sa_json
+                    )
+                    logger.info(f"✅ Google Sheets schedule parser enabled (Sheet: {google_sheet_id[:15]}...)")
+                    
+                    # Legacy schedule support (for compatibility)
+                    try:
+                        finmon_schedule = FinMonSchedule(google_sa_json)
+                        logger.info("✅ Legacy FinMonSchedule also enabled")
+                    except Exception as e:
+                        logger.info(f"ℹ️ Legacy FinMonSchedule disabled: {e}")
+                        
                 except Exception as e:
-                    logger.warning(f"⚠️ Google Sheets duty detection disabled: {e}")
+                    logger.warning(f"⚠️ Google Sheets parser disabled: {e}")
+                    # Fallback to basic parser
+                    schedule_parser = ScheduleParser(shift_manager)
             else:
-                logger.info("ℹ️ Google Sheets duty detection disabled (no GOOGLE_SA_JSON)")
+                logger.info("ℹ️ Google Sheets parser disabled (no GOOGLE_SA_JSON)")
+                # Create basic parser without Google Sheets
+                schedule_parser = ScheduleParser(shift_manager)
             
             # Initialize shift wizard with managers
             shift_wizard = ShiftWizard(
@@ -3518,7 +3540,11 @@ class ClubAssistantBot:
             
             # Register schedule management commands
             from modules.schedule_commands import ScheduleCommands
-            schedule_commands = ScheduleCommands(shift_manager, owner_ids)
+            schedule_commands = ScheduleCommands(
+                shift_manager=shift_manager,
+                owner_ids=owner_ids,
+                schedule_parser=schedule_parser
+            )
             application.add_handler(CommandHandler("schedule", schedule_commands.cmd_schedule))
             
             logger.info("✅ Shift wizard registered")

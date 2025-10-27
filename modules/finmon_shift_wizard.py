@@ -291,9 +291,40 @@ class ShiftWizard:
         shift_label = "☀️ Утро (дневная смена)" if shift_type == "morning" else "🌙 Вечер (ночная смена)"
         close_time = "22:00" if shift_type == "morning" else "10:00"
         
-        # Check if there's an expected duty person
+        # Parse schedule from Google Sheets if available
+        if self.schedule_parser:
+            try:
+                logger.info(f"📊 Parsing Google Sheets for {date.today()}, club={club}, shift={shift_type}")
+                schedule_data = self.schedule_parser.parse_for_date(date.today())
+                
+                # Get duty for this club and shift type
+                duty_key = (club, shift_type)
+                if duty_key in schedule_data:
+                    parsed_duty = schedule_data[duty_key]
+                    logger.info(f"✅ Found duty in Google Sheets: {parsed_duty}")
+                    
+                    # Update database with fresh data from Google Sheets
+                    if parsed_duty.get('admin_name'):
+                        self.shift_manager.add_duty_schedule(
+                            duty_date=date.today(),
+                            club=club,
+                            shift_type=shift_type,
+                            admin_id=parsed_duty.get('admin_id'),
+                            admin_name=parsed_duty['admin_name']
+                        )
+                        logger.info(f"💾 Updated DB with Google Sheets data")
+                else:
+                    logger.info(f"📋 No duty found in Google Sheets for {duty_key}")
+                    
+            except Exception as e:
+                logger.error(f"❌ Failed to parse Google Sheets: {e}")
+                import traceback
+                traceback.print_exc()
+                # Continue with DB fallback
+        
+        # Check if there's an expected duty person (from DB, potentially updated from Sheets)
         duty_info = None
-        if self.shift_manager and self.schedule_parser:
+        if self.shift_manager:
             duty_info = self.shift_manager.get_expected_duty(club, shift_type, date.today())
         
         # Build confirmation message
