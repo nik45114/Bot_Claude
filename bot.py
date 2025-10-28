@@ -3060,45 +3060,8 @@ class ClubAssistantBot:
         # DEBUG: Log all incoming messages
         logger.info(f"📨 Message from {user.id}: '{text}' (len={len(text)}, repr={repr(text)})")
         
-        # FIRST: Check for reply keyboard buttons (highest priority)
-        if text == "🔓 Открыть смену":
-            # Open shift (not in conversation, handled directly)
-            if hasattr(self, 'shift_wizard') and self.shift_wizard:
-                await self.shift_wizard.cmd_open_shift(update, context)
-                return
-            else:
-                await message.reply_text("❌ Модуль смен недоступен")
-                return
-        elif text == "📊 Меню":
-            await self.cmd_start(update, context)
-            return
-        elif text == "💰 Взять зарплату":
-            # Cash withdrawal (not in conversation, handled directly)
-            logger.info(f"💰 Cash withdrawal button pressed by user {user.id}")
-            if hasattr(self, 'shift_wizard') and self.shift_wizard:
-                await self.shift_wizard.start_cash_withdrawal(update, context)
-                return
-            else:
-                await message.reply_text("❌ Модуль смен недоступен")
-                return
-        elif text == "🔒 Закрыть смену":
-            # Close shift (not in conversation, handled directly)
-            logger.info(f"🔒 Close shift button pressed by user {user.id}")
-            if hasattr(self, 'shift_wizard') and self.shift_wizard:
-                await self.shift_wizard.cmd_shift(update, context)
-                return
-            else:
-                await message.reply_text("❌ Модуль смен недоступен")
-                return
-        elif text == "💸 Списать с кассы":
-            # Add expense (not in conversation, handled directly)
-            logger.info(f"💸 Add expense button pressed by user {user.id}")
-            if hasattr(self, 'shift_wizard') and self.shift_wizard:
-                await self.shift_wizard.cmd_expense(update, context)
-                return
-            else:
-                await message.reply_text("❌ Модуль смен недоступен")
-                return
+        # Note: Reply keyboard buttons are handled by MessageHandlers in group=-1
+        # See button handlers registration at the top of run() method
         
         if len(text) < 3:
             return
