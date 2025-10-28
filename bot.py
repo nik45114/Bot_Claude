@@ -3057,6 +3057,9 @@ class ClubAssistantBot:
         message = update.message
         text = message.text.strip()
         
+        # DEBUG: Log all incoming messages
+        logger.info(f"📨 Message from {user.id}: '{text}' (len={len(text)}, repr={repr(text)})")
+        
         # FIRST: Check for reply keyboard buttons (highest priority)
         if text == "🔓 Открыть смену":
             # Open shift (not in conversation, handled directly)
@@ -3480,7 +3483,7 @@ class ClubAssistantBot:
             from modules.salary_calculator import SalaryCalculator
             from modules.salary_commands import SalaryCommands
             
-            salary_calculator = SalaryCalculator(db_path, shift_manager)
+            salary_calculator = SalaryCalculator(DB_PATH, shift_manager)
             salary_commands = SalaryCommands(salary_calculator, admin_db, owner_ids)
             
             # Register salary commands
@@ -3490,6 +3493,48 @@ class ClubAssistantBot:
             # Register /balances and /movements commands
             application.add_handler(CommandHandler("balances", shift_wizard.cmd_balances))
             application.add_handler(CommandHandler("movements", shift_wizard.cmd_movements))
+            
+            # Register button handlers BEFORE conversation handlers (highest priority)
+            async def handle_close_shift_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+                """Handle close shift button"""
+                logger.info(f"🔒 HANDLER: Close shift button pressed by user {update.effective_user.id}")
+                logger.info(f"🔒 HANDLER: Text received: '{update.message.text}'")
+                await shift_wizard.cmd_shift(update, context)
+            
+            async def handle_expense_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+                """Handle expense button"""
+                logger.info(f"💸 Add expense button pressed by user {update.effective_user.id}")
+                await shift_wizard.cmd_expense(update, context)
+            
+            async def handle_withdrawal_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+                """Handle withdrawal button"""
+                logger.info(f"💰 Cash withdrawal button pressed by user {update.effective_user.id}")
+                await shift_wizard.start_cash_withdrawal(update, context)
+            
+            async def handle_open_shift_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+                """Handle open shift button"""
+                logger.info(f"🔓 Open shift button pressed by user {update.effective_user.id}")
+                await shift_wizard.cmd_open_shift(update, context)
+            
+            application.add_handler(MessageHandler(
+                filters.TEXT & filters.Regex("^🔒 Закрыть смену$"), 
+                handle_close_shift_button
+            ), group=-1)
+            
+            application.add_handler(MessageHandler(
+                filters.TEXT & filters.Regex("^💸 Списать с кассы$"), 
+                handle_expense_button
+            ), group=-1)
+            
+            application.add_handler(MessageHandler(
+                filters.TEXT & filters.Regex("^💰 Взять зарплату$"), 
+                handle_withdrawal_button
+            ), group=-1)
+            
+            application.add_handler(MessageHandler(
+                filters.TEXT & filters.Regex("^🔓 Открыть смену$"), 
+                handle_open_shift_button
+            ), group=-1)
             
             # Register /shift conversation handler (CLOSE shift)
             shift_handler = ConversationHandler(
