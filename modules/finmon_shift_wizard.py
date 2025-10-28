@@ -36,12 +36,15 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Conversation states for CLOSING shift
-(SELECT_CLUB, CONFIRM_IDENTITY, ENTER_FACT_CASH, ENTER_FACT_CARD, 
+(SELECT_CLUB, CONFIRM_IDENTITY, SELECT_ADMIN_FOR_SHIFT, ENTER_FACT_CASH, ENTER_FACT_CARD, 
  ENTER_QR, ENTER_CARD2, ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA, ENTER_GAMEPADS, ENTER_REPAIR, 
- ENTER_NEED_REPAIR, ENTER_GAMES, CONFIRM_SHIFT) = range(14)
+ ENTER_NEED_REPAIR, ENTER_GAMES, CONFIRM_SHIFT) = range(15)
 
 # Conversation states for EXPENSE tracking (separate conversation)
 (EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM) = range(14, 18)
+
+# Conversation states for CASH WITHDRAWAL (separate conversation)
+(WITHDRAWAL_ENTER_AMOUNT, WITHDRAWAL_CONFIRM) = range(18, 20)
 
 # Timezone and shift windows
 TIMEZONE = 'Europe/Moscow'
@@ -117,6 +120,7 @@ def get_current_shift_window() -> Optional[Dict]:
 def get_shift_type_for_opening() -> str:
     """
     Auto-detect which shift type to open based on current MSK time
+    Можно открывать смену за 1 час до начала
     
     Returns:
         'morning' or 'evening'
@@ -124,9 +128,9 @@ def get_shift_type_for_opening() -> str:
     now = now_msk()
     current_hour = now.hour
     
-    # 10:00-22:00 = morning shift (дневная смена, закроется в 22:00)
-    # 22:00-10:00 = evening shift (ночная смена, закроется в 10:00 следующего дня)
-    if 10 <= current_hour < 22:
+    # 09:00-22:00 = morning shift (дневная смена, можно открыть за час до 10:00, закроется в 22:00)
+    # 21:00-10:00 = evening shift (ночная смена, можно открыть за час до 22:00, закроется в 10:00)
+    if 9 <= current_hour < 22:
         return 'morning'
     else:
         return 'evening'
@@ -135,7 +139,7 @@ def get_shift_type_for_opening() -> str:
 class ShiftWizard:
     """Wizard for button-based shift submission"""
     
-    def __init__(self, finmon_simple, schedule, shift_manager=None, schedule_parser=None, owner_ids: list = None):
+    def __init__(self, finmon_simple, schedule, shift_manager=None, schedule_parser=None, owner_ids: list = None, bot_instance=None, admin_db=None):
         """
         Initialize wizard
         
@@ -145,12 +149,16 @@ class ShiftWizard:
             shift_manager: ShiftManager instance (optional)
             schedule_parser: ScheduleParser instance (optional)
             owner_ids: List of owner telegram IDs
+            bot_instance: ClubAssistantBot instance (for dynamic keyboard updates)
+            admin_db: AdminDB instance (for admin list)
         """
         self.finmon = finmon_simple
         self.schedule = schedule
         self.shift_manager = shift_manager
         self.schedule_parser = schedule_parser
         self.owner_ids = owner_ids or []
+        self.bot_instance = bot_instance
+        self.admin_db = admin_db
     
     def is_owner(self, user_id: int) -> bool:
         """Check if user is owner"""
@@ -340,34 +348,47 @@ class ShiftWizard:
         msg += f"  • {username}\n"
         msg += f"  • ID: {user_id}\n\n"
         
-        # Check if it's a replacement
-        is_replacement = False
+        # Show who is scheduled and ask for confirmation
+        keyboard = []
+        
         if duty_info and duty_info.get('admin_name'):
             expected_name = duty_info['admin_name']
             expected_id = duty_info.get('admin_id')
             
-            msg += f"📋 По расписанию:\n  • {expected_name}"
+            msg += f"📋 По расписанию: {expected_name}"
             if expected_id:
                 msg += f" (ID: {expected_id})"
-                # Check if opener is different from expected
-                if expected_id != user_id:
-                    is_replacement = True
-                    msg += "\n\n⚠️ ЗАМЕНА"
             msg += "\n\n"
+            msg += "Кто работает на смене?"
             
-            # Will send confirmation request to duty person
+            # Store expected duty info
             context.user_data['expected_duty_id'] = expected_id
             context.user_data['expected_duty_name'] = expected_name
-            context.user_data['is_replacement'] = is_replacement
+            context.user_data['shift_club'] = club
+            context.user_data['shift_type'] = shift_type
+            
+            # Two options: confirm it's the scheduled person, or select replacement
+            keyboard = [
+                [InlineKeyboardButton(f"✅ Да, это {expected_name}", 
+                                    callback_data=f"confirm_scheduled_{club}_{shift_type}_{expected_id}")],
+                [InlineKeyboardButton("🔄 Замена - выбрать другого", 
+                                    callback_data=f"select_replacement_{club}_{shift_type}")],
+                [InlineKeyboardButton("❌ Отменить", callback_data="open_cancel")]
+            ]
         else:
             msg += f"📋 По расписанию: нет данных\n\n"
+            msg += "Выберите кто работает на смене:"
+            
+            # No schedule data - just select admin
+            context.user_data['shift_club'] = club
+            context.user_data['shift_type'] = shift_type
+            
+            keyboard = [
+                [InlineKeyboardButton("👤 Выбрать администратора", 
+                                    callback_data=f"select_replacement_{club}_{shift_type}")],
+                [InlineKeyboardButton("❌ Отменить", callback_data="open_cancel")]
+            ]
         
-        msg += "Подтвердите открытие смены:"
-        
-        keyboard = [
-            [InlineKeyboardButton("✅ Открыть смену", callback_data=f"confirm_open_{club}_{shift_type}")],
-            [InlineKeyboardButton("❌ Отменить", callback_data="open_cancel")]
-        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         if is_callback:
@@ -375,147 +396,175 @@ class ShiftWizard:
         else:
             await update.message.reply_text(msg, reply_markup=reply_markup)
     
-    async def handle_confirm_open_shift(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Handle shift open confirmation"""
+    async def handle_confirm_scheduled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle confirmation that scheduled person is working"""
         query = update.callback_query
         await query.answer()
         
-        if query.data == "open_cancel":
-            await query.edit_message_text("❌ Открытие смены отменено")
+        # Parse: confirm_scheduled_club_shift_type_admin_id
+        parts = query.data.split('_')
+        if len(parts) < 5:
+            await query.edit_message_text("❌ Ошибка данных")
             return
         
-        # Parse callback data
-        parts = query.data.split('_')  # confirm_open_ClubName_shifttype
+        club = parts[2]
+        shift_type = parts[3]
+        admin_id = int(parts[4])
+        opener_id = query.from_user.id
+        
+        # Store info for confirmation
+        context.user_data['working_admin_id'] = admin_id
+        context.user_data['opener_id'] = opener_id
+        
+        # Send confirmation request to the admin
+        await self._send_confirmation_request(
+            context=context,
+            admin_id=admin_id,
+            club=club,
+            shift_type=shift_type,
+            opener_id=opener_id,
+            opener_name=query.from_user.full_name
+        )
+        
+        # Get admin name
+        admin_name = context.user_data.get('expected_duty_name', 'Админ')
+        
+        await query.edit_message_text(
+            f"⏳ Ожидание подтверждения\n\n"
+            f"Запрос отправлен: {admin_name}\n"
+            f"Ожидайте подтверждения в Telegram..."
+        )
+    
+    async def handle_select_replacement(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show admin list for replacement selection"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Parse: select_replacement_club_shift_type
+        parts = query.data.split('_')
         if len(parts) < 4:
             await query.edit_message_text("❌ Ошибка данных")
             return
         
         club = parts[2]
         shift_type = parts[3]
-        user_id = query.from_user.id
         
-        # Check if there's an expected duty person
-        expected_duty_id = context.user_data.get('expected_duty_id')
-        expected_duty_name = context.user_data.get('expected_duty_name')
+        # Get list of admins
+        if not self.admin_db:
+            await query.edit_message_text("❌ База админов недоступна")
+            return
         
-        confirmed_by = user_id  # Default: self-confirm
-        
-        # If there's an expected duty person and it's not the opener, send confirmation request
-        if expected_duty_id and expected_duty_id != user_id:
-            # Send confirmation request to expected duty
-            msg_to_duty = f"⚠️ Запрос подтверждения смены\n\n"
-            msg_to_duty += f"🏢 Клуб: {club}\n"
-            msg_to_duty += f"⏰ Смена: {'☀️ Утро' if shift_type == 'morning' else '🌙 Вечер'}\n"
-            msg_to_duty += f"📅 Дата: {date.today().strftime('%d.%m.%Y')}\n\n"
-            msg_to_duty += f"👤 Открывает: {query.from_user.full_name or 'Неизвестно'}"
-            if query.from_user.username:
-                msg_to_duty += f" (@{query.from_user.username})"
-            msg_to_duty += f"\nID: {user_id}\n\n"
-            msg_to_duty += f"Вы дежурный по расписанию ({expected_duty_name})\n\n"
-            msg_to_duty += "Это вы на смене?"
+        try:
+            admins = self.admin_db.get_all_admins(active_only=True)
             
-            keyboard = [
-                [InlineKeyboardButton("✅ Да, подтверждаю", 
-                                    callback_data=f"duty_confirm_{user_id}_{club}_{shift_type}")],
-                [InlineKeyboardButton("❌ Нет, это ошибка", 
-                                    callback_data=f"duty_reject_{user_id}_{club}_{shift_type}")]
-            ]
+            if not admins:
+                await query.edit_message_text("❌ Нет доступных администраторов")
+                return
+            
+            msg = f"🔄 Замена\n\n"
+            msg += f"🏢 Клуб: {club}\n"
+            msg += f"⏰ Смена: {'☀️ Утро' if shift_type == 'morning' else '🌙 Вечер'}\n\n"
+            msg += "Выберите кто работает:"
+            
+            # Build admin buttons (max 2 per row)
+            keyboard = []
+            for i in range(0, len(admins), 2):
+                row = []
+                for admin in admins[i:i+2]:
+                    admin_id = admin.get('user_id')
+                    admin_name = admin.get('full_name') or admin.get('username') or f"ID {admin_id}"
+                    # Truncate long names
+                    if len(admin_name) > 20:
+                        admin_name = admin_name[:17] + "..."
+                    row.append(InlineKeyboardButton(
+                        admin_name,
+                        callback_data=f"admin_selected_{club}_{shift_type}_{admin_id}"
+                    ))
+                keyboard.append(row)
+            
+            keyboard.append([InlineKeyboardButton("❌ Отменить", callback_data="open_cancel")])
             reply_markup = InlineKeyboardMarkup(keyboard)
             
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+            
+        except Exception as e:
+            logger.error(f"Failed to get admin list: {e}")
+            await query.edit_message_text(f"❌ Ошибка получения списка админов: {e}")
+    
+    async def handle_admin_selected(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle admin selection from list"""
+        query = update.callback_query
+        await query.answer()
+        
+        # Parse: admin_selected_club_shift_type_admin_id
+        parts = query.data.split('_')
+        if len(parts) < 5:
+            await query.edit_message_text("❌ Ошибка данных")
+            return
+        
+        club = parts[2]
+        shift_type = parts[3]
+        admin_id = int(parts[4])
+        opener_id = query.from_user.id
+        
+        # Store info for confirmation
+        context.user_data['working_admin_id'] = admin_id
+        context.user_data['opener_id'] = opener_id
+        
+        # Send confirmation request to selected admin
+        await self._send_confirmation_request(
+            context=context,
+            admin_id=admin_id,
+            club=club,
+            shift_type=shift_type,
+            opener_id=opener_id,
+            opener_name=query.from_user.full_name
+        )
+        
+        # Get admin name for display
+        admin_name = "Админ"
+        if self.admin_db:
             try:
-                await context.bot.send_message(
-                    chat_id=expected_duty_id,
-                    text=msg_to_duty,
-                    reply_markup=reply_markup
-                )
-                
-                # Store pending shift info
-                context.user_data['pending_shift'] = {
-                    'opener_id': user_id,
-                    'club': club,
-                    'shift_type': shift_type,
-                    'awaiting_confirmation': True
-                }
-                
-                await query.edit_message_text(
-                    f"⏳ Ожидание подтверждения\n\n"
-                    f"Запрос отправлен дежурному ({expected_duty_name})\n"
-                    f"Ожидайте подтверждения..."
-                )
-                return
-                
-            except Exception as e:
-                logger.error(f"❌ Failed to send confirmation request: {e}")
-                # Continue without confirmation
+                admin = self.admin_db.get_admin(admin_id)
+                if admin:
+                    admin_name = admin.get('full_name') or admin.get('username') or f"ID {admin_id}"
+            except:
+                pass
         
-        # Open shift
-        shift_id = self.shift_manager.open_shift(user_id, club, shift_type, confirmed_by)
+        await query.edit_message_text(
+            f"⏳ Ожидание подтверждения\n\n"
+            f"Запрос отправлен: {admin_name}\n"
+            f"Ожидайте подтверждения в Telegram..."
+        )
+    
+    async def _send_confirmation_request(self, context, admin_id, club, shift_type, opener_id, opener_name):
+        """Send confirmation request to admin's personal Telegram"""
+        msg = f"⚠️ Запрос подтверждения смены\n\n"
+        msg += f"🏢 Клуб: {club}\n"
+        msg += f"⏰ Смена: {'☀️ Утро' if shift_type == 'morning' else '🌙 Вечер'}\n"
+        msg += f"📅 Дата: {date.today().strftime('%d.%m.%Y')}\n\n"
+        msg += f"👤 Открывает с клубного аккаунта:\n"
+        msg += f"   {opener_name or 'Неизвестно'}\n\n"
+        msg += "Это вы работаете на смене?\n"
+        msg += "Подтвердите в своем личном Telegram:"
         
-        if shift_id:
-            shift_label = "☀️ Утро" if shift_type == "morning" else "🌙 Вечер"
-            await query.edit_message_text(
-                f"✅ Смена открыта!\n\n"
-                f"🏢 Клуб: {club}\n"
-                f"⏰ {shift_label}\n"
-                f"🆔 ID смены: {shift_id}\n\n"
-                f"Для списания денег в процессе смены используйте:\n"
-                f"💸 Списать с кассы\n\n"
-                f"Для закрытия смены используйте:\n"
-                f"🔒 Закрыть смену"
-            )
-            
-            # Update reply keyboard to show new buttons
-            from telegram import KeyboardButton, ReplyKeyboardMarkup
-            keyboard = [
-                [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")],
-                [KeyboardButton("💸 Списать с кассы"), KeyboardButton("🔒 Закрыть смену")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
+        keyboard = [
+            [InlineKeyboardButton("✅ Да, подтверждаю", 
+                                callback_data=f"duty_confirm_{opener_id}_{club}_{shift_type}")],
+            [InlineKeyboardButton("❌ Нет, это ошибка", 
+                                callback_data=f"duty_reject_{opener_id}_{club}_{shift_type}")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
             await context.bot.send_message(
-                chat_id=user_id,
-                text="🔄 Клавиатура обновлена",
+                chat_id=admin_id,
+                text=msg,
                 reply_markup=reply_markup
             )
-            
-            # Check if this is a replacement
-            is_replacement = context.user_data.get('is_replacement', False)
-            duty_info = {
-                'admin_id': expected_duty_id,
-                'admin_name': expected_duty_name
-            } if expected_duty_id and expected_duty_name else None
-            
-            # Notify owner ONLY about replacements (not regular shift openings)
-            if self.owner_ids and is_replacement and duty_info:
-                for owner_id in self.owner_ids:
-                    try:
-                        notify_msg = f"🔓 Открыта смена #{shift_id}\n\n"
-                        notify_msg += f"🏢 {club} | {shift_label}\n"
-                        notify_msg += f"👤 {query.from_user.full_name or 'Неизвестно'}"
-                        if query.from_user.username:
-                            notify_msg += f" (@{query.from_user.username})"
-                        notify_msg += f"\nID: {user_id}"
-                        notify_msg += f"\n\n⚠️ ЗАМЕНА\n"
-                        notify_msg += f"По расписанию: {duty_info['admin_name']} (ID: {duty_info['admin_id']})\n\n"
-                        notify_msg += "Обновить расписание?"
-                        
-                        keyboard = [
-                            [InlineKeyboardButton("✅ Да, обновить", 
-                                                callback_data=f"owner_schedule_yes_{shift_id}_{club}_{shift_type}_{user_id}")],
-                            [InlineKeyboardButton("❌ Нет, разовая замена", 
-                                                callback_data=f"owner_schedule_no_{shift_id}")]
-                        ]
-                        reply_markup = InlineKeyboardMarkup(keyboard)
-                        
-                        await context.bot.send_message(
-                            chat_id=owner_id, 
-                            text=notify_msg,
-                            reply_markup=reply_markup
-                        )
-                    except:
-                        pass
-        else:
-            await query.edit_message_text("❌ Не удалось открыть смену. Попробуйте позже.")
+            logger.info(f"✅ Confirmation request sent to admin {admin_id}")
+        except Exception as e:
+            logger.error(f"❌ Failed to send confirmation to admin {admin_id}: {e}")
     
     # ===== Close Shift Methods (Revenue Input) =====
     
@@ -1317,21 +1366,54 @@ class ShiftWizard:
         shift_label = "☀️ Утро" if shift_type == "morning" else "🌙 Вечер"
         
         if action == "confirm":
-            # Duty person confirms the replacement is okay
-            await query.edit_message_text(
-                f"✅ Замена подтверждена\n\n"
-                f"🏢 {club} | {shift_label}\n"
-                f"Смена будет открыта"
-            )
+            # Duty person confirms - open shift immediately
+            confirmed_by = query.from_user.id
+            shift_id = self.shift_manager.open_shift(opener_id, club, shift_type, confirmed_by)
             
-            # Notify the opener
-            try:
-                await context.bot.send_message(
-                    chat_id=opener_id,
-                    text=f"✅ Дежурный подтвердил замену\n\nМожете продолжать работу"
+            if shift_id:
+                await query.edit_message_text(
+                    f"✅ Смена подтверждена и открыта!\n\n"
+                    f"🏢 {club} | {shift_label}\n"
+                    f"🆔 ID смены: {shift_id}\n"
+                    f"✅ Подтверждено: {query.from_user.full_name or 'Вы'}"
                 )
-            except:
-                pass
+                
+                # Notify the opener with dynamic keyboard
+                try:
+                    # Update dynamic keyboard for opener
+                    reply_keyboard = self.bot_instance._build_reply_keyboard(opener_id) if hasattr(self, 'bot_instance') else None
+                    
+                    await context.bot.send_message(
+                        chat_id=opener_id,
+                        text=f"✅ Смена открыта!\n\n"
+                             f"🏢 {club} | {shift_label}\n"
+                             f"🆔 ID смены: {shift_id}\n\n"
+                             f"Смена подтверждена дежурным.\n"
+                             f"Для списания денег используйте:\n"
+                             f"💸 Списать с кассы",
+                        reply_markup=reply_keyboard
+                    )
+                except Exception as e:
+                    logger.error(f"Failed to notify opener: {e}")
+                
+                # Notify owner about confirmed shift (для учета)
+                if self.owner_ids:
+                    is_replacement = (confirmed_by != opener_id)
+                    for owner_id in self.owner_ids:
+                        try:
+                            msg = f"✅ Смена открыта и подтверждена\n\n"
+                            msg += f"🏢 {club} | {shift_label}\n"
+                            msg += f"🆔 ID: {shift_id}\n"
+                            msg += f"👤 Работает: {query.from_user.full_name or 'Неизвестно'} (ID: {confirmed_by})\n"
+                            if is_replacement:
+                                msg += f"⚠️ Открыл: ID {opener_id}\n"
+                            msg += f"📅 {date.today().strftime('%d.%m.%Y')}"
+                            
+                            await context.bot.send_message(chat_id=owner_id, text=msg)
+                        except:
+                            pass
+            else:
+                await query.edit_message_text("❌ Ошибка при открытии смены")
             
         elif action == "reject":
             # Duty person says it's an error
@@ -1414,3 +1496,152 @@ class ShiftWizard:
             await query.edit_message_text(
                 query.message.text + "\n\n✅ Разовая замена (расписание не изменено)"
             )
+    
+    # ===== Cash Withdrawal Methods =====
+    
+    async def start_cash_withdrawal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start cash withdrawal process during shift"""
+        user_id = update.effective_user.id
+        
+        # Check if user has active shift
+        active_shift = None
+        if self.shift_manager:
+            active_shift = self.shift_manager.get_active_shift(user_id)
+        
+        if not active_shift:
+            await update.message.reply_text(
+                "❌ У вас нет активной смены\n\n"
+                "Сначала откройте смену, чтобы взять зарплату с кассы"
+            )
+            return
+        
+        # Get admin name for display
+        admin_name = update.effective_user.full_name or "Админ"
+        
+        msg = f"💰 Взять зарплату с кассы\n\n"
+        msg += f"👤 {admin_name}\n"
+        msg += f"🏢 Клуб: {active_shift['club']}\n"
+        msg += f"🆔 Смена: #{active_shift['id']}\n\n"
+        msg += "Введите сумму для снятия:\n\n"
+        msg += "Пример: 5000"
+        
+        await update.message.reply_text(msg)
+        return WITHDRAWAL_ENTER_AMOUNT
+    
+    async def receive_withdrawal_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive withdrawal amount"""
+        try:
+            amount = float(update.message.text.replace(' ', '').replace(',', '.'))
+            
+            if amount <= 0:
+                await update.message.reply_text(
+                    "❌ Сумма должна быть больше 0\n\n"
+                    "Введите сумму заново:"
+                )
+                return WITHDRAWAL_ENTER_AMOUNT
+            
+            # Store amount for confirmation
+            context.user_data['withdrawal_amount'] = amount
+            
+            # Get active shift info
+            user_id = update.effective_user.id
+            active_shift = self.shift_manager.get_active_shift(user_id) if self.shift_manager else None
+            
+            if not active_shift:
+                await update.message.reply_text("❌ Активная смена не найдена")
+                return
+            
+            admin_name = update.effective_user.full_name or "Админ"
+            
+            msg = f"💰 Подтверждение снятия\n\n"
+            msg += f"👤 {admin_name}\n"
+            msg += f"🏢 Клуб: {active_shift['club']}\n"
+            msg += f"🆔 Смена: #{active_shift['id']}\n\n"
+            msg += f"💵 Сумма: {amount:,.0f} ₽\n\n"
+            msg += "Подтвердите снятие зарплаты с кассы:"
+            
+            keyboard = [
+                [InlineKeyboardButton("✅ Да, снять", callback_data="withdrawal_confirm")],
+                [InlineKeyboardButton("❌ Отменить", callback_data="withdrawal_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await update.message.reply_text(msg, reply_markup=reply_markup)
+            return WITHDRAWAL_CONFIRM
+            
+        except ValueError:
+            await update.message.reply_text(
+                "❌ Неверный формат\n\n"
+                "Введите число:"
+            )
+            return WITHDRAWAL_ENTER_AMOUNT
+    
+    async def handle_withdrawal_confirmation(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle withdrawal confirmation"""
+        query = update.callback_query
+        await query.answer()
+        
+        if query.data == "withdrawal_cancel":
+            await query.edit_message_text("❌ Снятие отменено")
+            return
+        
+        if query.data == "withdrawal_confirm":
+            user_id = query.from_user.id
+            amount = context.user_data.get('withdrawal_amount', 0)
+            
+            if amount <= 0:
+                await query.edit_message_text("❌ Неверная сумма")
+                return
+            
+            # Get active shift
+            active_shift = self.shift_manager.get_active_shift(user_id) if self.shift_manager else None
+            if not active_shift:
+                await query.edit_message_text("❌ Активная смена не найдена")
+                return
+            
+            # Record withdrawal in database
+            try:
+                # Import salary calculator to record withdrawal
+                from modules.salary_calculator import SalaryCalculator
+                salary_calc = SalaryCalculator(self.shift_manager.db_path if hasattr(self.shift_manager, 'db_path') else 'club_assistant.db')
+                
+                withdrawal_id = salary_calc.record_cash_withdrawal(
+                    shift_id=active_shift['id'],
+                    admin_id=user_id,
+                    amount=amount,
+                    reason='salary'
+                )
+                
+                if withdrawal_id:
+                    admin_name = query.from_user.full_name or "Админ"
+                    
+                    await query.edit_message_text(
+                        f"✅ Зарплата снята с кассы\n\n"
+                        f"👤 {admin_name}\n"
+                        f"🏢 Клуб: {active_shift['club']}\n"
+                        f"🆔 Смена: #{active_shift['id']}\n\n"
+                        f"💵 Сумма: {amount:,.0f} ₽\n"
+                        f"📝 Запись: #{withdrawal_id}\n\n"
+                        f"Сумма будет учтена при расчете зарплаты"
+                    )
+                    
+                    # Notify owner about cash withdrawal
+                    if self.owner_ids:
+                        for owner_id in self.owner_ids:
+                            try:
+                                notify_msg = f"💰 Снятие зарплаты с кассы\n\n"
+                                notify_msg += f"👤 {admin_name} (ID: {user_id})\n"
+                                notify_msg += f"🏢 Клуб: {active_shift['club']}\n"
+                                notify_msg += f"🆔 Смена: #{active_shift['id']}\n"
+                                notify_msg += f"💵 Сумма: {amount:,.0f} ₽\n"
+                                notify_msg += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+                                
+                                await context.bot.send_message(chat_id=owner_id, text=notify_msg)
+                            except:
+                                pass
+                else:
+                    await query.edit_message_text("❌ Не удалось записать снятие")
+                    
+            except Exception as e:
+                logger.error(f"Failed to record cash withdrawal: {e}")
+                await query.edit_message_text("❌ Ошибка при записи снятия")

@@ -1910,9 +1910,12 @@ class ClubAssistantBot:
                     logger.error(f"❌ Failed to get active shift for {user_id}: {e}")
             
             if active_shift:
-                # User has open shift - show close and expense buttons
+                # User has open shift - show close, expense, and withdrawal buttons
                 keyboard.append([
                     KeyboardButton("💸 Списать с кассы"),
+                    KeyboardButton("💰 Взять зарплату")
+                ])
+                keyboard.append([
                     KeyboardButton("🔒 Закрыть смену")
                 ])
             else:
@@ -3054,7 +3057,7 @@ class ClubAssistantBot:
         message = update.message
         text = message.text.strip()
         
-        # Intercept reply keyboard buttons
+        # FIRST: Check for reply keyboard buttons (highest priority)
         if text == "🔓 Открыть смену":
             # Open shift (not in conversation, handled directly)
             if hasattr(self, 'shift_wizard') and self.shift_wizard:
@@ -3066,6 +3069,33 @@ class ClubAssistantBot:
         elif text == "📊 Меню":
             await self.cmd_start(update, context)
             return
+        elif text == "💰 Взять зарплату":
+            # Cash withdrawal (not in conversation, handled directly)
+            logger.info(f"💰 Cash withdrawal button pressed by user {user.id}")
+            if hasattr(self, 'shift_wizard') and self.shift_wizard:
+                await self.shift_wizard.start_cash_withdrawal(update, context)
+                return
+            else:
+                await message.reply_text("❌ Модуль смен недоступен")
+                return
+        elif text == "🔒 Закрыть смену":
+            # Close shift (not in conversation, handled directly)
+            logger.info(f"🔒 Close shift button pressed by user {user.id}")
+            if hasattr(self, 'shift_wizard') and self.shift_wizard:
+                await self.shift_wizard.cmd_shift(update, context)
+                return
+            else:
+                await message.reply_text("❌ Модуль смен недоступен")
+                return
+        elif text == "💸 Списать с кассы":
+            # Add expense (not in conversation, handled directly)
+            logger.info(f"💸 Add expense button pressed by user {user.id}")
+            if hasattr(self, 'shift_wizard') and self.shift_wizard:
+                await self.shift_wizard.cmd_expense(update, context)
+                return
+            else:
+                await message.reply_text("❌ Модуль смен недоступен")
+                return
         
         if len(text) < 3:
             return
@@ -3370,7 +3400,8 @@ class ClubAssistantBot:
                 ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA,
                 ENTER_GAMEPADS, ENTER_REPAIR, ENTER_NEED_REPAIR, ENTER_GAMES,
                 CONFIRM_SHIFT,
-                EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM
+                EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM,
+                WITHDRAWAL_ENTER_AMOUNT, WITHDRAWAL_CONFIRM
             )
             
             # Get owner IDs
@@ -3439,9 +3470,22 @@ class ClubAssistantBot:
                 schedule=finmon_schedule,
                 shift_manager=shift_manager,
                 schedule_parser=schedule_parser,
-                owner_ids=owner_ids
+                owner_ids=owner_ids,
+                bot_instance=self,
+                admin_db=admin_db
             )
             self.shift_wizard = shift_wizard  # Store for button handler
+            
+            # Initialize salary system
+            from modules.salary_calculator import SalaryCalculator
+            from modules.salary_commands import SalaryCommands
+            
+            salary_calculator = SalaryCalculator(db_path, shift_manager)
+            salary_commands = SalaryCommands(salary_calculator, admin_db, owner_ids)
+            
+            # Register salary commands
+            application.add_handler(CommandHandler("salary", salary_commands.cmd_salary))
+            application.add_handler(CallbackQueryHandler(salary_commands.handle_callback, pattern="^salary_"))
             
             # Register /balances and /movements commands
             application.add_handler(CommandHandler("balances", shift_wizard.cmd_balances))
@@ -3450,8 +3494,7 @@ class ClubAssistantBot:
             # Register /shift conversation handler (CLOSE shift)
             shift_handler = ConversationHandler(
                 entry_points=[
-                    CommandHandler("shift", shift_wizard.cmd_shift),
-                    MessageHandler(filters.TEXT & filters.Regex("^(🔒 Закрыть смену|💰 Сдать смену)$"), shift_wizard.cmd_shift)
+                    CommandHandler("shift", shift_wizard.cmd_shift)
                 ],
                 states={
                     ENTER_FACT_CASH: [
@@ -3492,8 +3535,7 @@ class ClubAssistantBot:
             # Register expense tracking conversation handler
             expense_handler = ConversationHandler(
                 entry_points=[
-                    CommandHandler("expense", shift_wizard.cmd_expense),
-                    MessageHandler(filters.TEXT & filters.Regex("^💸 Списать с кассы$"), shift_wizard.cmd_expense)
+                    CommandHandler("expense", shift_wizard.cmd_expense)
                 ],
                 states={
                     EXPENSE_SELECT_CASH_SOURCE: [
@@ -3515,9 +3557,30 @@ class ClubAssistantBot:
             )
             application.add_handler(expense_handler)
             
+            # Register cash withdrawal conversation handler
+            withdrawal_handler = ConversationHandler(
+                entry_points=[
+                    CommandHandler("withdrawal", shift_wizard.start_cash_withdrawal)
+                ],
+                states={
+                    WITHDRAWAL_ENTER_AMOUNT: [
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_withdrawal_amount)
+                    ],
+                    WITHDRAWAL_CONFIRM: [
+                        CallbackQueryHandler(shift_wizard.handle_withdrawal_confirmation, pattern="^withdrawal_")
+                    ]
+                },
+                fallbacks=[
+                    CommandHandler("cancel", shift_wizard.cancel_command)
+                ]
+            )
+            application.add_handler(withdrawal_handler)
+            
             # Register callback handlers for shift opening (not in conversation)
             application.add_handler(CallbackQueryHandler(shift_wizard.handle_open_club_selection, pattern="^open_"))
-            application.add_handler(CallbackQueryHandler(shift_wizard.handle_confirm_open_shift, pattern="^confirm_open_"))
+            application.add_handler(CallbackQueryHandler(shift_wizard.handle_confirm_scheduled, pattern="^confirm_scheduled_"))
+            application.add_handler(CallbackQueryHandler(shift_wizard.handle_select_replacement, pattern="^select_replacement_"))
+            application.add_handler(CallbackQueryHandler(shift_wizard.handle_admin_selected, pattern="^admin_selected_"))
             
             # Register /finmon command for analytics
             application.add_handler(CommandHandler("finmon", shift_wizard.cmd_finmon))
@@ -3600,7 +3663,8 @@ class ClubAssistantBot:
         logger.info("   Schedule: /schedule (add, week, today, remove, clear)")
         logger.info("   Owner: /apply_migrations, /migration, /backup")
         logger.info("   Admin: /admins, /v2ray")
-        logger.info("   Reply keyboard: 🔓 Открыть смену / 🔒 Закрыть смену, 💸 Списать с кассы (динамическая)")
+        logger.info("   Reply keyboard: 🔓 Открыть смену / 🔒 Закрыть смену, 💸 Списать с кассы, 💰 Взять зарплату (динамическая)")
+        logger.info("   Salary system: /salary command enabled")
         logger.info("=" * 60)
         
         logger.info(f"🤖 Бот v{VERSION} запущен!")

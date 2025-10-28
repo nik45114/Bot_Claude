@@ -224,6 +224,11 @@ class AdminDB:
             print(f"Error listing admins: {e}")
             return [], 0
     
+    def get_all_admins(self, active_only: bool = True) -> List[Dict]:
+        """Get all admins (convenience method)"""
+        admins, _ = self.list_admins(active=1 if active_only else None, page=1, per_page=1000)
+        return admins
+    
     def search_admins(self, query: str, page: int = 1, per_page: int = 20) -> Tuple[List[Dict], int]:
         """Search admins by username, full_name, or user_id"""
         try:
@@ -778,3 +783,170 @@ class AdminDB:
         except Exception as e:
             print(f"Error getting audit logs: {e}")
             return [], 0
+    
+    # ===== Salary Management Methods =====
+    
+    def set_employment_type(self, user_id: int, employment_type: str) -> bool:
+        """
+        Set employment type: 'self_employed', 'staff', 'gpc'
+        
+        Args:
+            user_id: Admin user ID
+            employment_type: Employment type
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if employment_type not in ['self_employed', 'staff', 'gpc']:
+            print(f"Invalid employment type: {employment_type}")
+            return False
+        
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE admins 
+                SET employment_type = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            ''', (employment_type, user_id))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if rows_affected > 0:
+                print(f"✅ Set employment type to {employment_type} for admin {user_id}")
+                return True
+            else:
+                print(f"❌ Admin {user_id} not found")
+                return False
+                
+        except Exception as e:
+            print(f"Error setting employment type: {e}")
+            return False
+    
+    def set_salary_per_shift(self, user_id: int, amount: float) -> bool:
+        """
+        Set fixed salary per shift
+        
+        Args:
+            user_id: Admin user ID
+            amount: Salary amount per shift
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if amount < 0:
+            print(f"Salary amount cannot be negative: {amount}")
+            return False
+        
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE admins 
+                SET salary_per_shift = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            ''', (amount, user_id))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if rows_affected > 0:
+                print(f"✅ Set salary per shift to {amount} for admin {user_id}")
+                return True
+            else:
+                print(f"❌ Admin {user_id} not found")
+                return False
+                
+        except Exception as e:
+            print(f"Error setting salary per shift: {e}")
+            return False
+    
+    def set_custom_tax_rate(self, user_id: int, rate: float) -> bool:
+        """
+        Set custom tax rate (overrides default)
+        
+        Args:
+            user_id: Admin user ID
+            rate: Tax rate percentage (0 = use default)
+        
+        Returns:
+            True if successful, False otherwise
+        """
+        if rate < 0 or rate > 100:
+            print(f"Tax rate must be between 0 and 100: {rate}")
+            return False
+        
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE admins 
+                SET tax_rate = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE user_id = ?
+            ''', (rate, user_id))
+            
+            rows_affected = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            if rows_affected > 0:
+                print(f"✅ Set custom tax rate to {rate}% for admin {user_id}")
+                return True
+            else:
+                print(f"❌ Admin {user_id} not found")
+                return False
+                
+        except Exception as e:
+            print(f"Error setting custom tax rate: {e}")
+            return False
+    
+    def get_salary_settings(self, user_id: int) -> Dict:
+        """
+        Get employment_type, salary_per_shift, tax_rate
+        
+        Args:
+            user_id: Admin user ID
+        
+        Returns:
+            Dictionary with salary settings
+        """
+        try:
+            conn = self._get_conn()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT employment_type, salary_per_shift, tax_rate
+                FROM admins 
+                WHERE user_id = ?
+            ''', (user_id,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    'employment_type': row[0] or 'self_employed',
+                    'salary_per_shift': row[1] or 0.0,
+                    'tax_rate': row[2] or 0.0
+                }
+            else:
+                print(f"Admin {user_id} not found")
+                return {
+                    'employment_type': 'self_employed',
+                    'salary_per_shift': 0.0,
+                    'tax_rate': 0.0
+                }
+                
+        except Exception as e:
+            print(f"Error getting salary settings: {e}")
+            return {
+                'employment_type': 'self_employed',
+                'salary_per_shift': 0.0,
+                'tax_rate': 0.0
+            }

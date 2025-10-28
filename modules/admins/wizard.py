@@ -294,6 +294,10 @@ class AdminWizard:
         # Edit name
         keyboard.append([InlineKeyboardButton("✏️ Редактировать имя", callback_data=f"adm_edit_name_{user_id}")])
         
+        # Salary settings (owner only)
+        if self.is_owner(update.effective_user.id):
+            keyboard.append([InlineKeyboardButton("💰 Настроить зарплату", callback_data=f"adm_salary_{user_id}")])
+        
         # Remove (owner only, not self)
         if self.is_owner(update.effective_user.id) and user_id != update.effective_user.id:
             keyboard.append([InlineKeyboardButton("🗑️ Удалить", callback_data=f"adm_remove_confirm_{user_id}")])
@@ -953,3 +957,184 @@ ID: {user_id}
             ]])
         )
         return ConversationHandler.END
+    
+    # ===== Salary Settings =====
+    
+    async def show_salary_settings(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Show salary settings for admin (owner only)"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(update.effective_user.id):
+            await query.edit_message_text("❌ Доступ только для владельца")
+            return
+        
+        try:
+            admin = self.db.get_admin(user_id)
+            if not admin:
+                await query.edit_message_text("❌ Администратор не найден")
+                return
+            
+            admin_name = admin.get('full_name') or admin.get('username') or f"ID {user_id}"
+            settings = self.db.get_salary_settings(user_id)
+            
+            # Format employment type
+            emp_type_names = {
+                'self_employed': 'Самозанятый',
+                'staff': 'Штат',
+                'gpc': 'ГПХ'
+            }
+            emp_type_display = emp_type_names.get(settings['employment_type'], settings['employment_type'])
+            
+            msg = f"💰 Настройки зарплаты\n\n"
+            msg += f"👤 {admin_name}\n\n"
+            msg += f"💼 Тип занятости: {emp_type_display}\n"
+            msg += f"💵 Ставка за смену: {settings['salary_per_shift']:,.0f}₽\n"
+            msg += f"📊 Налог: {settings['tax_rate']:.1f}%\n\n"
+            msg += "Выберите что изменить:"
+            
+            keyboard = [
+                [InlineKeyboardButton("💼 Тип занятости", callback_data=f"adm_salary_emp_{user_id}")],
+                [InlineKeyboardButton("💵 Ставка за смену", callback_data=f"adm_salary_rate_{user_id}")],
+                [InlineKeyboardButton("📊 Налог", callback_data=f"adm_salary_tax_{user_id}")],
+                [InlineKeyboardButton("🔙 Назад", callback_data=f"adm_view_{user_id}")]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+            
+        except Exception as e:
+            logger.error(f"Failed to show salary settings: {e}")
+            await query.edit_message_text(f"❌ Ошибка при получении настроек: {e}")
+    
+    async def handle_salary_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle salary setting changes"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(update.effective_user.id):
+            await query.edit_message_text("❌ Доступ только для владельца")
+            return
+        
+        data = query.data
+        parts = data.split('_')
+        
+        if len(parts) < 4:
+            await query.edit_message_text("❌ Ошибка данных")
+            return
+        
+        setting_type = parts[2]
+        user_id = int(parts[3])
+        
+        try:
+            admin = self.db.get_admin(user_id)
+            admin_name = admin.get('full_name') or admin.get('username') or f"ID {user_id}"
+            
+            if setting_type == "emp":
+                msg = f"💼 Тип занятости\n\n"
+                msg += f"👤 {admin_name}\n\n"
+                msg += "Выберите тип занятости:"
+                
+                keyboard = [
+                    [InlineKeyboardButton("👤 Самозанятый (6% налог)", callback_data=f"adm_salary_set_emp_self_{user_id}")],
+                    [InlineKeyboardButton("🏢 Штат (30% налог)", callback_data=f"adm_salary_set_emp_staff_{user_id}")],
+                    [InlineKeyboardButton("📋 ГПХ (15% налог)", callback_data=f"adm_salary_set_emp_gpc_{user_id}")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=f"adm_salary_{user_id}")]
+                ]
+                
+            elif setting_type == "rate":
+                msg = f"💵 Ставка за смену\n\n"
+                msg += f"👤 {admin_name}\n\n"
+                msg += "Выберите ставку:"
+                
+                keyboard = [
+                    [InlineKeyboardButton("1,000₽", callback_data=f"adm_salary_set_rate_1000_{user_id}")],
+                    [InlineKeyboardButton("1,500₽", callback_data=f"adm_salary_set_rate_1500_{user_id}")],
+                    [InlineKeyboardButton("2,000₽", callback_data=f"adm_salary_set_rate_2000_{user_id}")],
+                    [InlineKeyboardButton("2,500₽", callback_data=f"adm_salary_set_rate_2500_{user_id}")],
+                    [InlineKeyboardButton("3,000₽", callback_data=f"adm_salary_set_rate_3000_{user_id}")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=f"adm_salary_{user_id}")]
+                ]
+                
+            elif setting_type == "tax":
+                msg = f"📊 Налог\n\n"
+                msg += f"👤 {admin_name}\n\n"
+                msg += "Выберите налог (0 = по умолчанию):"
+                
+                keyboard = [
+                    [InlineKeyboardButton("0% (по умолчанию)", callback_data=f"adm_salary_set_tax_0_{user_id}")],
+                    [InlineKeyboardButton("6%", callback_data=f"adm_salary_set_tax_6_{user_id}")],
+                    [InlineKeyboardButton("15%", callback_data=f"adm_salary_set_tax_15_{user_id}")],
+                    [InlineKeyboardButton("30%", callback_data=f"adm_salary_set_tax_30_{user_id}")],
+                    [InlineKeyboardButton("🔙 Назад", callback_data=f"adm_salary_{user_id}")]
+                ]
+            
+            else:
+                await query.edit_message_text("❌ Неверный тип настройки")
+                return
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+            
+        except Exception as e:
+            logger.error(f"Failed to handle salary setting: {e}")
+            await query.edit_message_text(f"❌ Ошибка: {e}")
+    
+    async def apply_salary_setting(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Apply salary setting change"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.is_owner(update.effective_user.id):
+            await query.edit_message_text("❌ Доступ только для владельца")
+            return
+        
+        data = query.data
+        parts = data.split('_')
+        
+        if len(parts) < 5:
+            await query.edit_message_text("❌ Ошибка данных")
+            return
+        
+        setting_type = parts[3]
+        value = parts[4]
+        user_id = int(parts[5])
+        
+        try:
+            admin = self.db.get_admin(user_id)
+            admin_name = admin.get('full_name') or admin.get('username') or f"ID {user_id}"
+            
+            success = False
+            
+            if setting_type == "emp":
+                emp_type_map = {
+                    'self': 'self_employed',
+                    'staff': 'staff',
+                    'gpc': 'gpc'
+                }
+                emp_type = emp_type_map.get(value)
+                if emp_type:
+                    success = self.db.set_employment_type(user_id, emp_type)
+                    setting_name = f"тип занятости на {value}"
+                    
+            elif setting_type == "rate":
+                amount = float(value)
+                success = self.db.set_salary_per_shift(user_id, amount)
+                setting_name = f"ставку на {amount:,.0f}₽"
+                
+            elif setting_type == "tax":
+                rate = float(value)
+                success = self.db.set_custom_tax_rate(user_id, rate)
+                setting_name = f"налог на {rate}%"
+            
+            if success:
+                await query.edit_message_text(
+                    f"✅ Изменено {setting_name} для {admin_name}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Назад", callback_data=f"adm_salary_{user_id}")]])
+                )
+            else:
+                await query.edit_message_text(f"❌ Не удалось изменить {setting_name}")
+                
+        except Exception as e:
+            logger.error(f"Failed to apply salary setting: {e}")
+            await query.edit_message_text(f"❌ Ошибка: {e}")

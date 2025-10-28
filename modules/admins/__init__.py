@@ -291,6 +291,15 @@ def register_admins(application: Application, config: dict, db_path: str, bot_us
             # This is handled in ConversationHandler, just acknowledge
             await query.answer()
         
+        # Salary settings
+        elif data.startswith("adm_salary_"):
+            user_id = int(data.split('_')[2])
+            await wizard.show_salary_settings(update, context, user_id)
+        elif data.startswith("adm_salary_emp_") or data.startswith("adm_salary_rate_") or data.startswith("adm_salary_tax_"):
+            await wizard.handle_salary_setting(update, context)
+        elif data.startswith("adm_salary_set_"):
+            await wizard.apply_salary_setting(update, context)
+        
         # Remove admin
         elif data.startswith("adm_remove_confirm_"):
             user_id = int(data.split('_')[3])
