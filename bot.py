@@ -3059,10 +3059,16 @@ class ClubAssistantBot:
         
         # DEBUG: Log all incoming messages
         logger.info(f"📨 Message from {user.id}: '{text}' (len={len(text)}, repr={repr(text)})")
-        
+
         # Note: Reply keyboard buttons are handled by MessageHandlers in group=-1
         # See button handlers registration at the top of run() method
-        
+
+        # Skip processing for reply keyboard buttons to prevent "Не знаю ответа" error
+        BUTTON_TEXTS = ["🔒 Закрыть смену", "🔓 Открыть смену", "💸 Списать с кассы", "💰 Взять зарплату", "📊 Меню"]
+        if text in BUTTON_TEXTS:
+            logger.info(f"🔘 Skipping button text: {text}")
+            return
+
         if len(text) < 3:
             return
         
@@ -3221,47 +3227,18 @@ class ClubAssistantBot:
         if self.video_generator:
             application.add_handler(CommandHandler("video", self.cmd_video))
         
-        # === BUTTON HANDLERS (highest priority, must be registered FIRST) ===
-        
-        # Register button handlers BEFORE conversation handlers (highest priority)
-        async def handle_close_shift_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            """Handle close shift button"""
-            logger.info(f"🔒 HANDLER: Close shift button pressed by user {update.effective_user.id}")
-            logger.info(f"🔒 HANDLER: Text received: '{update.message.text}'")
-            await self.shift_wizard.cmd_shift(update, context)
-        
-        async def handle_expense_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            """Handle expense button"""
-            logger.info(f"💸 HANDLER: Add expense button pressed by user {update.effective_user.id}")
-            await self.shift_wizard.cmd_expense(update, context)
-        
-        async def handle_withdrawal_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
-            """Handle withdrawal button"""
-            logger.info(f"💰 HANDLER: Cash withdrawal button pressed by user {update.effective_user.id}")
-            await self.shift_wizard.start_cash_withdrawal(update, context)
-        
+        # === BUTTON HANDLERS ===
+        # Note: Button handlers for "Закрыть смену", "Списать с кассы", "Взять зарплату"
+        # are now registered as entry_points in their respective ConversationHandlers below
+
+        # Keep only the "Открыть смену" button handler since it doesn't use ConversationHandler
         async def handle_open_shift_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
             """Handle open shift button"""
             logger.info(f"🔓 HANDLER: Open shift button pressed by user {update.effective_user.id}")
             await self.shift_wizard.cmd_open_shift(update, context)
-        
+
         application.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex("^🔒 Закрыть смену$"), 
-            handle_close_shift_button
-        ), group=-1)
-        
-        application.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex("^💸 Списать с кассы$"), 
-            handle_expense_button
-        ), group=-1)
-        
-        application.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex("^💰 Взять зарплату$"), 
-            handle_withdrawal_button
-        ), group=-1)
-        
-        application.add_handler(MessageHandler(
-            filters.TEXT & filters.Regex("^🔓 Открыть смену$"), 
+            filters.TEXT & filters.Regex("^🔓 Открыть смену$"),
             handle_open_shift_button
         ), group=-1)
         
@@ -3504,7 +3481,8 @@ class ClubAssistantBot:
             # Register /shift conversation handler (CLOSE shift)
             shift_handler = ConversationHandler(
                 entry_points=[
-                    CommandHandler("shift", shift_wizard.cmd_shift)
+                    CommandHandler("shift", shift_wizard.cmd_shift),
+                    MessageHandler(filters.TEXT & filters.Regex("^🔒 Закрыть смену$"), shift_wizard.cmd_shift)
                 ],
                 states={
                     ENTER_FACT_CASH: [
@@ -3545,7 +3523,8 @@ class ClubAssistantBot:
             # Register expense tracking conversation handler
             expense_handler = ConversationHandler(
                 entry_points=[
-                    CommandHandler("expense", shift_wizard.cmd_expense)
+                    CommandHandler("expense", shift_wizard.cmd_expense),
+                    MessageHandler(filters.TEXT & filters.Regex("^💸 Списать с кассы$"), shift_wizard.cmd_expense)
                 ],
                 states={
                     EXPENSE_SELECT_CASH_SOURCE: [
@@ -3570,7 +3549,8 @@ class ClubAssistantBot:
             # Register cash withdrawal conversation handler
             withdrawal_handler = ConversationHandler(
                 entry_points=[
-                    CommandHandler("withdrawal", shift_wizard.start_cash_withdrawal)
+                    CommandHandler("withdrawal", shift_wizard.start_cash_withdrawal),
+                    MessageHandler(filters.TEXT & filters.Regex("^💰 Взять зарплату$"), shift_wizard.start_cash_withdrawal)
                 ],
                 states={
                     WITHDRAWAL_ENTER_AMOUNT: [

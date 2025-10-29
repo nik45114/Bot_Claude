@@ -1,6 +1,7 @@
 # Секреты
 config.json
 *.env
+.env
 
 # База данных
 *.db
@@ -16,7 +17,17 @@ __pycache__/
 venv/
 env/
 
+# Векторное хранилище и кэш
+vector_index.faiss
+vector_metadata.pkl
+.embedding_cache/
+
 # Системное
 .DS_Store
 *.log
 google_credentials.json
+
+# Бэкапы
+backups/
+*.tar.gz
+*.backup

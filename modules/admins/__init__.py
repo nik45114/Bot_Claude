@@ -269,11 +269,20 @@ def register_admins(application: Application, config: dict, db_path: str, bot_us
             user_id = int(data.split('_')[2])
             await wizard.show_permissions(update, context, user_id)
         elif data.startswith("adm_toggleperm_"):
-            parts = data.split('_')
-            user_id = int(parts[2])
-            permission = parts[3]
-            value = bool(int(parts[4]))
-            await wizard.toggle_permission(update, context, user_id, permission, value)
+            try:
+                parts = data.split('_')
+                if len(parts) < 5:
+                    await query.answer("❌ Некорректные данные", show_alert=True)
+                    return
+
+                user_id = int(parts[2])
+                # Support permissions with underscores in name
+                permission = '_'.join(parts[3:-1])
+                value = bool(int(parts[-1]))
+                await wizard.toggle_permission(update, context, user_id, permission, value)
+            except (IndexError, ValueError) as e:
+                print(f"Error parsing toggle permission callback: {e}")
+                await query.answer("❌ Ошибка обработки данных", show_alert=True)
         elif data.startswith("adm_resetperms_"):
             user_id = int(data.split('_')[2])
             await wizard.reset_permissions(update, context, user_id)

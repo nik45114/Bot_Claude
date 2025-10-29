@@ -424,16 +424,32 @@ class AdminWizard:
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text, reply_markup=reply_markup)
     
-    async def toggle_permission(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+    async def toggle_permission(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
                                 user_id: int, permission: str, value: bool):
         """Toggle a permission"""
         query = update.callback_query
-        await query.answer()
-        
+
+        # Check if current user is owner
+        if not self.is_owner(update.effective_user.id):
+            await query.answer("❌ Только владелец может изменять права", show_alert=True)
+            return
+
+        # Check if admin exists
+        admin = self.db.get_admin(user_id)
+        if not admin:
+            await query.answer("❌ Админ не найден", show_alert=True)
+            return
+
+        # Validate permission name
+        from .db import PERMISSIONS
+        if permission not in PERMISSIONS:
+            await query.answer("❌ Неверное право", show_alert=True)
+            return
+
         # Get current permissions
         permissions = self.db.get_permissions(user_id)
         permissions[permission] = value
-        
+
         if self.db.set_permissions(user_id, permissions):
             # Log action
             self.db.log_action(
@@ -442,13 +458,13 @@ class AdminWizard:
                 user_id,
                 {permission: value}
             )
-            
+
+            # Обновить интерфейс сразу
+            await self.show_permissions(update, context, user_id)
+            # Уведомление после обновления
             await query.answer("✅ Права обновлены", show_alert=False)
         else:
             await query.answer("❌ Ошибка при обновлении прав", show_alert=True)
-        
-        # Refresh view
-        await self.show_permissions(update, context, user_id)
     
     async def reset_permissions(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
         """Reset permissions to role defaults"""
