@@ -56,12 +56,12 @@ class IssueCommands:
         # Кнопки для всех админов
         keyboard.append([InlineKeyboardButton("🔴 Сообщить о проблеме", callback_data="issue_report")])
         keyboard.append([InlineKeyboardButton("📋 Проблемы клуба", callback_data="issue_list")])
-        
-        # Кнопки для владельца
-        if self.is_owner(user_id):
+
+        # Кнопки для владельца ИЛИ админов с правом issues_edit
+        if self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit'):
             active_count = self.issue_manager.get_active_count()
             keyboard.append([InlineKeyboardButton(
-                f"⚠️ Текущие проблемы ({active_count})", 
+                f"⚠️ Текущие проблемы ({active_count})",
                 callback_data="issue_current"
             )])
         
@@ -243,12 +243,14 @@ class IssueCommands:
         await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def show_current_issues(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показать текущие проблемы (только владелец)"""
+        """Показать текущие проблемы"""
         query = update.callback_query
         await query.answer()
-        
-        if not self.is_owner(query.from_user.id):
-            await query.edit_message_text("❌ Доступно только владельцу")
+
+        # Проверка прав: владелец ИЛИ право issues_edit
+        user_id = query.from_user.id
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
+            await query.edit_message_text("❌ У вас нет прав на просмотр текущих проблем")
             return
         
         issues = self.issue_manager.list_issues(status='active')
