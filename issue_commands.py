@@ -278,12 +278,14 @@ class IssueCommands:
         await query.edit_message_text(text, reply_markup=reply_markup)
     
     async def manage_issue(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Управление конкретной проблемой (только владелец)"""
+        """Управление конкретной проблемой"""
         query = update.callback_query
         await query.answer()
-        
-        if not self.is_owner(query.from_user.id):
-            await query.edit_message_text("❌ Доступно только владельцу")
+
+        # Проверка прав: владелец ИЛИ право issues_edit
+        user_id = query.from_user.id
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
+            await query.edit_message_text("❌ У вас нет прав на управление проблемами")
             return
         
         # Извлекаем ID проблемы из callback_data
@@ -311,9 +313,11 @@ class IssueCommands:
         """Пометить проблему как решённую"""
         query = update.callback_query
         await query.answer()
-        
-        if not self.is_owner(query.from_user.id):
-            await query.edit_message_text("❌ Доступно только владельцу")
+
+        # Проверка прав: владелец ИЛИ право issues_edit
+        user_id = query.from_user.id
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
+            await query.edit_message_text("❌ У вас нет прав на управление проблемами")
             return
         
         issue_id = int(query.data.split('_')[-1])
@@ -354,9 +358,11 @@ class IssueCommands:
         """Начать редактирование проблемы"""
         query = update.callback_query
         await query.answer()
-        
-        if not self.is_owner(query.from_user.id):
-            await query.edit_message_text("❌ Доступно только владельцу")
+
+        # Проверка прав: владелец ИЛИ право issues_edit
+        user_id = query.from_user.id
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
+            await query.edit_message_text("❌ У вас нет прав на управление проблемами")
             return ConversationHandler.END
         
         issue_id = int(query.data.split('_')[-1])
