@@ -791,13 +791,21 @@ class ClubAssistantBot:
             intercepted = await self.admin_invite_interceptor(update, context)
             if intercepted:
                 return
-        
+
+        from telegram import ReplyKeyboardRemove
+
         text = self._get_main_menu_text()
         inline_markup = self._build_main_menu_keyboard(update.effective_user.id)
 
-        # Отправить inline меню (без ReplyKeyboard!)
+        # Убрать все ReplyKeyboard кнопки и отправить только inline меню
         await update.message.reply_text(
             text,
+            reply_markup=ReplyKeyboardRemove()
+        )
+
+        # Затем отправить inline кнопки
+        await update.message.reply_text(
+            "Выберите действие:",
             reply_markup=inline_markup
         )
     

@@ -850,20 +850,9 @@ class ShiftWizard:
             msg += f"  • Коробка: {balances['box']:,.0f} ₽\n"
             
             await query.edit_message_text(msg)
-            
-            # Update reply keyboard to show open shift button
-            from telegram import KeyboardButton, ReplyKeyboardMarkup
-            keyboard = [
-                [KeyboardButton("📊 Статистика"), KeyboardButton("❓ Помощь")],
-                [KeyboardButton("🔓 Открыть смену")]
-            ]
-            reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
-            
-            await context.bot.send_message(
-                chat_id=admin_id,
-                text="🔄 Клавиатура обновлена",
-                reply_markup=reply_markup
-            )
+
+            # Успешное сохранение смены
+            # (Inline кнопки для управления сменами доступны в главном меню /start)
         else:
             await query.edit_message_text("❌ Ошибка при сохранении смены")
         
