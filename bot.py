@@ -794,20 +794,12 @@ class ClubAssistantBot:
         
         text = self._get_main_menu_text()
         inline_markup = self._build_main_menu_keyboard(update.effective_user.id)
-        reply_keyboard = self._build_reply_keyboard(update.effective_user.id)
-        
-        # Send inline menu
+
+        # Отправить inline меню (без ReplyKeyboard!)
         await update.message.reply_text(
-            text, 
+            text,
             reply_markup=inline_markup
         )
-        
-        # Update reply keyboard with separate short message
-        if self.admin_manager.is_admin(update.effective_user.id):
-            await update.message.reply_text(
-                "🔄", 
-                reply_markup=reply_keyboard
-            )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"""📖 Справка - Club Assistant Bot v{VERSION}
@@ -1876,57 +1868,45 @@ class ClubAssistantBot:
     def _build_main_menu_keyboard(self, user_id: int) -> InlineKeyboardMarkup:
         """Построить клавиатуру главного меню"""
         keyboard = []
+
+        # Кнопки для всех пользователей
         keyboard.append([InlineKeyboardButton("📖 Справка", callback_data="help")])
         keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data="stats")])
         keyboard.append([InlineKeyboardButton("🎨 Генерация контента", callback_data="content_menu")])
-        
+
         if self.admin_manager.is_admin(user_id):
-            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
-            keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
-            keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
-            keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
-        
-        # Финансовый мониторинг только для владельца
-        if user_id == self.owner_id:
-            keyboard.append([InlineKeyboardButton("💰 Финансовый мониторинг", callback_data="cash_menu")])
-            # Admin management for owner
-            keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
-        
-        return InlineKeyboardMarkup(keyboard)
-    
-    def _build_reply_keyboard(self, user_id: int = None) -> ReplyKeyboardMarkup:
-        """Build reply keyboard with bottom buttons (dynamic based on shift status)"""
-        keyboard = []
-        
-        # Add shift buttons for admins
-        if user_id and self.admin_manager.is_admin(user_id):
-            # Check if user has an active shift
+            # Проверка активной смены для админов
             active_shift = None
             if hasattr(self, 'shift_manager') and self.shift_manager:
                 try:
                     active_shift = self.shift_manager.get_active_shift(user_id)
-                    logger.info(f"🔍 Keyboard check for user {user_id}: active_shift={active_shift}")
                 except Exception as e:
                     logger.error(f"❌ Failed to get active shift for {user_id}: {e}")
-            
+
+            # Кнопки смены
             if active_shift:
-                # User has open shift - show close, expense, and withdrawal buttons
+                # Есть открытая смена
                 keyboard.append([
-                    KeyboardButton("💸 Списать с кассы"),
-                    KeyboardButton("💰 Взять зарплату")
+                    InlineKeyboardButton("💸 Списать с кассы", callback_data="shift_expense"),
+                    InlineKeyboardButton("💰 Взять зарплату", callback_data="shift_salary")
                 ])
-                keyboard.append([
-                    KeyboardButton("🔒 Закрыть смену")
-                ])
+                keyboard.append([InlineKeyboardButton("🔒 Закрыть смену", callback_data="shift_close")])
             else:
-                # No open shift - show open button
-                keyboard.append([KeyboardButton("🔓 Открыть смену")])
-        
-        # If no buttons added (not admin or error), show minimal keyboard
-        if not keyboard:
-            keyboard.append([KeyboardButton("📊 Меню")])
-        
-        return ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                # Нет открытой смены
+                keyboard.append([InlineKeyboardButton("🔓 Открыть смену", callback_data="shift_open")])
+
+            # Админ панель
+            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
+            keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
+            keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
+            keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
+
+        # Финансовый мониторинг и управление админами только для владельца
+        if user_id == self.owner_id:
+            keyboard.append([InlineKeyboardButton("💰 Финансовый мониторинг", callback_data="cash_menu")])
+            keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
+
+        return InlineKeyboardMarkup(keyboard)
     
     def _get_main_menu_text(self) -> str:
         """Получить текст главного меню"""
@@ -2183,7 +2163,40 @@ class ClubAssistantBot:
         if data.startswith("issue_delete_"):
             await self.issue_commands.delete_issue(update, context)
             return
-        
+
+        # Обработчики кнопок смен
+        if data == "shift_open":
+            # Открыть смену - делегируем в finmon wizard
+            if hasattr(self, 'shift_wizard'):
+                await self.shift_wizard.start_open_shift(update, context)
+            else:
+                await query.answer("❌ Модуль смен не загружен", show_alert=True)
+            return
+
+        if data == "shift_close":
+            # Закрыть смену - делегируем в finmon wizard
+            if hasattr(self, 'shift_wizard'):
+                await self.shift_wizard.start_close_shift(update, context)
+            else:
+                await query.answer("❌ Модуль смен не загружен", show_alert=True)
+            return
+
+        if data == "shift_expense":
+            # Списать с кассы
+            if hasattr(self, 'shift_wizard'):
+                await self.shift_wizard.start_expense(update, context)
+            else:
+                await query.answer("❌ Модуль смен не загружен", show_alert=True)
+            return
+
+        if data == "shift_salary":
+            # Взять зарплату
+            if hasattr(self, 'shift_wizard'):
+                await self.shift_wizard.start_salary_withdrawal(update, context)
+            else:
+                await query.answer("❌ Модуль смен не загружен", show_alert=True)
+            return
+
         # Admin monitoring callbacks (owner only)
         if data == "monitor_main":
             if query.from_user.id != self.owner_id:
@@ -3200,6 +3213,7 @@ class ClubAssistantBot:
         
         # 4. Регистрируем обработчики
         application.add_handler(CommandHandler("start", self.cmd_start))
+        application.add_handler(CommandHandler("menu", self.cmd_start))  # Алиас для /start
         application.add_handler(CommandHandler("help", self.cmd_help))
         application.add_handler(CommandHandler("stats", self.cmd_stats))
         application.add_handler(CommandHandler("admin", self.cmd_admin))
@@ -3656,7 +3670,28 @@ class ClubAssistantBot:
         logger.info("   Reply keyboard: 🔓 Открыть смену / 🔒 Закрыть смену, 💸 Списать с кассы, 💰 Взять зарплату (динамическая)")
         logger.info("   Salary system: /salary command enabled")
         logger.info("=" * 60)
-        
+
+        # Настройка Bot Menu (команды в меню Telegram)
+        logger.info("⚙️ Настройка Bot Menu...")
+        try:
+            from telegram import BotCommand
+            commands = [
+                BotCommand("start", "🏠 Главное меню"),
+                BotCommand("menu", "📊 Показать меню"),
+                BotCommand("help", "❓ Справка"),
+                BotCommand("admins", "👥 Управление админами (owner)"),
+                BotCommand("finmon", "💰 Финансовый мониторинг"),
+                BotCommand("salary", "💼 Система зарплат"),
+                BotCommand("products", "📦 Управление товарами"),
+                BotCommand("issues", "🐛 Проблемы клуба"),
+                BotCommand("v2ray", "🔐 V2Ray VPN"),
+                BotCommand("content", "🎨 Генерация контента"),
+            ]
+            application.bot.set_my_commands(commands)
+            logger.info("✅ Bot Menu настроено")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось настроить Bot Menu: {e}")
+
         logger.info(f"🤖 Бот v{VERSION} запущен!")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
 
