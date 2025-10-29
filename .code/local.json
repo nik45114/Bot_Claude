@@ -1,0 +1,17 @@
+{
+  "approvedTools": [
+    "Bash(git *)",
+    "Bash(chmod *)",
+    "Bash(systemctl *)",
+    "Bash(sudo systemctl *)",
+    "Bash(journalctl *)",
+    "Bash(python *)",
+    "Bash(pip *)",
+    "Bash(find *)",
+    "Read(*)",
+    "Write(*)",
+    "Edit(*)",
+    "Glob(*)",
+    "Grep(*)"
+  ]
+}

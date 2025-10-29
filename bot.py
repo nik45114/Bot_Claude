@@ -2200,7 +2200,7 @@ class ClubAssistantBot:
         if data == "shift_salary":
             # Взять зарплату
             if hasattr(self, 'shift_wizard'):
-                await self.shift_wizard.start_salary_withdrawal(update, context)
+                await self.shift_wizard.start_cash_withdrawal(update, context)
             else:
                 await query.answer("❌ Модуль смен не загружен", show_alert=True)
             return
