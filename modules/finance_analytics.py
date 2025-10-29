@@ -134,9 +134,9 @@ class FinanceAnalytics:
         Получить зарплаты администраторов из Google Sheets
 
         Читает столбцы AL, AM, AN:
-        - AL: Описание выплаты
-        - AM: Сумма
-        - AN: Примечание
+        - AL (колонка 38): Описание выплаты
+        - AM (колонка 39): Сумма
+        - AN (колонка 40): Примечание
 
         Возвращает:
         {
@@ -155,17 +155,158 @@ class FinanceAnalytics:
             return {}
 
         try:
-            # Получить данные из Sheets (столбцы AL:AN)
-            # TODO: Реализовать чтение из Google Sheets API
-            # Сейчас возвращаем заглушку
             logger.info("📊 Получение зарплат из Google Sheets...")
 
-            # Временная заглушка
-            return {}
+            # Получить клиент Sheets
+            client = self.sheets_parser._get_sheet_client()
+            spreadsheet = self.sheets_parser._get_spreadsheet()
+
+            # Открыть первый лист (обычно это лист с расписанием и зарплатами)
+            worksheet = spreadsheet.get_worksheet(0)
+
+            # Получить все значения из столбцов AL:AN (38:40)
+            # Формат: AL1:AN100 (берём первые 100 строк)
+            salary_data = worksheet.get('AL1:AN100')
+
+            if not salary_data:
+                logger.info("📊 Нет данных о зарплатах в таблице")
+                return {}
+
+            # Парсинг данных
+            salaries = {}
+
+            # Предполагаем, что первая строка - заголовки
+            # Далее каждая строка: [Имя/Описание, Сумма, Примечание]
+            for row_idx, row in enumerate(salary_data[1:], start=2):  # Пропускаем заголовок
+                if len(row) < 2:  # Минимум нужно описание и сумма
+                    continue
+
+                description = row[0].strip() if len(row) > 0 else ""
+                amount_str = row[1].strip() if len(row) > 1 else "0"
+                note = row[2].strip() if len(row) > 2 else ""
+
+                # Пропускаем пустые строки
+                if not description and not amount_str:
+                    continue
+
+                # Парсим сумму
+                try:
+                    # Убираем всё кроме цифр, точки и минуса
+                    amount_str = amount_str.replace(',', '.').replace(' ', '').replace('₽', '')
+                    amount = float(amount_str) if amount_str else 0
+                except (ValueError, AttributeError):
+                    logger.warning(f"⚠️ Не удалось распарсить сумму: {amount_str} в строке {row_idx}")
+                    amount = 0
+
+                # Попробовать извлечь имя администратора из описания
+                # Формат может быть: "Иванов И.И. - смены" или просто "Смены"
+                admin_name = self._extract_admin_name(description)
+
+                if not admin_name:
+                    logger.debug(f"⏭️ Пропускаем строку без имени админа: {description}")
+                    continue
+
+                # Получить admin_id по имени (если есть AdminDB)
+                admin_id = self._get_admin_id_by_name(admin_name)
+
+                if not admin_id:
+                    # Если не нашли в БД, используем имя как ключ
+                    admin_id = f"unknown_{admin_name}"
+
+                # Добавить в результат
+                if admin_id not in salaries:
+                    salaries[admin_id] = {
+                        'name': admin_name,
+                        'salary_items': [],
+                        'total': 0
+                    }
+
+                salaries[admin_id]['salary_items'].append({
+                    'description': description,
+                    'amount': amount,
+                    'note': note
+                })
+                salaries[admin_id]['total'] += amount
+
+            logger.info(f"📊 Получены зарплаты для {len(salaries)} администраторов")
+            return salaries
 
         except Exception as e:
             logger.error(f"❌ Ошибка получения данных из Sheets: {e}")
+            import traceback
+            traceback.print_exc()
             return {}
+
+    def _extract_admin_name(self, text: str) -> Optional[str]:
+        """
+        Извлечь имя администратора из текста
+
+        Примеры:
+        - "Иванов И.И. - смены" -> "Иванов И.И."
+        - "Петров П. (аванс)" -> "Петров П."
+        - "Смирнова Анна - премия" -> "Смирнова Анна"
+        """
+        if not text:
+            return None
+
+        # Паттерны для поиска имени
+        # 1. Фамилия Инициалы (Иванов И.И.)
+        import re
+        pattern1 = r'^([А-ЯЁ][а-яё]+\s+[А-ЯЁ]\.[А-ЯЁ]\.?)'
+        match = re.match(pattern1, text)
+        if match:
+            return match.group(1).strip()
+
+        # 2. Фамилия Имя (Иванов Иван)
+        pattern2 = r'^([А-ЯЁ][а-яё]+\s+[А-ЯЁ][а-яё]+)'
+        match = re.match(pattern2, text)
+        if match:
+            return match.group(1).strip()
+
+        # 3. Просто фамилия
+        pattern3 = r'^([А-ЯЁ][а-яё]+)'
+        match = re.match(pattern3, text)
+        if match:
+            name = match.group(1).strip()
+            # Проверим, что это не служебное слово
+            if name.lower() not in ['итого', 'всего', 'сумма', 'расход']:
+                return name
+
+        return None
+
+    def _get_admin_id_by_name(self, name: str) -> Optional[int]:
+        """
+        Получить ID администратора по имени
+
+        Ищет в БД администраторов по полному имени или username
+        """
+        if not self.sheets_parser or not hasattr(self.sheets_parser, 'admin_db'):
+            return None
+
+        try:
+            import sqlite3
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Поиск по полному имени (full_name)
+            cursor.execute("""
+                SELECT user_id FROM admins
+                WHERE full_name LIKE ?
+                OR username LIKE ?
+                LIMIT 1
+            """, (f'%{name}%', f'%{name}%'))
+
+            result = cursor.fetchone()
+            conn.close()
+
+            if result:
+                return result[0]
+
+            return None
+
+        except Exception as e:
+            logger.error(f"❌ Ошибка поиска админа по имени: {e}")
+            return None
 
     def calculate_net_salaries(self) -> Dict[int, Dict]:
         """
