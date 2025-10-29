@@ -1914,6 +1914,11 @@ class ClubAssistantBot:
             keyboard.append([InlineKeyboardButton("💰 Финансовый мониторинг", callback_data="cash_menu")])
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
 
+            # WebApp кнопка для финансовой аналитики
+            from telegram import WebAppInfo
+            webapp_url = "http://64.188.79.142:5001/"
+            keyboard.append([InlineKeyboardButton("📊 Аналитика (графики)", web_app=WebAppInfo(url=webapp_url))])
+
         return InlineKeyboardMarkup(keyboard)
     
     def _get_main_menu_text(self) -> str:
