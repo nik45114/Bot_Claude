@@ -3175,7 +3175,28 @@ class ClubAssistantBot:
         bot = await application.bot.get_me()
         self.bot_username = bot.username
         logger.info(f"✅ Bot: @{self.bot_username}")
-        
+
+        # Настройка Bot Menu (команды в меню Telegram)
+        logger.info("⚙️ Настройка Bot Menu...")
+        try:
+            from telegram import BotCommand
+            commands = [
+                BotCommand("start", "🏠 Главное меню"),
+                BotCommand("menu", "📊 Показать меню"),
+                BotCommand("help", "❓ Справка"),
+                BotCommand("admins", "👥 Управление админами (owner)"),
+                BotCommand("finmon", "💰 Финансовый мониторинг"),
+                BotCommand("salary", "💼 Система зарплат"),
+                BotCommand("products", "📦 Управление товарами"),
+                BotCommand("issues", "🐛 Проблемы клуба"),
+                BotCommand("v2ray", "🔐 V2Ray VPN"),
+                BotCommand("content", "🎨 Генерация контента"),
+            ]
+            await application.bot.set_my_commands(commands)
+            logger.info("✅ Bot Menu настроено")
+        except Exception as e:
+            logger.warning(f"⚠️ Не удалось настроить Bot Menu: {e}")
+
         # IssueCommands теперь инициализируется в run() сразу после создания Application
         # self.issue_commands = IssueCommands(self.issue_manager, self.kb, self.admin_manager, self.owner_id, application)
     
@@ -3670,27 +3691,6 @@ class ClubAssistantBot:
         logger.info("   Reply keyboard: 🔓 Открыть смену / 🔒 Закрыть смену, 💸 Списать с кассы, 💰 Взять зарплату (динамическая)")
         logger.info("   Salary system: /salary command enabled")
         logger.info("=" * 60)
-
-        # Настройка Bot Menu (команды в меню Telegram)
-        logger.info("⚙️ Настройка Bot Menu...")
-        try:
-            from telegram import BotCommand
-            commands = [
-                BotCommand("start", "🏠 Главное меню"),
-                BotCommand("menu", "📊 Показать меню"),
-                BotCommand("help", "❓ Справка"),
-                BotCommand("admins", "👥 Управление админами (owner)"),
-                BotCommand("finmon", "💰 Финансовый мониторинг"),
-                BotCommand("salary", "💼 Система зарплат"),
-                BotCommand("products", "📦 Управление товарами"),
-                BotCommand("issues", "🐛 Проблемы клуба"),
-                BotCommand("v2ray", "🔐 V2Ray VPN"),
-                BotCommand("content", "🎨 Генерация контента"),
-            ]
-            application.bot.set_my_commands(commands)
-            logger.info("✅ Bot Menu настроено")
-        except Exception as e:
-            logger.warning(f"⚠️ Не удалось настроить Bot Menu: {e}")
 
         logger.info(f"🤖 Бот v{VERSION} запущен!")
         application.run_polling(allowed_updates=Update.ALL_TYPES)
