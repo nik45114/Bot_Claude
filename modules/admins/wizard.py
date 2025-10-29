@@ -344,9 +344,17 @@ class AdminWizard:
     async def set_role(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, role: str):
         """Set admin role"""
         query = update.callback_query
-        await query.answer()
-        
+
+        # Проверка прав - только owner может менять роли
+        if not self.is_owner(update.effective_user.id):
+            await query.answer("❌ Только владелец может изменять роли", show_alert=True)
+            return
+
         if self.db.set_role(user_id, role):
+            # ВАЖНО: При смене роли нужно сбросить кастомные права!
+            # Иначе права не обновятся по новой роли
+            self.db.reset_permissions(user_id)
+
             # Log action
             self.db.log_action(
                 update.effective_user.id,
@@ -354,13 +362,13 @@ class AdminWizard:
                 user_id,
                 {'role': role}
             )
-            
+
+            # Обновить интерфейс сразу
+            await self.show_admin_view(update, context, user_id)
+            # Уведомление после обновления
             await query.answer(f"✅ Роль изменена на {format_role_name(role)}", show_alert=True)
         else:
             await query.answer("❌ Ошибка при изменении роли", show_alert=True)
-        
-        # Return to admin view
-        await self.show_admin_view(update, context, user_id)
     
     # ===== Permission Management =====
     
@@ -469,8 +477,7 @@ class AdminWizard:
     async def reset_permissions(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
         """Reset permissions to role defaults"""
         query = update.callback_query
-        await query.answer()
-        
+
         if self.db.reset_permissions(user_id):
             # Log action
             self.db.log_action(
@@ -479,45 +486,45 @@ class AdminWizard:
                 user_id,
                 {'reset': True}
             )
-            
+
+            # Обновить интерфейс сразу
+            await self.show_permissions(update, context, user_id)
+            # Уведомление после обновления
             await query.answer("✅ Права сброшены к роли", show_alert=True)
         else:
             await query.answer("❌ Ошибка при сбросе прав", show_alert=True)
-        
-        # Refresh view
-        await self.show_permissions(update, context, user_id)
     
     # ===== Activate/Deactivate =====
     
     async def activate_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
         """Activate admin"""
         query = update.callback_query
-        await query.answer()
-        
+
         if self.db.set_active(user_id, 1):
             # Log action
             self.db.log_action(update.effective_user.id, 'activate', user_id)
+
+            # Обновить интерфейс сразу
+            await self.show_admin_view(update, context, user_id)
+            # Уведомление после обновления
             await query.answer("✅ Админ активирован", show_alert=True)
         else:
             await query.answer("❌ Ошибка при активации", show_alert=True)
-        
-        # Return to admin view
-        await self.show_admin_view(update, context, user_id)
-    
+
     async def deactivate_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
         """Deactivate admin"""
         query = update.callback_query
-        await query.answer()
-        
+
         if self.db.set_active(user_id, 0):
             # Log action
             self.db.log_action(update.effective_user.id, 'deactivate', user_id)
+
+            # Обновить интерфейс сразу
+            await self.show_admin_view(update, context, user_id)
+            # Уведомление после обновления
             await query.answer("✅ Админ деактивирован", show_alert=True)
         else:
             await query.answer("❌ Ошибка при деактивации", show_alert=True)
-        
-        # Return to admin view
-        await self.show_admin_view(update, context, user_id)
     
     # ===== Remove Admin =====
     
