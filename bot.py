@@ -3646,7 +3646,29 @@ class ClubAssistantBot:
             logger.info("✅ Shift wizard registered")
             logger.info("   Commands: /shift, /balances, /movements, /finmon, /schedule")
             logger.info("   Button: 💰 Сдать смену (reply keyboard)")
-            
+
+            # ================================================
+            # Finance Analytics Module
+            # ================================================
+            try:
+                from modules.finance_analytics import FinanceAnalytics, register_analytics_commands
+
+                analytics = FinanceAnalytics(
+                    db_path="club_assistant.db",
+                    sheets_parser=schedule_parser if schedule_parser else None
+                )
+
+                # Регистрация команд аналитики
+                register_analytics_commands(application, analytics, self.admin_manager)
+
+                logger.info("✅ Finance Analytics registered")
+                logger.info("   Commands: /salaries, /movements, /performance")
+
+            except Exception as e:
+                logger.warning(f"⚠️ Finance Analytics module registration failed: {e}")
+                import traceback
+                traceback.print_exc()
+
         except Exception as e:
             logger.warning(f"⚠️ FinMon Simple module registration failed: {e}")
             import traceback
