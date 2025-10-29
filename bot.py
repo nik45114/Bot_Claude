@@ -100,7 +100,17 @@ class AdminManager:
             return count > 0
         except:
             return False
-    
+
+    def has_permission(self, user_id: int, permission: str) -> bool:
+        """Check if user has specific permission"""
+        try:
+            # Import AdminDB для проверки прав
+            from modules.admins.db import AdminDB
+            admin_db = AdminDB(self.db_path)
+            return admin_db.has_permission(user_id, permission)
+        except:
+            return False
+
     def list_admins(self) -> List[Tuple]:
         try:
             conn = sqlite3.connect(self.db_path)

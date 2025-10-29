@@ -58,7 +58,7 @@ class IssueCommands:
         keyboard.append([InlineKeyboardButton("📋 Проблемы клуба", callback_data="issue_list")])
 
         # Кнопки для владельца ИЛИ админов с правом issues_edit
-        if self.is_owner(user_id) or self.admin_manager.db.has_permission(user_id, 'issues_edit'):
+        if self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit'):
             active_count = self.issue_manager.get_active_count()
             keyboard.append([InlineKeyboardButton(
                 f"⚠️ Текущие проблемы ({active_count})",
@@ -249,7 +249,7 @@ class IssueCommands:
 
         # Проверка прав: владелец ИЛИ право issues_edit
         user_id = query.from_user.id
-        if not (self.is_owner(user_id) or self.admin_manager.db.has_permission(user_id, 'issues_edit')):
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
             await query.edit_message_text("❌ У вас нет прав на просмотр текущих проблем")
             return
         
@@ -286,7 +286,7 @@ class IssueCommands:
 
         # Проверка прав: владелец ИЛИ право issues_edit
         user_id = query.from_user.id
-        if not (self.is_owner(user_id) or self.admin_manager.db.has_permission(user_id, 'issues_edit')):
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
             await query.edit_message_text("❌ У вас нет прав на управление проблемами")
             return
         
@@ -318,7 +318,7 @@ class IssueCommands:
 
         # Проверка прав: владелец ИЛИ право issues_edit
         user_id = query.from_user.id
-        if not (self.is_owner(user_id) or self.admin_manager.db.has_permission(user_id, 'issues_edit')):
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
             await query.edit_message_text("❌ У вас нет прав на управление проблемами")
             return
         
@@ -363,7 +363,7 @@ class IssueCommands:
 
         # Проверка прав: владелец ИЛИ право issues_edit
         user_id = query.from_user.id
-        if not (self.is_owner(user_id) or self.admin_manager.db.has_permission(user_id, 'issues_edit')):
+        if not (self.is_owner(user_id) or self.admin_manager.has_permission(user_id, 'issues_edit')):
             await query.edit_message_text("❌ У вас нет прав на управление проблемами")
             return ConversationHandler.END
         
