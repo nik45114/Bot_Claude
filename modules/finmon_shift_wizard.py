@@ -633,7 +633,19 @@ class ShiftWizard:
                     admin_name = admin.get('full_name') or admin.get('username') or f"ID {admin_id}"
             except:
                 pass
-        
+
+        # Save message info for later update in bot_data (shared across users)
+        # Use opener_id as key to find this message later
+        if not context.bot_data.get('pending_shift_messages'):
+            context.bot_data['pending_shift_messages'] = {}
+
+        context.bot_data['pending_shift_messages'][opener_id] = {
+            'chat_id': query.message.chat_id,
+            'message_id': query.message.message_id,
+            'club': club,
+            'shift_type': shift_type
+        }
+
         await query.edit_message_text(
             f"⏳ Ожидание подтверждения\n\n"
             f"Запрос отправлен: {admin_name}\n"
@@ -1848,7 +1860,7 @@ class ShiftWizard:
             # Duty person confirms - open shift immediately
             confirmed_by = query.from_user.id
             shift_id = self.shift_manager.open_shift(opener_id, club, shift_type, confirmed_by)
-            
+
             if shift_id:
                 await query.edit_message_text(
                     f"✅ Смена подтверждена и открыта!\n\n"
@@ -1856,24 +1868,47 @@ class ShiftWizard:
                     f"🆔 ID смены: {shift_id}\n"
                     f"✅ Подтверждено: {query.from_user.full_name or 'Вы'}"
                 )
-                
-                # Notify the opener with dynamic keyboard
-                try:
-                    # Update dynamic keyboard for opener
-                    reply_keyboard = self.bot_instance._build_reply_keyboard(opener_id) if hasattr(self, 'bot_instance') else None
-                    
-                    await context.bot.send_message(
-                        chat_id=opener_id,
-                        text=f"✅ Смена открыта!\n\n"
-                             f"🏢 {club} | {shift_label}\n"
-                             f"🆔 ID смены: {shift_id}\n\n"
-                             f"Смена подтверждена дежурным.\n"
-                             f"Для списания денег используйте:\n"
-                             f"💸 Списать с кассы",
-                        reply_markup=reply_keyboard
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to notify opener: {e}")
+
+                # Update the pending message in club account if exists
+                pending_msg = None
+                if context.bot_data.get('pending_shift_messages'):
+                    pending_msg = context.bot_data['pending_shift_messages'].get(opener_id)
+
+                if pending_msg:
+                    try:
+                        await context.bot.edit_message_text(
+                            chat_id=pending_msg['chat_id'],
+                            message_id=pending_msg['message_id'],
+                            text=f"✅ Смена открыта!\n\n"
+                                 f"🏢 {club} | {shift_label}\n"
+                                 f"🆔 ID смены: {shift_id}\n\n"
+                                 f"Смена подтверждена дежурным.\n"
+                                 f"Используйте кнопки в главном меню для работы."
+                        )
+                        # Clear pending message data
+                        context.bot_data['pending_shift_messages'].pop(opener_id, None)
+                    except Exception as e:
+                        logger.error(f"Failed to update pending message: {e}")
+
+                # Notify the opener with dynamic keyboard (only if different from club account)
+                # If opener opened from club account, the message above already updated
+                if not pending_msg:
+                    try:
+                        # Update dynamic keyboard for opener
+                        reply_keyboard = self.bot_instance._build_reply_keyboard(opener_id) if hasattr(self, 'bot_instance') else None
+
+                        await context.bot.send_message(
+                            chat_id=opener_id,
+                            text=f"✅ Смена открыта!\n\n"
+                                 f"🏢 {club} | {shift_label}\n"
+                                 f"🆔 ID смены: {shift_id}\n\n"
+                                 f"Смена подтверждена дежурным.\n"
+                                 f"Для списания денег используйте:\n"
+                                 f"💸 Списать с кассы",
+                            reply_markup=reply_keyboard
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to notify opener: {e}")
 
                 # Send notification to controller
                 if self.improvements:
@@ -1903,7 +1938,7 @@ class ShiftWizard:
                 f"❌ Замена отклонена\n\n"
                 f"Вы отметили это как ошибку"
             )
-            
+
             # Notify the opener
             try:
                 await context.bot.send_message(
@@ -1914,20 +1949,19 @@ class ShiftWizard:
                 )
             except:
                 pass
-            
-            # Notify owner
-            if self.owner_ids:
-                for owner_id in self.owner_ids:
-                    try:
-                        await context.bot.send_message(
-                            chat_id=owner_id,
-                            text=f"⚠️ ОТКЛОНЕНА ЗАМЕНА\n\n"
-                            f"🏢 {club} | {shift_label}\n"
-                            f"Дежурный по расписанию отклонил открытие смены пользователем {opener_id}\n\n"
-                            f"Проверьте ситуацию!"
-                        )
-                    except:
-                        pass
+
+            # Notify only controller, not owner
+            if self.controller_id:
+                try:
+                    await context.bot.send_message(
+                        chat_id=self.controller_id,
+                        text=f"⚠️ ОТКЛОНЕНА ЗАМЕНА\n\n"
+                        f"🏢 {club} | {shift_label}\n"
+                        f"Дежурный по расписанию отклонил открытие смены пользователем {opener_id}\n\n"
+                        f"Проверьте ситуацию!"
+                    )
+                except:
+                    pass
     
     async def handle_owner_schedule_update(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle owner's decision to update schedule after replacement"""
@@ -2131,6 +2165,17 @@ class ShiftWizard:
     async def cmd_shift_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать статус смен и остатки в кассах"""
         user_id = update.effective_user.id
+
+        # Проверка прав доступа - только владелец и контролирующий
+        allowed_ids = []
+        if self.owner_ids:
+            allowed_ids.extend(self.owner_ids)
+        if self.controller_id:
+            allowed_ids.append(self.controller_id)
+
+        if user_id not in allowed_ids:
+            await update.message.reply_text("❌ Команда доступна только владельцу и контролирующему")
+            return
 
         # Получаем активные смены
         if not self.shift_manager:
