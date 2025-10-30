@@ -110,10 +110,10 @@ class ShiftManager:
             cursor.execute('''
                 SELECT id, admin_id, club, shift_type, opened_at, confirmed_by, status
                 FROM active_shifts
-                WHERE admin_id = ? AND status = 'open'
+                WHERE (admin_id = ? OR confirmed_by = ?) AND status = 'open'
                 ORDER BY opened_at DESC
                 LIMIT 1
-            ''', (admin_id,))
+            ''', (admin_id, admin_id))
 
             row = cursor.fetchone()
             conn.close()

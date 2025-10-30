@@ -534,6 +534,17 @@ class ShiftWizard:
             # Get admin name
             admin_name = context.user_data.get('expected_duty_name', 'Админ')
 
+            # Save message info for later update in bot_data
+            if not context.bot_data.get('pending_shift_messages'):
+                context.bot_data['pending_shift_messages'] = {}
+
+            context.bot_data['pending_shift_messages'][opener_id] = {
+                'chat_id': query.message.chat_id,
+                'message_id': query.message.message_id,
+                'club': club,
+                'shift_type': shift_type
+            }
+
             await query.edit_message_text(
                 f"⏳ Ожидание подтверждения\n\n"
                 f"Запрос отправлен: {admin_name}\n"
