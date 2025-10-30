@@ -28,6 +28,10 @@ class FinanceAnalytics:
         self.sheets_parser = sheets_parser
         logger.info("✅ FinanceAnalytics инициализирован")
 
+    def _get_db(self):
+        """Получить подключение к БД"""
+        return sqlite3.connect(self.db_path)
+
     # =====================================================
     # ОСНОВНЫЕ ДАННЫЕ
     # =====================================================

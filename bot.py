@@ -42,8 +42,6 @@ try:
     from v2ray_commands import V2RayCommands
     from club_manager import ClubManager
     from club_commands import ClubCommands, WAITING_REPORT
-    from cash_manager import CashManager
-    from cash_commands import CashCommands, CASH_SELECT_CLUB, CASH_SELECT_TYPE, CASH_ENTER_AMOUNT, CASH_ENTER_DESCRIPTION, CASH_ENTER_CATEGORY
     from product_manager import ProductManager
     from product_commands import ProductCommands, PRODUCT_ENTER_NAME, PRODUCT_ENTER_PRICE, PRODUCT_SELECT, PRODUCT_ENTER_QUANTITY, PRODUCT_EDIT_PRICE, PRODUCT_SET_NICKNAME
     from issue_manager import IssueManager
@@ -734,9 +732,6 @@ class ClubAssistantBot:
         self.club_manager = ClubManager(DB_PATH)
         self.club_commands = ClubCommands(self.club_manager, self.owner_id)
         
-        # Cash Manager - финансовый мониторинг (только для владельца)
-        self.cash_manager = CashManager(DB_PATH)
-        self.cash_commands = None  # Будет инициализирован позже с bot_app
         
         # Product Manager - управление товарами (для владельца и админов)
         logger.info("🔧 Initializing ProductManager...")
@@ -1303,20 +1298,6 @@ class ClubAssistantBot:
                 "Пример: /addadmin 123456789"
             )
     
-    async def cmd_admins(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        # Owner-only restriction with OWNER_TG_IDS
-        if not self.is_owner(update.effective_user.id):
-            await update.message.reply_text("❌ Доступ запрещён. Эта команда доступна только владельцу.")
-            return
-        
-        admins = self.admin_manager.list_admins()
-        
-        if not admins:
-            await update.message.reply_text("Нет админов")
-            return
-        
-        # For owner, show interactive list with stats
-        await self._show_admins_list(update, context)
     
     async def cmd_savecreds(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
@@ -1911,9 +1892,8 @@ class ClubAssistantBot:
             keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
             keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
 
-        # Финансовый мониторинг и управление админами только для владельца
+        # Управление админами и аналитика только для владельца
         if user_id == self.owner_id:
-            keyboard.append([InlineKeyboardButton("💰 Финансовый мониторинг", callback_data="cash_menu")])
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
 
             # WebApp кнопка для финансовой аналитики
@@ -2074,36 +2054,7 @@ class ClubAssistantBot:
             return
         
         # === НОВЫЕ МОДУЛИ ===
-        
-        # Финансовый мониторинг
-        if data == "cash_menu":
-            await self.cash_commands.show_cash_menu(update, context)
-            return
-        
-        if data == "cash_balances":
-            await self.cash_commands.show_balances(update, context)
-            return
-        
-        if data == "cash_movements":
-            await self.cash_commands.show_movements(update, context)
-            return
-        
-        if data.startswith("cash_movements_"):
-            await self.cash_commands.show_movements_club(update, context)
-            return
-        
-        if data in ("cash_add_income", "cash_add_expense"):
-            # Эти обрабатываются через conversation handler
-            return
-        
-        if data == "cash_monthly":
-            await self.cash_commands.show_monthly_summary(update, context)
-            return
-        
-        if data.startswith("cash_month_"):
-            await self.cash_commands.show_monthly_club(update, context)
-            return
-        
+
         # Управление товарами
         if data == "product_menu":
             await self.product_commands.show_product_menu(update, context)
@@ -3220,15 +3171,7 @@ class ClubAssistantBot:
         logger.info("🤖 Запуск бота...")
         
         # 1. Инициализация команд ПЕРЕД созданием Application
-        # CashCommands и ProductCommands не требуют bot_app, инициализируем их сразу
         logger.info("Инициализация команд...")
-        
-        try:
-            self.cash_commands = CashCommands(self.cash_manager, self.owner_id)
-            logger.info("✅ CashCommands инициализированы")
-        except Exception as e:
-            logger.error(f"❌ Ошибка при инициализации CashCommands: {e}")
-            raise
         
         try:
             self.product_commands = ProductCommands(self.product_manager, self.admin_manager, self.owner_id)
@@ -3261,7 +3204,6 @@ class ClubAssistantBot:
         application.add_handler(CommandHandler("fixjson", self.cmd_fixjson))
         application.add_handler(CommandHandler("import", self.cmd_import))
         application.add_handler(CommandHandler("addadmin", self.cmd_addadmin))
-        application.add_handler(CommandHandler("admins", self.cmd_admins))
         application.add_handler(CommandHandler("savecreds", self.cmd_savecreds))
         application.add_handler(CommandHandler("getcreds", self.cmd_getcreds))
         application.add_handler(CommandHandler("update", self.cmd_update))
@@ -3295,21 +3237,6 @@ class ClubAssistantBot:
         # === CONVERSATION HANDLERS (must be registered BEFORE CallbackQueryHandler) ===
         
         # ConversationHandler для финансового мониторинга
-        cash_handler = ConversationHandler(
-            entry_points=[
-                CallbackQueryHandler(self.cash_commands.start_add_movement, pattern="^cash_add_(income|expense)$")
-            ],
-            states={
-                CASH_SELECT_CLUB: [CallbackQueryHandler(self.cash_commands.select_club, pattern="^cash_club_")],
-                CASH_SELECT_TYPE: [CallbackQueryHandler(self.cash_commands.select_type, pattern="^cash_type_")],
-                CASH_ENTER_AMOUNT: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.cash_commands.enter_amount)],
-                CASH_ENTER_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, self.cash_commands.enter_description)],
-                CASH_ENTER_CATEGORY: [CallbackQueryHandler(self.cash_commands.select_category, pattern="^cash_cat_")]
-            },
-            fallbacks=[CallbackQueryHandler(self.cash_commands.cancel, pattern="^cash_menu$")]
-        )
-        application.add_handler(cash_handler)
-        
         # ConversationHandler для добавления товара
         product_add_handler = ConversationHandler(
             entry_points=[

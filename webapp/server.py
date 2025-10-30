@@ -174,31 +174,54 @@ def api_admins():
     """
     period = request.args.get('period', 'week')
 
-    # TODO: Реализовать реальный рейтинг из БД
-    # Сейчас заглушка
+    # Определить даты периода
+    end_date = datetime.now()
+    if period == 'day':
+        start_date = end_date - timedelta(days=1)
+    elif period == 'month':
+        start_date = end_date - timedelta(days=30)
+    else:  # week
+        start_date = end_date - timedelta(days=7)
 
-    return jsonify({
-        'admins': [
-            {
-                'name': 'Иванов И.И.',
-                'shifts': 10,
-                'revenue': 120000,
-                'avg_revenue': 12000
-            },
-            {
-                'name': 'Петров П.П.',
-                'shifts': 8,
-                'revenue': 95000,
-                'avg_revenue': 11875
-            },
-            {
-                'name': 'Сидоров С.С.',
-                'shifts': 7,
-                'revenue': 78000,
-                'avg_revenue': 11143
-            }
-        ]
-    })
+    try:
+        # Получить реальных админов из БД
+        with analytics._get_db() as conn:
+            cursor = conn.cursor()
+
+            # Получить статистику смен каждого админа за период
+            cursor.execute("""
+                SELECT
+                    a.user_id,
+                    a.full_name,
+                    COUNT(s.shift_id) as shifts_count,
+                    SUM(s.total_revenue) as total_revenue,
+                    AVG(s.total_revenue) as avg_revenue
+                FROM admins a
+                LEFT JOIN finmon_shifts s ON a.user_id = s.admin_id
+                    AND s.closed_at IS NOT NULL
+                    AND DATE(s.closed_at) BETWEEN ? AND ?
+                GROUP BY a.user_id, a.full_name
+                HAVING shifts_count > 0
+                ORDER BY total_revenue DESC
+            """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+
+            rows = cursor.fetchall()
+
+            admins_list = []
+            for row in rows:
+                user_id, full_name, shifts_count, total_revenue, avg_revenue = row
+                admins_list.append({
+                    'name': full_name or f'Админ #{user_id}',
+                    'shifts': shifts_count,
+                    'revenue': int(total_revenue or 0),
+                    'avg_revenue': int(avg_revenue or 0)
+                })
+
+            return jsonify({'admins': admins_list})
+
+    except Exception as e:
+        logger.error(f"Ошибка в api_admins: {e}")
+        return jsonify({'error': str(e), 'admins': []}), 500
 
 
 @app.route('/api/analytics/salaries')
