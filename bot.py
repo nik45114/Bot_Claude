@@ -2148,11 +2148,8 @@ class ClubAssistantBot:
             return
 
         if data == "shift_close":
-            # Закрыть смену - делегируем в finmon wizard
-            if hasattr(self, 'shift_wizard'):
-                await self.shift_wizard.start_close_shift(update, context)
-            else:
-                await query.answer("❌ Модуль смен не загружен", show_alert=True)
+            # Закрыть смену - обрабатывается в ConversationHandler
+            # Не нужно обрабатывать здесь, иначе ConversationHandler не сработает
             return
 
         if data == "shift_expense":
@@ -3467,7 +3464,8 @@ class ClubAssistantBot:
             shift_handler = ConversationHandler(
                 entry_points=[
                     CommandHandler("shift", shift_wizard.cmd_shift),
-                    MessageHandler(filters.TEXT & filters.Regex("^🔒 Закрыть смену$"), shift_wizard.cmd_shift)
+                    MessageHandler(filters.TEXT & filters.Regex("^🔒 Закрыть смену$"), shift_wizard.cmd_shift),
+                    CallbackQueryHandler(shift_wizard.start_close_shift, pattern="^shift_close$")
                 ],
                 states={
                     ENTER_FACT_CASH: [
