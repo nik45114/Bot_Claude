@@ -1300,7 +1300,8 @@ class ShiftWizard:
 
             # Send notification to controller
             if self.improvements:
-                admin_name = update.effective_user.first_name or update.effective_user.username or "Unknown"
+                # Use duty_name from schedule (full name) instead of Telegram username
+                admin_name = duty_name if duty_name else (update.effective_user.first_name or update.effective_user.username or "Unknown")
                 await self.improvements.send_shift_notification_to_controller(
                     bot=context.bot,
                     shift_data=data,
