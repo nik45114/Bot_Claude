@@ -6,6 +6,7 @@ Handles /shift command with step-by-step wizard
 """
 
 import logging
+import json
 from datetime import datetime, date, timedelta
 from typing import Optional, Dict
 
@@ -217,44 +218,71 @@ class ShiftWizard:
         club = active_shift['club']
         shift_type = active_shift['shift_type']
         shift_id = active_shift['id']
-        
+
+        # Get previous shift cash остаток
+        previous_cash = None
+        if self.improvements:
+            previous_cash = self.improvements.get_previous_shift_cash(club, shift_type)
+
         # Initialize shift data in context
         context.user_data['shift_data'] = {
+            'admin_id': user_id,
+            'club': club,
+            'shift_type': shift_type,
+            'active_shift_id': shift_id,
             'fact_cash': 0.0,
             'fact_card': 0.0,
             'qr': 0.0,
             'card2': 0.0,
+            'safe_cash_start': previous_cash or 0.0,
             'safe_cash_end': 0.0,
+            'box_cash_start': 0.0,
             'box_cash_end': 0.0,
             'tovarka': 0.0,
             'gamepads': 0,
             'repair': 0,
             'need_repair': 0,
-            'games': 0
+            'games': 0,
+            'cash_disabled': False,
+            'card_disabled': False,
+            'qr_disabled': False,
+            'card2_disabled': False,
         }
-        
+
         context.user_data['shift_club'] = club
         context.user_data['shift_time'] = shift_type
         context.user_data['active_shift_id'] = shift_id
-        
+
         # Get expenses from this shift
         expenses = self.shift_manager.get_shift_expenses(shift_id)
         context.user_data['shift_expenses'] = expenses
-        
+        context.user_data['shift_data']['expenses'] = expenses
+
         # Start from cash input
         shift_label = "☀️ Утро (дневная смена)" if shift_type == "morning" else "🌙 Вечер (ночная смена)"
-        
+
         msg = f"📋 Закрытие смены\n\n"
         msg += f"🏢 Клуб: {club}\n"
         msg += f"⏰ {shift_label}\n\n"
-        
+
+        if previous_cash is not None:
+            msg += f"📊 Остаток предыдущей смены: {previous_cash:,.0f} ₽\n\n"
+
         if expenses:
             expenses_total = sum(exp['amount'] for exp in expenses)
             msg += f"💸 Списаний в смене: {expenses_total:,.0f} ₽\n\n"
-        
+
         msg += "💰 Введите наличку факт:\n\nПример: 3440"
-        
-        await update.message.reply_text(msg)
+
+        # Add inline buttons
+        keyboard = [
+            [InlineKeyboardButton("Без изменений (0)", callback_data="cash_no_change")],
+            [InlineKeyboardButton("❌ Касса не работала", callback_data="cash_disabled")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(msg, reply_markup=reply_markup)
         return ENTER_FACT_CASH
     
     # ===== Open Shift Methods =====
@@ -262,30 +290,41 @@ class ShiftWizard:
     async def cmd_open_shift(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Open a new shift"""
         user_id = update.effective_user.id
-        
+
+        # Определяем откуда вызов - callback или обычное сообщение
+        is_callback = update.callback_query is not None
+
         # Check if shift manager is available
         if not self.shift_manager:
-            await update.message.reply_text("❌ Модуль управления сменами недоступен")
+            text = "❌ Модуль управления сменами недоступен"
+            if is_callback:
+                await update.callback_query.answer(text, show_alert=True)
+            else:
+                await update.message.reply_text(text)
             return
-        
+
         # Check if user already has an open shift
         active_shift = self.shift_manager.get_active_shift(user_id)
         if active_shift:
-            await update.message.reply_text(
+            text = (
                 f"❌ У вас уже открыта смена\n\n"
                 f"🏢 Клуб: {active_shift['club']}\n"
                 f"⏰ Тип: {'☀️ Утро' if active_shift['shift_type'] == 'morning' else '🌙 Вечер'}\n\n"
                 f"Сначала закройте её через:\n🔒 Закрыть смену"
             )
+            if is_callback:
+                await update.callback_query.answer(text, show_alert=True)
+            else:
+                await update.message.reply_text(text)
             return
-        
+
         # Auto-detect club from chat ID
         chat_id = update.effective_chat.id
         club = self.finmon.get_club_from_chat(chat_id)
-        
+
         if club:
             # Club auto-detected
-            return await self._open_shift_for_club(update, context, club)
+            return await self._open_shift_for_club(update, context, club, is_callback=is_callback)
         else:
             # Ask user to select club
             msg = "🔓 Открытие смены\n\n⚠️ Клуб не определён автоматически\n\nВыберите клуб:"
@@ -429,40 +468,75 @@ class ShiftWizard:
         """Handle confirmation that scheduled person is working"""
         query = update.callback_query
         await query.answer()
-        
+
         # Parse: confirm_scheduled_club_shift_type_admin_id
         parts = query.data.split('_')
         if len(parts) < 5:
             await query.edit_message_text("❌ Ошибка данных")
             return
-        
+
         club = parts[2]
         shift_type = parts[3]
         admin_id = int(parts[4])
         opener_id = query.from_user.id
-        
-        # Store info for confirmation
-        context.user_data['working_admin_id'] = admin_id
-        context.user_data['opener_id'] = opener_id
-        
-        # Send confirmation request to the admin
-        await self._send_confirmation_request(
-            context=context,
-            admin_id=admin_id,
-            club=club,
-            shift_type=shift_type,
-            opener_id=opener_id,
-            opener_name=query.from_user.full_name
-        )
-        
-        # Get admin name
-        admin_name = context.user_data.get('expected_duty_name', 'Админ')
-        
-        await query.edit_message_text(
-            f"⏳ Ожидание подтверждения\n\n"
-            f"Запрос отправлен: {admin_name}\n"
-            f"Ожидайте подтверждения в Telegram..."
-        )
+
+        shift_label = "☀️ Утро" if shift_type == "morning" else "🌙 Вечер"
+
+        # Если админ подтверждает сам за себя - сразу открываем смену
+        if opener_id == admin_id:
+            # Открываем смену сразу
+            shift_id = self.shift_manager.open_shift(admin_id, club, shift_type, admin_id)
+
+            if shift_id:
+                await query.edit_message_text(
+                    f"✅ Смена открыта!\n\n"
+                    f"🏢 {club} | {shift_label}\n"
+                    f"🆔 ID смены: {shift_id}\n\n"
+                    f"Используйте кнопки в главном меню для работы"
+                )
+
+                # Send notification to controller
+                if self.improvements:
+                    admin_name = query.from_user.full_name or query.from_user.username or "Unknown"
+                    shift_data = {
+                        'club': club,
+                        'shift_type': shift_type,
+                        'admin_id': admin_id
+                    }
+                    try:
+                        await self.improvements.send_shift_notification_to_controller(
+                            bot=context.bot,
+                            shift_data=shift_data,
+                            admin_name=admin_name,
+                            is_opening=True
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to notify controller: {e}")
+            else:
+                await query.edit_message_text("❌ Ошибка при открытии смены")
+        else:
+            # Если открывает другой человек - отправляем запрос подтверждения
+            context.user_data['working_admin_id'] = admin_id
+            context.user_data['opener_id'] = opener_id
+
+            # Send confirmation request to the admin
+            await self._send_confirmation_request(
+                context=context,
+                admin_id=admin_id,
+                club=club,
+                shift_type=shift_type,
+                opener_id=opener_id,
+                opener_name=query.from_user.full_name
+            )
+
+            # Get admin name
+            admin_name = context.user_data.get('expected_duty_name', 'Админ')
+
+            await query.edit_message_text(
+                f"⏳ Ожидание подтверждения\n\n"
+                f"Запрос отправлен: {admin_name}\n"
+                f"Ожидайте подтверждения в Telegram..."
+            )
     
     async def handle_select_replacement(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show admin list for replacement selection"""
@@ -597,65 +671,418 @@ class ShiftWizard:
     
     # ===== Close Shift Methods (Revenue Input) =====
     
+    async def handle_cash_no_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'no change' button for cash"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['fact_cash'] = 0.0
+
+        msg = f"✅ Наличка факт: 0 ₽ (без изменений)\n\n"
+        msg += "💳 Введите карту факт:\n\nПример: 12345"
+
+        keyboard = [
+            [InlineKeyboardButton("Без изменений (0)", callback_data="card_no_change")],
+            [InlineKeyboardButton("❌ Касса не работала", callback_data="card_disabled")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(msg, reply_markup=reply_markup)
+        return ENTER_FACT_CARD
+
+    async def handle_cash_disabled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'cash register disabled' button"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['fact_cash'] = 0.0
+        context.user_data['shift_data']['cash_disabled'] = True
+
+        msg = f"❌ Касса наличных не работала\n\n"
+        msg += "💳 Введите карту факт:\n\nПример: 12345"
+
+        keyboard = [
+            [InlineKeyboardButton("Без изменений (0)", callback_data="card_no_change")],
+            [InlineKeyboardButton("❌ Касса не работала", callback_data="card_disabled")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(msg, reply_markup=reply_markup)
+        return ENTER_FACT_CARD
+
     async def receive_fact_cash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive cash revenue"""
         try:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['fact_cash'] = value
-            
+
             msg = f"✅ Наличка факт: {value:,.0f} ₽\n\n"
             msg += "💳 Введите карту факт:\n\nПример: 12345"
-            
-            await update.message.reply_text(msg)
+
+            keyboard = [
+                [InlineKeyboardButton("Без изменений (0)", callback_data="card_no_change")],
+                [InlineKeyboardButton("❌ Касса не работала", callback_data="card_disabled")],
+                [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(msg, reply_markup=reply_markup)
             return ENTER_FACT_CARD
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_FACT_CASH
     
+    async def handle_card_no_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'no change' button for card"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['fact_card'] = 0.0
+
+        msg = "✅ Карта факт: 0 ₽ (без изменений)\n\n📱 Введите QR:\n\nПример: 500 (или 0 если нет)"
+        keyboard = [
+            [InlineKeyboardButton("Без изменений (0)", callback_data="qr_no_change")],
+            [InlineKeyboardButton("❌ Касса не работала", callback_data="qr_disabled")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return ENTER_QR
+
+    async def handle_card_disabled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'card register disabled' button"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['fact_card'] = 0.0
+        context.user_data['shift_data']['card_disabled'] = True
+
+        msg = "❌ Касса карт не работала\n\n📱 Введите QR:\n\nПример: 500 (или 0 если нет)"
+        keyboard = [
+            [InlineKeyboardButton("Без изменений (0)", callback_data="qr_no_change")],
+            [InlineKeyboardButton("❌ Касса не работала", callback_data="qr_disabled")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return ENTER_QR
+
     async def receive_fact_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive card revenue"""
         try:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['fact_card'] = value
-            
+
             msg = f"✅ Карта факт: {value:,.0f} ₽\n\n"
             msg += "📱 Введите QR:\n\nПример: 500 (или 0 если нет)"
-            
-            await update.message.reply_text(msg)
+
+            keyboard = [
+                [InlineKeyboardButton("Без изменений (0)", callback_data="qr_no_change")],
+                [InlineKeyboardButton("❌ Касса не работала", callback_data="qr_disabled")],
+                [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(msg, reply_markup=reply_markup)
             return ENTER_QR
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_FACT_CARD
     
+    async def handle_qr_no_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'no change' button for QR"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['qr'] = 0.0
+
+        msg = "✅ QR: 0 ₽ (без изменений)\n\n💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
+        keyboard = [
+            [InlineKeyboardButton("Без изменений (0)", callback_data="card2_no_change")],
+            [InlineKeyboardButton("❌ Касса не работала", callback_data="card2_disabled")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return ENTER_CARD2
+
+    async def handle_qr_disabled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'QR disabled' button"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['qr'] = 0.0
+        context.user_data['shift_data']['qr_disabled'] = True
+
+        msg = "❌ QR не работал\n\n💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
+        keyboard = [
+            [InlineKeyboardButton("Без изменений (0)", callback_data="card2_no_change")],
+            [InlineKeyboardButton("❌ Касса не работала", callback_data="card2_disabled")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return ENTER_CARD2
+
     async def receive_qr(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive QR revenue"""
         try:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['qr'] = value
-            
+
             msg = f"✅ QR: {value:,.0f} ₽\n\n"
-            msg += "📦 Введите Коробку:\n\nПример: 1000 (или 0 если не работает)"
-            
-            await update.message.reply_text(msg)
+            msg += "💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
+
+            keyboard = [
+                [InlineKeyboardButton("Без изменений (0)", callback_data="card2_no_change")],
+                [InlineKeyboardButton("❌ Касса не работала", callback_data="card2_disabled")],
+                [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(msg, reply_markup=reply_markup)
             return ENTER_CARD2
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_QR
     
+    async def handle_card2_no_change(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'no change' button for card2"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['card2'] = 0.0
+
+        # Move to z-report upload
+        msg = "✅ Карта 2: 0 ₽ (без изменений)\n\n"
+        msg += "📸 Загрузите Z-отчет для кассы НАЛИЧНЫХ\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_cash")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return UPLOAD_Z_CASH
+
+    async def handle_card2_disabled(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'card2 disabled' button"""
+        query = update.callback_query
+        await query.answer()
+        context.user_data['shift_data']['card2'] = 0.0
+        context.user_data['shift_data']['card2_disabled'] = True
+
+        # Move to z-report upload
+        msg = "❌ Карта 2 не работала\n\n"
+        msg += "📸 Загрузите Z-отчет для кассы НАЛИЧНЫХ\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_cash")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return UPLOAD_Z_CASH
+
     async def receive_card2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive card2 (box) revenue"""
         try:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['card2'] = value
-            
-            # Go directly to safe input
-            return await self._continue_to_safe(update.message, context)
+
+            # Move to z-report upload
+            msg = f"✅ Карта 2: {value:,.0f} ₽\n\n"
+            msg += "📸 Загрузите Z-отчет для кассы НАЛИЧНЫХ\n\n"
+            msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
+
+            keyboard = [
+                [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_cash")],
+                [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(msg, reply_markup=reply_markup)
+            return UPLOAD_Z_CASH
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_CARD2
     
+    # ===== Z-Report Upload Methods =====
+
+    async def handle_skip_z_cash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Skip z-report for cash"""
+        query = update.callback_query
+        await query.answer()
+
+        msg = "⏭️ Z-отчет наличных пропущен\n\n"
+        msg += "📸 Загрузите Z-отчет для КАРТЫ\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить'"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_card")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return UPLOAD_Z_CARD
+
+    async def upload_z_cash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle z-report photo upload for cash register"""
+        if not update.message.photo:
+            await update.message.reply_text("❌ Пожалуйста, отправьте фото")
+            return UPLOAD_Z_CASH
+
+        # Get the largest photo
+        photo = update.message.photo[-1]
+        context.user_data['shift_data']['z_cash_photo'] = photo.file_id
+
+        # Process OCR if improvements module available
+        ocr_result = None
+        if self.improvements:
+            await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
+            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            if ocr_result:
+                context.user_data['shift_data']['z_cash_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
+                logger.info(f"✅ OCR для наличных: {ocr_result}")
+
+        msg = "✅ Z-отчет наличных загружен\n\n"
+        if ocr_result and 'total' in ocr_result:
+            msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
+
+        msg += "📸 Загрузите Z-отчет для КАРТЫ\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить'"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_card")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(msg, reply_markup=reply_markup)
+        return UPLOAD_Z_CARD
+
+    async def handle_skip_z_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Skip z-report for card"""
+        query = update.callback_query
+        await query.answer()
+
+        msg = "⏭️ Z-отчет карты пропущен\n\n"
+        msg += "📸 Загрузите Z-отчет для QR\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить'"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_qr")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return UPLOAD_Z_QR
+
+    async def upload_z_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle z-report photo upload for card register"""
+        if not update.message.photo:
+            await update.message.reply_text("❌ Пожалуйста, отправьте фото")
+            return UPLOAD_Z_CARD
+
+        photo = update.message.photo[-1]
+        context.user_data['shift_data']['z_card_photo'] = photo.file_id
+
+        ocr_result = None
+        if self.improvements:
+            await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
+            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            if ocr_result:
+                context.user_data['shift_data']['z_card_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
+                logger.info(f"✅ OCR для карты: {ocr_result}")
+
+        msg = "✅ Z-отчет карты загружен\n\n"
+        if ocr_result and 'total' in ocr_result:
+            msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
+
+        msg += "📸 Загрузите Z-отчет для QR\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить'"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_qr")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(msg, reply_markup=reply_markup)
+        return UPLOAD_Z_QR
+
+    async def handle_skip_z_qr(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Skip z-report for QR"""
+        query = update.callback_query
+        await query.answer()
+
+        msg = "⏭️ Z-отчет QR пропущен\n\n"
+        msg += "📸 Загрузите Z-отчет для КАРТЫ 2\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить'"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_card2")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
+        return UPLOAD_Z_CARD2
+
+    async def upload_z_qr(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle z-report photo upload for QR"""
+        if not update.message.photo:
+            await update.message.reply_text("❌ Пожалуйста, отправьте фото")
+            return UPLOAD_Z_QR
+
+        photo = update.message.photo[-1]
+        context.user_data['shift_data']['z_qr_photo'] = photo.file_id
+
+        ocr_result = None
+        if self.improvements:
+            await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
+            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            if ocr_result:
+                context.user_data['shift_data']['z_qr_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
+                logger.info(f"✅ OCR для QR: {ocr_result}")
+
+        msg = "✅ Z-отчет QR загружен\n\n"
+        if ocr_result and 'total' in ocr_result:
+            msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
+
+        msg += "📸 Загрузите Z-отчет для КАРТЫ 2\n\n"
+        msg += "Отправьте фото чека или нажмите 'Пропустить'"
+
+        keyboard = [
+            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_card2")],
+            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(msg, reply_markup=reply_markup)
+        return UPLOAD_Z_CARD2
+
+    async def handle_skip_z_card2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Skip z-report for card2 and continue to safe input"""
+        query = update.callback_query
+        await query.answer()
+        return await self._continue_to_safe(query, context)
+
+    async def upload_z_card2(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle z-report photo upload for card2"""
+        if not update.message.photo:
+            await update.message.reply_text("❌ Пожалуйста, отправьте фото")
+            return UPLOAD_Z_CARD2
+
+        photo = update.message.photo[-1]
+        context.user_data['shift_data']['z_card2_photo'] = photo.file_id
+
+        ocr_result = None
+        if self.improvements:
+            await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
+            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            if ocr_result:
+                context.user_data['shift_data']['z_card2_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
+                logger.info(f"✅ OCR для карты 2: {ocr_result}")
+
+        msg = "✅ Z-отчет карты 2 загружен\n\n"
+        if ocr_result and 'total' in ocr_result:
+            msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
+
+        await update.message.reply_text(msg)
+
+        # Continue to safe input
+        return await self._continue_to_safe(update.message, context)
+
     # ===== Safe and Box Input =====
-    
+
     async def _continue_to_safe(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
         """Continue to safe input"""
         prev_official = context.user_data.get('prev_official', 0)
@@ -859,17 +1286,35 @@ class ShiftWizard:
             shift_id = context.user_data.get('active_shift_id')
             if shift_id and self.shift_manager:
                 self.shift_manager.close_shift(shift_id)
-            
+
+            # Save to finmon_shifts table
+            if self.improvements:
+                saved_shift_id = self.improvements.save_shift_to_db(data)
+                if saved_shift_id:
+                    logger.info(f"✅ Shift saved to finmon_shifts with ID: {saved_shift_id}")
+                else:
+                    logger.error("❌ Failed to save shift to finmon_shifts")
+
+            # Send notification to controller
+            if self.improvements:
+                admin_name = update.effective_user.first_name or update.effective_user.username or "Unknown"
+                await self.improvements.send_shift_notification_to_controller(
+                    bot=self.bot_instance,
+                    shift_data=data,
+                    admin_name=admin_name,
+                    is_opening=False
+                )
+
             # Get updated balances
             balances = self.finmon.get_club_balances(club)
-            
+
             # Get shift expenses from DB
             shift_expenses = []
             if shift_id and self.shift_manager:
                 shift_expenses = self.shift_manager.get_shift_expenses(shift_id)
-            
+
             total_expenses = sum(exp['amount'] for exp in shift_expenses)
-            
+
             msg = "✅ Смена успешно сдана!\n\n"
             msg += f"🏢 {club}\n"
             if shift_expenses:
@@ -877,7 +1322,7 @@ class ShiftWizard:
             msg += f"💰 Остатки:\n"
             msg += f"  • Офиц (сейф): {balances['official']:,.0f} ₽\n"
             msg += f"  • Коробка: {balances['box']:,.0f} ₽\n"
-            
+
             await query.edit_message_text(msg)
 
             # Успешное сохранение смены
@@ -1429,23 +1874,26 @@ class ShiftWizard:
                     )
                 except Exception as e:
                     logger.error(f"Failed to notify opener: {e}")
-                
-                # Notify owner about confirmed shift (для учета)
-                if self.owner_ids:
-                    is_replacement = (confirmed_by != opener_id)
-                    for owner_id in self.owner_ids:
-                        try:
-                            msg = f"✅ Смена открыта и подтверждена\n\n"
-                            msg += f"🏢 {club} | {shift_label}\n"
-                            msg += f"🆔 ID: {shift_id}\n"
-                            msg += f"👤 Работает: {query.from_user.full_name or 'Неизвестно'} (ID: {confirmed_by})\n"
-                            if is_replacement:
-                                msg += f"⚠️ Открыл: ID {opener_id}\n"
-                            msg += f"📅 {date.today().strftime('%d.%m.%Y')}"
-                            
-                            await context.bot.send_message(chat_id=owner_id, text=msg)
-                        except:
-                            pass
+
+                # Send notification to controller
+                if self.improvements:
+                    admin_name = query.from_user.full_name or query.from_user.username or "Unknown"
+                    shift_data = {
+                        'club': club,
+                        'shift_type': shift_type,
+                        'admin_id': confirmed_by
+                    }
+                    try:
+                        await self.improvements.send_shift_notification_to_controller(
+                            bot=context.bot,
+                            shift_data=shift_data,
+                            admin_name=admin_name,
+                            is_opening=True
+                        )
+                    except Exception as e:
+                        logger.error(f"Failed to notify controller: {e}")
+
+                # Уведомления владельцу отключены - теперь только контролирующему
             else:
                 await query.edit_message_text("❌ Ошибка при открытии смены")
             
@@ -1679,3 +2127,56 @@ class ShiftWizard:
             except Exception as e:
                 logger.error(f"Failed to record cash withdrawal: {e}")
                 await query.edit_message_text("❌ Ошибка при записи снятия")
+
+    async def cmd_shift_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать статус смен и остатки в кассах"""
+        user_id = update.effective_user.id
+
+        # Получаем активные смены
+        if not self.shift_manager:
+            await update.message.reply_text("❌ Модуль управления сменами недоступен")
+            return
+
+        active_shifts = self.shift_manager.get_all_active_shifts()
+
+        # Получаем остатки из финмона
+        balances = {}
+        if self.finmon:
+            balances = self.finmon.get_balances()
+
+        # Формируем сообщение
+        msg = "📊 <b>Статус смен</b>\n\n"
+
+        if active_shifts:
+            for shift in active_shifts:
+                shift_type_label = "☀️ Утро" if shift['shift_type'] == "morning" else "🌙 Вечер"
+                opened_at = datetime.fromisoformat(shift['opened_at'])
+
+                # Получаем имя админа
+                admin_name = "Неизвестно"
+                if self.admin_manager:
+                    admin = self.admin_manager.get_admin(shift['admin_id'])
+                    if admin:
+                        admin_name = admin['name']
+
+                msg += f"🏢 <b>{shift['club']}</b> {shift_type_label}\n"
+                msg += f"👤 {admin_name}\n"
+                msg += f"🕐 Открыта: {opened_at.strftime('%d.%m.%Y %H:%M')}\n"
+                msg += f"🆔 Смена: #{shift['id']}\n\n"
+        else:
+            msg += "❌ Нет открытых смен\n\n"
+
+        # Показываем остатки в кассах
+        msg += "💰 <b>Остатки в кассах</b>\n\n"
+
+        if balances:
+            for club, amounts in balances.items():
+                msg += f"🏢 <b>{club}</b>\n"
+                msg += f"🔐 Сейф: {amounts.get('official', 0):,.0f} ₽\n"
+                msg += f"📦 Бокс: {amounts.get('box', 0):,.0f} ₽\n"
+                total = amounts.get('official', 0) + amounts.get('box', 0)
+                msg += f"💵 Всего: {total:,.0f} ₽\n\n"
+        else:
+            msg += "❌ Нет данных об остатках\n"
+
+        await update.message.reply_text(msg, parse_mode='HTML')

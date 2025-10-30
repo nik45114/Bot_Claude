@@ -114,17 +114,43 @@ class ShiftManager:
                 ORDER BY opened_at DESC
                 LIMIT 1
             ''', (admin_id,))
-            
+
             row = cursor.fetchone()
             conn.close()
-            
+
             if row:
                 return dict(row)
             return None
-            
         except Exception as e:
             logger.error(f"❌ Failed to get active shift: {e}")
             return None
+
+    def get_all_active_shifts(self) -> list:
+        """
+        Получить все активные смены
+
+        Returns:
+            Список всех открытых смен
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute('''
+                SELECT id, admin_id, club, shift_type, opened_at, confirmed_by, status
+                FROM active_shifts
+                WHERE status = 'open'
+                ORDER BY opened_at DESC
+            ''')
+
+            rows = cursor.fetchall()
+            conn.close()
+
+            return [dict(row) for row in rows]
+        except Exception as e:
+            logger.error(f"Ошибка получения активных смен: {e}")
+            return []
     
     def get_shift_by_id(self, shift_id: int) -> Optional[Dict]:
         """Get shift by ID"""

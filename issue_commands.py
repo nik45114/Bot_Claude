@@ -17,34 +17,75 @@ ISSUE_SELECT_CLUB, ISSUE_ENTER_DESCRIPTION, ISSUE_EDIT_DESCRIPTION = range(3)
 
 class IssueCommands:
     """Обработчик команд управления проблемами"""
-    
-    def __init__(self, issue_manager, knowledge_base, admin_manager, owner_id: int, bot_app):
+
+    def __init__(self, issue_manager, knowledge_base, admin_manager, owner_id: int, bot_app, shift_manager=None, club_account_id=None):
         self.issue_manager = issue_manager
         self.kb = knowledge_base
         self.admin_manager = admin_manager
         self.owner_id = owner_id
         self.bot_app = bot_app
-    
+        self.shift_manager = shift_manager
+        # Поддерживаем как одиночный ID, так и список ID
+        if isinstance(club_account_id, list):
+            self.club_account_ids = club_account_id
+        elif club_account_id:
+            self.club_account_ids = [club_account_id]
+        else:
+            self.club_account_ids = []
+
     def is_owner(self, user_id: int) -> bool:
         """Проверка что пользователь - владелец"""
         return user_id == self.owner_id
-    
+
     def is_admin(self, user_id: int) -> bool:
         """Проверка что пользователь - админ"""
         return self.admin_manager.is_admin(user_id)
+
+    def get_actual_user_id(self, user_id: int) -> int:
+        """Получить реальный ID пользователя
+        Если это клубный аккаунт и смена открыта - возвращает ID админа смены
+        Иначе возвращает переданный user_id
+        """
+        if user_id in self.club_account_ids and self.shift_manager:
+            try:
+                active_shifts = self.shift_manager.get_all_active_shifts()
+                if active_shifts:
+                    return active_shifts[0]['admin_id']
+            except Exception as e:
+                logger.error(f"Ошибка получения активных смен: {e}")
+        return user_id
+
+    def can_use_issues(self, user_id: int) -> bool:
+        """Проверка может ли пользователь использовать проблемы
+        Для клубных аккаунтов - только при открытой смене
+        Для остальных - если админ
+        """
+        if user_id in self.club_account_ids:
+            if not self.shift_manager:
+                return False
+            try:
+                active_shifts = self.shift_manager.get_all_active_shifts()
+                return len(active_shifts) > 0
+            except Exception as e:
+                logger.error(f"Ошибка проверки смены: {e}")
+                return False
+        return self.is_admin(user_id)
     
     async def show_issue_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Главное меню проблем"""
         query = update.callback_query
-        
+
         if query:
             user_id = query.from_user.id
             await query.answer()
         else:
             user_id = update.effective_user.id
-        
-        if not self.is_admin(user_id):
+
+        # Используем can_use_issues вместо is_admin
+        if not self.can_use_issues(user_id):
             text = "❌ Доступно только админам"
+            if user_id in self.club_account_ids:
+                text = "❌ Управление проблемами доступно только при открытой смене"
             if query:
                 await query.edit_message_text(text)
             else:
@@ -81,9 +122,13 @@ class IssueCommands:
         """Начать сообщение о проблеме"""
         query = update.callback_query
         await query.answer()
-        
-        if not self.is_admin(query.from_user.id):
-            await query.edit_message_text("❌ Доступно только админам")
+
+        user_id = query.from_user.id
+        if not self.can_use_issues(user_id):
+            text = "❌ Доступно только админам"
+            if user_id in self.club_account_ids:
+                text = "❌ Управление проблемами доступно только при открытой смене"
+            await query.edit_message_text(text)
             return ConversationHandler.END
         
         keyboard = [
@@ -122,13 +167,16 @@ class IssueCommands:
         description = update.message.text
         club = context.user_data['issue_club']
         user_id = update.effective_user.id
+
+        # Получаем реальный ID пользователя (для клубных аккаунтов - админ смены)
+        actual_user_id = self.get_actual_user_id(user_id)
         user_name = update.effective_user.full_name or update.effective_user.username or str(user_id)
-        
-        # 1. Записываем в БД проблем
+
+        # 1. Записываем в БД проблем с actual_user_id
         issue_id = self.issue_manager.create_issue(
             club=club,
             description=description,
-            created_by=user_id,
+            created_by=actual_user_id,
             created_by_name=user_name
         )
         

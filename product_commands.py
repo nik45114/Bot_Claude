@@ -19,11 +19,19 @@ PRODUCT_SET_NICKNAME = 6
 
 class ProductCommands:
     """Обработчик команд управления товарами"""
-    
-    def __init__(self, product_manager, admin_manager, owner_id: int):
+
+    def __init__(self, product_manager, admin_manager, owner_id: int, shift_manager=None, club_account_id=None):
         self.product_manager = product_manager
         self.admin_manager = admin_manager
         self.owner_id = owner_id
+        self.shift_manager = shift_manager
+        # Поддерживаем как одиночный ID, так и список ID
+        if isinstance(club_account_id, list):
+            self.club_account_ids = club_account_id
+        elif club_account_id:
+            self.club_account_ids = [club_account_id]
+        else:
+            self.club_account_ids = []
     
     def is_owner(self, user_id: int) -> bool:
         """Проверка что пользователь - владелец"""
@@ -32,6 +40,37 @@ class ProductCommands:
     def is_admin(self, user_id: int) -> bool:
         """Проверка что пользователь - админ"""
         return self.admin_manager.is_admin(user_id)
+
+    def get_actual_user_id(self, user_id: int) -> int:
+        """Получить реальный ID пользователя
+        Если это клубный аккаунт и смена открыта - возвращает ID админа смены
+        Иначе возвращает переданный user_id
+        """
+        if user_id in self.club_account_ids and self.shift_manager:
+            # Ищем любую открытую смену
+            try:
+                active_shifts = self.shift_manager.get_all_active_shifts()
+                if active_shifts:
+                    # Берем первую открытую смену
+                    return active_shifts[0]['admin_id']
+            except Exception as e:
+                logger.error(f"Ошибка получения активных смен: {e}")
+        return user_id
+
+    def can_use_products(self, user_id: int) -> bool:
+        """Проверка может ли пользователь использовать товары
+        Клубный аккаунт может использовать только если открыта смена
+        """
+        if user_id in self.club_account_ids:
+            if not self.shift_manager:
+                return False
+            try:
+                active_shifts = self.shift_manager.get_all_active_shifts()
+                return len(active_shifts) > 0
+            except Exception as e:
+                logger.error(f"Ошибка проверки активных смен: {e}")
+                return False
+        return self.is_admin(user_id)
     
     async def show_product_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Главное меню товаров"""
@@ -43,8 +82,8 @@ class ProductCommands:
         else:
             user_id = update.effective_user.id
         
-        if not self.is_admin(user_id):
-            text = "❌ Доступно только админам"
+        if not self.can_use_products(user_id):
+            text = "❌ Товары доступны только при открытой смене"
             if query:
                 await query.edit_message_text(text)
             else:
@@ -202,19 +241,29 @@ class ProductCommands:
             
             product_id = context.user_data['product_id']
             user_id = update.effective_user.id
-            user_name = update.effective_user.full_name or update.effective_user.username or str(user_id)
-            
+
+            # Определяем реального пользователя (может быть админ смены если клубный аккаунт)
+            actual_user_id = self.get_actual_user_id(user_id)
+
+            # Получаем имя реального пользователя
+            if actual_user_id != user_id:
+                # Клубный аккаунт - получаем имя админа смены
+                admin_info = self.admin_manager.get_admin(actual_user_id)
+                user_name = admin_info.get('name', str(actual_user_id)) if admin_info else str(actual_user_id)
+            else:
+                user_name = update.effective_user.full_name or update.effective_user.username or str(user_id)
+
             success = self.product_manager.record_admin_product(
-                admin_id=user_id,
+                admin_id=actual_user_id,
                 admin_name=user_name,
                 product_id=product_id,
                 quantity=quantity
             )
-            
+
             if success:
                 product = self.product_manager.get_product(product_id)
                 total = product['cost_price'] * quantity
-                new_debt = self.product_manager.get_admin_debt(user_id)
+                new_debt = self.product_manager.get_admin_debt(actual_user_id)
                 
                 text = f"✅ Записано\n\n"
                 text += f"📦 {product['name']}\n"

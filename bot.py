@@ -1894,14 +1894,14 @@ class ClubAssistantBot:
                 # Нет открытой смены
                 keyboard.append([InlineKeyboardButton("🔓 Открыть смену", callback_data="shift_open")])
 
-            # Админ панель
-            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
-            keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
+            # Кнопки доступные всем админам
             keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
             keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
 
-        # Управление админами и аналитика только для владельца
+        # Админ панель, управление админами и аналитика только для владельца
         if user_id == self.owner_id:
+            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
+            keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
 
             # WebApp кнопка для финансовой аналитики
@@ -2141,8 +2141,8 @@ class ClubAssistantBot:
         # Обработчики кнопок смен
         if data == "shift_open":
             # Открыть смену - делегируем в finmon wizard
-            if hasattr(self, 'shift_wizard'):
-                await self.shift_wizard.start_open_shift(update, context)
+            if hasattr(self, 'shift_wizard') and self.shift_wizard is not None:
+                await self.shift_wizard.cmd_open_shift(update, context)
             else:
                 await query.answer("❌ Модуль смен не загружен", show_alert=True)
             return
@@ -2154,7 +2154,7 @@ class ClubAssistantBot:
 
         if data == "shift_expense":
             # Списать с кассы
-            if hasattr(self, 'shift_wizard'):
+            if hasattr(self, 'shift_wizard') and self.shift_wizard is not None:
                 await self.shift_wizard.start_expense(update, context)
             else:
                 await query.answer("❌ Модуль смен не загружен", show_alert=True)
@@ -2162,7 +2162,7 @@ class ClubAssistantBot:
 
         if data == "shift_salary":
             # Взять зарплату
-            if hasattr(self, 'shift_wizard'):
+            if hasattr(self, 'shift_wizard') and self.shift_wizard is not None:
                 await self.shift_wizard.start_cash_withdrawal(update, context)
             else:
                 await query.answer("❌ Модуль смен не загружен", show_alert=True)
@@ -3157,6 +3157,7 @@ class ClubAssistantBot:
                 BotCommand("help", "❓ Справка"),
                 BotCommand("admins", "👥 Управление админами (owner)"),
                 BotCommand("finmon", "💰 Финансовый мониторинг"),
+                BotCommand("shiftstatus", "📊 Статус смен и касс"),
                 BotCommand("salary", "💼 Система зарплат"),
                 BotCommand("products", "📦 Управление товарами"),
                 BotCommand("issues", "🐛 Проблемы клуба"),
@@ -3179,7 +3180,18 @@ class ClubAssistantBot:
         logger.info("Инициализация команд...")
         
         try:
-            self.product_commands = ProductCommands(self.product_manager, self.admin_manager, self.owner_id)
+            # Получаем ID клубных аккаунтов из конфига
+            # Используем список всех клубных аккаунтов
+            club_accounts = self.config.get('club_accounts', {})
+            club_account_ids = list(club_accounts.values()) if club_accounts else []
+
+            self.product_commands = ProductCommands(
+                self.product_manager,
+                self.admin_manager,
+                self.owner_id,
+                shift_manager=None,  # Будет установлен позже
+                club_account_id=club_account_ids  # Передаем список ID
+            )
             logger.info("✅ ProductCommands инициализированы")
         except Exception as e:
             logger.error(f"❌ Ошибка при инициализации ProductCommands: {e}")
@@ -3190,7 +3202,18 @@ class ClubAssistantBot:
         logger.info("✅ Application создан")
         
         # 3. Инициализируем IssueCommands (требует application)
-        self.issue_commands = IssueCommands(self.issue_manager, self.kb, self.admin_manager, self.owner_id, application)
+        club_accounts = self.config.get('club_accounts', {})
+        club_account_ids = list(club_accounts.values()) if club_accounts else []
+
+        self.issue_commands = IssueCommands(
+            self.issue_manager,
+            self.kb,
+            self.admin_manager,
+            self.owner_id,
+            application,
+            shift_manager=None,  # Будет установлен позже
+            club_account_id=club_account_ids  # Передаем список ID
+        )
         logger.info("✅ IssueCommands инициализированы")
         
         application.post_init = self.post_init
@@ -3396,7 +3419,13 @@ class ClubAssistantBot:
             # Initialize shift manager
             shift_manager = ShiftManager(DB_PATH)
             self.shift_manager = shift_manager  # Store for keyboard updates
-            
+
+            # Установить shift_manager в product_commands и issue_commands
+            if hasattr(self, 'product_commands'):
+                self.product_commands.shift_manager = shift_manager
+            if hasattr(self, 'issue_commands'):
+                self.issue_commands.shift_manager = shift_manager
+
             # Initialize schedule parser with Google Sheets support
             google_sa_json = os.getenv('GOOGLE_SA_JSON')
             google_sheet_id = os.getenv('GOOGLE_SHEET_ID', '19ILASe6UH7-j1okxg9mvz_GrkQAkCJLXA1mxwocLcV8')
@@ -3444,8 +3473,8 @@ class ClubAssistantBot:
                 bot_instance=self,
                 admin_db=admin_db,
                 db_path=DB_PATH,
-                openai_key=config.get('openai_api_key'),
-                controller_id=config.get('controller_id')
+                openai_key=self.config.get('openai_api_key'),
+                controller_id=self.config.get('controller_id')
             )
             self.shift_wizard = shift_wizard  # Store for button handler
             
@@ -3463,7 +3492,8 @@ class ClubAssistantBot:
             # Register /balances and /movements commands
             application.add_handler(CommandHandler("balances", shift_wizard.cmd_balances))
             application.add_handler(CommandHandler("movements", shift_wizard.cmd_movements))
-            
+            application.add_handler(CommandHandler("shiftstatus", shift_wizard.cmd_shift_status))
+
             # Register /shift conversation handler (CLOSE shift)
             shift_handler = ConversationHandler(
                 entry_points=[
@@ -3473,16 +3503,48 @@ class ClubAssistantBot:
                 ],
                 states={
                     ENTER_FACT_CASH: [
+                        CallbackQueryHandler(shift_wizard.handle_cash_no_change, pattern="^cash_no_change$"),
+                        CallbackQueryHandler(shift_wizard.handle_cash_disabled, pattern="^cash_disabled$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_fact_cash)
                     ],
                     ENTER_FACT_CARD: [
+                        CallbackQueryHandler(shift_wizard.handle_card_no_change, pattern="^card_no_change$"),
+                        CallbackQueryHandler(shift_wizard.handle_card_disabled, pattern="^card_disabled$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_fact_card)
                     ],
                     ENTER_QR: [
+                        CallbackQueryHandler(shift_wizard.handle_qr_no_change, pattern="^qr_no_change$"),
+                        CallbackQueryHandler(shift_wizard.handle_qr_disabled, pattern="^qr_disabled$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_qr)
                     ],
                     ENTER_CARD2: [
+                        CallbackQueryHandler(shift_wizard.handle_card2_no_change, pattern="^card2_no_change$"),
+                        CallbackQueryHandler(shift_wizard.handle_card2_disabled, pattern="^card2_disabled$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_card2)
+                    ],
+                    UPLOAD_Z_CASH: [
+                        CallbackQueryHandler(shift_wizard.handle_skip_z_cash, pattern="^skip_z_cash$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.PHOTO, shift_wizard.upload_z_cash)
+                    ],
+                    UPLOAD_Z_CARD: [
+                        CallbackQueryHandler(shift_wizard.handle_skip_z_card, pattern="^skip_z_card$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.PHOTO, shift_wizard.upload_z_card)
+                    ],
+                    UPLOAD_Z_QR: [
+                        CallbackQueryHandler(shift_wizard.handle_skip_z_qr, pattern="^skip_z_qr$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.PHOTO, shift_wizard.upload_z_qr)
+                    ],
+                    UPLOAD_Z_CARD2: [
+                        CallbackQueryHandler(shift_wizard.handle_skip_z_card2, pattern="^skip_z_card2$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.PHOTO, shift_wizard.upload_z_card2)
                     ],
                     ENTER_SAFE: [
                         CallbackQueryHandler(shift_wizard.handle_safe_no_change, pattern="^safe_no_change$"),
