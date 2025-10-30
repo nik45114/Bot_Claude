@@ -805,8 +805,9 @@ class ClubAssistantBot:
             if intercepted:
                 return
 
-        text = self._get_main_menu_text()
-        inline_markup = self._build_main_menu_keyboard(update.effective_user.id)
+        user_id = update.effective_user.id
+        text = self._get_main_menu_text(user_id)
+        inline_markup = self._build_main_menu_keyboard(user_id)
 
         # Отправить меню с inline кнопками
         await update.message.reply_text(
@@ -1911,8 +1912,37 @@ class ClubAssistantBot:
 
         return InlineKeyboardMarkup(keyboard)
     
-    def _get_main_menu_text(self) -> str:
+    def _get_main_menu_text(self, user_id: int = None) -> str:
         """Получить текст главного меню"""
+
+        # Проверяем, есть ли открытая смена у этого пользователя
+        if user_id and hasattr(self, 'shift_manager') and self.shift_manager:
+            try:
+                active_shift = self.shift_manager.get_active_shift(user_id)
+                if active_shift:
+                    # Получаем имя пользователя
+                    admin_name = "Админ"
+                    if hasattr(self, 'admin_manager') and self.admin_manager:
+                        admin = self.admin_manager.get_admin(user_id)
+                        if admin:
+                            admin_name = admin.get('full_name') or admin.get('name') or admin.get('username') or admin_name
+
+                    shift_type_label = "☀️ Дневная" if active_shift['shift_type'] == "morning" else "🌙 Ночная"
+
+                    return f"""👋 Привет, {admin_name}!
+
+✨ Желаю удачной смены!
+
+📊 Ваша смена:
+🏢 Клуб: {active_shift['club']}
+⏰ Тип: {shift_type_label}
+🆔 ID: #{active_shift['id']}
+
+Используйте меню ниже для работы."""
+            except Exception as e:
+                logger.error(f"Error getting active shift for greeting: {e}")
+
+        # Стандартное приветствие
         return f"""👋 Привет!
 
 Я ассистент клуба v{VERSION}.
@@ -1966,7 +1996,7 @@ class ClubAssistantBot:
         
         # Главное меню
         if data == "main_menu":
-            text = self._get_main_menu_text()
+            text = self._get_main_menu_text(query.from_user.id)
             reply_markup = self._build_main_menu_keyboard(query.from_user.id)
             await query.edit_message_text(text, reply_markup=reply_markup)
             return

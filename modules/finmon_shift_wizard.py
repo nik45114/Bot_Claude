@@ -165,6 +165,8 @@ class ShiftWizard:
         self.owner_ids = owner_ids or []
         self.bot_instance = bot_instance
         self.admin_db = admin_db
+        self.controller_id = controller_id
+        self.admin_manager = admin_db  # Alias для совместимости
 
         # Initialize improvements module
         if db_path and openai_key and controller_id:
