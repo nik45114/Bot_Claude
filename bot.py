@@ -746,6 +746,14 @@ class ClubAssistantBot:
         # Issue Manager - отслеживание проблем (для владельца и админов)
         self.issue_manager = IssueManager(DB_PATH)
         self.issue_commands = None  # Будет инициализирован позже с bot_app
+
+        # Очистка старых решенных проблем (старше 14 дней)
+        try:
+            deleted = self.issue_manager.cleanup_old_resolved_issues(days=14)
+            if deleted > 0:
+                logger.info(f"🧹 Очищено {deleted} старых решенных проблем")
+        except Exception as e:
+            logger.error(f"❌ Ошибка при очистке старых проблем: {e}")
         
         # Content Generator - AI content generation
         logger.info("🎨 Initializing ContentGenerator...")

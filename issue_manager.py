@@ -185,18 +185,53 @@ class IssueManager:
         try:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             cursor.execute('DELETE FROM club_issues WHERE id = ?', (issue_id,))
-            
+
             conn.commit()
             conn.close()
-            
+
             logger.info(f"✅ Issue #{issue_id} deleted")
             return True
-            
+
         except Exception as e:
             logger.error(f"❌ Error deleting issue: {e}")
             return False
+
+    def cleanup_old_resolved_issues(self, days: int = 14) -> int:
+        """
+        Удалить решенные проблемы старше указанного количества дней
+
+        Args:
+            days: Количество дней (по умолчанию 14)
+
+        Returns:
+            Количество удаленных записей
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            # Удалить решенные проблемы старше N дней
+            cursor.execute('''
+                DELETE FROM club_issues
+                WHERE status = 'resolved'
+                AND resolved_at IS NOT NULL
+                AND julianday('now') - julianday(resolved_at) > ?
+            ''', (days,))
+
+            deleted_count = cursor.rowcount
+            conn.commit()
+            conn.close()
+
+            if deleted_count > 0:
+                logger.info(f"✅ Удалено {deleted_count} старых решенных проблем (старше {days} дней)")
+
+            return deleted_count
+
+        except Exception as e:
+            logger.error(f"❌ Error cleaning up old issues: {e}")
+            return 0
     
     def get_active_count(self, club: str = None) -> int:
         """Получить количество активных проблем"""

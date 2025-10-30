@@ -64,42 +64,86 @@ def api_overview():
         start_date = end_date - timedelta(days=7)
 
     try:
-        # Получить движения средств
-        movements = analytics.get_cash_movements(
-            start_date=start_date.strftime('%Y-%m-%d'),
-            end_date=end_date.strftime('%Y-%m-%d')
-        )
+        # Получить реальные данные из закрытых смен
+        with analytics._get_db() as conn:
+            cursor = conn.cursor()
 
-        # Подсчитать статистику
-        total_revenue = 0
-        total_expenses = 0
-        expenses_count = 0
-        shifts_count = len(movements)
+            # Проверить существование таблицы finmon_shifts
+            cursor.execute("""
+                SELECT name FROM sqlite_master
+                WHERE type='table' AND name='finmon_shifts'
+            """)
 
-        clubs_data = {}
+            if cursor.fetchone():
+                # Таблица существует - получить данные
+                cursor.execute("""
+                    SELECT
+                        COUNT(*) as shifts_count,
+                        SUM(total_revenue) as total_revenue,
+                        SUM(total_expenses) as total_expenses,
+                        SUM(bar_revenue) as bar_revenue,
+                        SUM(hookah_revenue) as hookah_revenue,
+                        SUM(kitchen_revenue) as kitchen_revenue
+                    FROM finmon_shifts
+                    WHERE closed_at IS NOT NULL
+                    AND DATE(closed_at) BETWEEN ? AND ?
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
 
-        for m in movements:
-            # Выручка (TODO: добавить поле revenue в БД)
-            # Пока считаем 0, когда будет поле - заменим
-            revenue = 0
-            total_revenue += revenue
+                row = cursor.fetchone()
+                shifts_count = row[0] or 0
+                total_revenue = row[1] or 0
+                total_expenses = row[2] or 0
+                bar_revenue = row[3] or 0
+                hookah_revenue = row[4] or 0
+                kitchen_revenue = row[5] or 0
 
-            # Расходы
-            for exp in m.get('expenses', []):
-                total_expenses += exp.get('total_expenses', 0) or 0
-                expenses_count += 1
+                # Статистика по клубам
+                cursor.execute("""
+                    SELECT
+                        club,
+                        SUM(total_revenue) as revenue,
+                        COUNT(*) as shifts
+                    FROM finmon_shifts
+                    WHERE closed_at IS NOT NULL
+                    AND DATE(closed_at) BETWEEN ? AND ?
+                    GROUP BY club
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
 
-            # По клубам
-            club = m.get('club', 'Неизвестно')
-            if club not in clubs_data:
-                clubs_data[club] = {'revenue': 0, 'shifts': 0}
-            clubs_data[club]['revenue'] += revenue
-            clubs_data[club]['shifts'] += 1
+                clubs_data = {}
+                for club, revenue, shifts in cursor.fetchall():
+                    clubs_data[club or 'Неизвестно'] = {
+                        'revenue': int(revenue or 0),
+                        'shifts': shifts
+                    }
 
-        # Зарплаты
-        salaries = analytics.calculate_net_salaries()
-        total_salaries = sum(s['net_salary'] for s in salaries.values())
-        admins_count = len(salaries)
+                # Динамика по дням
+                cursor.execute("""
+                    SELECT
+                        DATE(closed_at) as date,
+                        SUM(total_revenue) as revenue
+                    FROM finmon_shifts
+                    WHERE closed_at IS NOT NULL
+                    AND DATE(closed_at) BETWEEN ? AND ?
+                    GROUP BY DATE(closed_at)
+                    ORDER BY date
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+
+                trend_data = {row[0]: int(row[1] or 0) for row in cursor.fetchall()}
+            else:
+                # Таблица не существует - вернуть нули (пока тестируем)
+                logger.warning("⚠️ Таблица finmon_shifts не существует, возвращаем нулевые данные")
+                shifts_count = 0
+                total_revenue = 0
+                total_expenses = 0
+                bar_revenue = 0
+                hookah_revenue = 0
+                kitchen_revenue = 0
+                clubs_data = {}
+                trend_data = {}
+
+        # Зарплаты (пока 0, так как нет Google Sheets данных)
+        total_salaries = 0
+        admins_count = 0
 
         # Прибыль
         net_profit = total_revenue - total_expenses - total_salaries
@@ -111,27 +155,38 @@ def api_overview():
             for club, data in clubs_data.items()
         ]
 
-        # Динамика за период (заглушка - TODO: реализовать по дням)
-        trend = [
-            {'date': (start_date + timedelta(days=i)).strftime('%d.%m'), 'revenue': 0}
-            for i in range((end_date - start_date).days + 1)
-        ]
+        # Динамика за период (заполнить все дни)
+        trend = []
+        current = start_date
+        while current <= end_date:
+            date_str = current.strftime('%Y-%m-%d')
+            revenue = trend_data.get(date_str, 0)
+            trend.append({
+                'date': current.strftime('%d.%m'),
+                'revenue': revenue
+            })
+            current += timedelta(days=1)
 
         return jsonify({
-            'total_revenue': total_revenue,
-            'total_expenses': total_expenses,
-            'total_salaries': total_salaries,
-            'net_profit': net_profit,
+            'total_revenue': int(total_revenue),
+            'total_expenses': int(total_expenses),
+            'total_salaries': int(total_salaries),
+            'net_profit': int(net_profit),
             'profit_margin': profit_margin,
             'shifts_count': shifts_count,
-            'expenses_count': expenses_count,
+            'expenses_count': shifts_count,  # Каждая смена - один расход
             'admins_count': admins_count,
             'clubs': clubs,
-            'trend': trend
+            'trend': trend,
+            'revenue_breakdown': {
+                'bar': int(bar_revenue),
+                'hookah': int(hookah_revenue),
+                'kitchen': int(kitchen_revenue)
+            }
         })
 
     except Exception as e:
-        logger.error(f"Error in overview API: {e}")
+        logger.error(f"Error in overview API: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 
@@ -146,21 +201,77 @@ def api_revenue():
     """
     period = request.args.get('period', 'week')
 
-    # TODO: Реализовать получение выручки из БД
-    # Сейчас заглушка
+    # Определить даты периода
+    end_date = datetime.now()
+    if period == 'day':
+        start_date = end_date - timedelta(days=1)
+    elif period == 'month':
+        start_date = end_date - timedelta(days=30)
+    else:  # week
+        start_date = end_date - timedelta(days=7)
 
-    return jsonify({
-        'total': 150000,
-        'payment_types': {
-            'cash': 50000,
-            'card': 80000,
-            'qr': 20000
-        },
-        'by_club': [
-            {'club': 'Рио', 'revenue': 80000},
-            {'club': 'Север', 'revenue': 70000}
-        ]
-    })
+    try:
+        with analytics._get_db() as conn:
+            cursor = conn.cursor()
+
+            # Проверить существование таблицы
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='finmon_shifts'")
+
+            if cursor.fetchone():
+                # Общая выручка и по типам оплаты
+                cursor.execute("""
+                    SELECT
+                        SUM(total_revenue) as total,
+                        SUM(cash_revenue) as cash,
+                        SUM(card_revenue) as card,
+                        SUM(qr_revenue) as qr
+                    FROM finmon_shifts
+                    WHERE closed_at IS NOT NULL
+                    AND DATE(closed_at) BETWEEN ? AND ?
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+
+                row = cursor.fetchone()
+                total = int(row[0] or 0)
+                cash = int(row[1] or 0)
+                card = int(row[2] or 0)
+                qr = int(row[3] or 0)
+
+                # По клубам
+                cursor.execute("""
+                    SELECT
+                        club,
+                        SUM(total_revenue) as revenue
+                    FROM finmon_shifts
+                    WHERE closed_at IS NOT NULL
+                    AND DATE(closed_at) BETWEEN ? AND ?
+                    GROUP BY club
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+
+                by_club = [
+                    {'club': club or 'Неизвестно', 'revenue': int(revenue or 0)}
+                    for club, revenue in cursor.fetchall()
+                ]
+            else:
+                # Таблица не существует - вернуть нули
+                total = 0
+                cash = 0
+                card = 0
+                qr = 0
+                by_club = []
+
+        return jsonify({
+            'total': total,
+            'payment_types': {
+                'cash': cash,
+                'card': card,
+                'qr': qr
+            },
+            'by_club': by_club
+        })
+
+    except Exception as e:
+        logger.error(f"Error in revenue API: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/analytics/admins')
@@ -188,34 +299,41 @@ def api_admins():
         with analytics._get_db() as conn:
             cursor = conn.cursor()
 
-            # Получить статистику смен каждого админа за период
-            cursor.execute("""
-                SELECT
-                    a.user_id,
-                    a.full_name,
-                    COUNT(s.shift_id) as shifts_count,
-                    SUM(s.total_revenue) as total_revenue,
-                    AVG(s.total_revenue) as avg_revenue
-                FROM admins a
-                LEFT JOIN finmon_shifts s ON a.user_id = s.admin_id
-                    AND s.closed_at IS NOT NULL
-                    AND DATE(s.closed_at) BETWEEN ? AND ?
-                GROUP BY a.user_id, a.full_name
-                HAVING shifts_count > 0
-                ORDER BY total_revenue DESC
-            """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+            # Проверить существование таблицы
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='finmon_shifts'")
 
-            rows = cursor.fetchall()
+            if cursor.fetchone():
+                # Получить статистику смен каждого админа за период
+                cursor.execute("""
+                    SELECT
+                        a.user_id,
+                        a.full_name,
+                        COUNT(s.shift_id) as shifts_count,
+                        SUM(s.total_revenue) as total_revenue,
+                        AVG(s.total_revenue) as avg_revenue
+                    FROM admins a
+                    LEFT JOIN finmon_shifts s ON a.user_id = s.admin_id
+                        AND s.closed_at IS NOT NULL
+                        AND DATE(s.closed_at) BETWEEN ? AND ?
+                    GROUP BY a.user_id, a.full_name
+                    HAVING shifts_count > 0
+                    ORDER BY total_revenue DESC
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
 
-            admins_list = []
-            for row in rows:
-                user_id, full_name, shifts_count, total_revenue, avg_revenue = row
-                admins_list.append({
-                    'name': full_name or f'Админ #{user_id}',
-                    'shifts': shifts_count,
-                    'revenue': int(total_revenue or 0),
-                    'avg_revenue': int(avg_revenue or 0)
-                })
+                rows = cursor.fetchall()
+
+                admins_list = []
+                for row in rows:
+                    user_id, full_name, shifts_count, total_revenue, avg_revenue = row
+                    admins_list.append({
+                        'name': full_name or f'Админ #{user_id}',
+                        'shifts': shifts_count,
+                        'revenue': int(total_revenue or 0),
+                        'avg_revenue': int(avg_revenue or 0)
+                    })
+            else:
+                # Таблица не существует - вернуть пустой список
+                admins_list = []
 
             return jsonify({'admins': admins_list})
 
