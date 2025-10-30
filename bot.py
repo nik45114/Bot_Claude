@@ -3110,12 +3110,13 @@ class ClubAssistantBot:
             except Exception as e:
                 logger.error(f"❌ Error logging admin message: {e}")
         
-        # Автообучение ТОЛЬКО в группах (не в личке!)
-        if message.chat.type != 'private':
-            try:
-                self.smart_learner.learn_from_message(text, user.id)
-            except Exception as e:
-                logger.error(f"❌ Auto-learn error: {e}")
+        # Автообучение ОТКЛЮЧЕНО для экономии OpenAI API ($20/день было!)
+        # Можно включить вручную через команду /learn если нужно
+        # if message.chat.type != 'private':
+        #     try:
+        #         self.smart_learner.learn_from_message(text, user.id)
+        #     except Exception as e:
+        #         logger.error(f"❌ Auto-learn error: {e}")
         
         # Проверяем нужно ли отвечать
         if not self._should_respond(update, context):
@@ -3150,17 +3151,19 @@ class ClubAssistantBot:
     async def handle_photo(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self._should_respond(update, context):
             return
-        
+
         caption = update.message.caption or "Что на фото?"
-        
+
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        
+
         try:
             photo = update.message.photo[-1]
             file = await context.bot.get_file(photo.file_id)
             photo_bytes = await file.download_as_bytearray()
             photo_b64 = base64.b64encode(photo_bytes).decode('utf-8')
-            
+
+            # ВНИМАНИЕ: GPT-4o дорогой! (~$2.50 input + $10 output за 1M токенов)
+            # Вызывается только когда бота упоминают с фото
             response = openai.ChatCompletion.create(
                 model="gpt-4o",
                 messages=[{

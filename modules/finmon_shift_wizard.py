@@ -505,15 +505,8 @@ class ShiftWizard:
                         'shift_type': shift_type,
                         'admin_id': admin_id
                     }
-                    try:
-                        await self.improvements.send_shift_notification_to_controller(
-                            bot=context.bot,
-                            shift_data=shift_data,
-                            admin_name=admin_name,
-                            is_opening=True
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to notify controller: {e}")
+                    # Removed controller notification for shift opening
+                    # Controller will only be notified when shift is closed
             else:
                 await query.edit_message_text("❌ Ошибка при открытии смены")
         else:
@@ -955,7 +948,7 @@ class ShiftWizard:
         ocr_result = None
         if self.improvements:
             await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
-            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            ocr_result = await self.improvements.process_z_report_ocr(photo, context.bot)
             if ocr_result:
                 context.user_data['shift_data']['z_cash_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для наличных: {ocr_result}")
@@ -995,7 +988,7 @@ class ShiftWizard:
         ocr_result = None
         if self.improvements:
             await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
-            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            ocr_result = await self.improvements.process_z_report_ocr(photo, context.bot)
             if ocr_result:
                 context.user_data['shift_data']['z_card_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для карты: {ocr_result}")
@@ -1007,13 +1000,8 @@ class ShiftWizard:
         await update.message.reply_text(msg)
 
         # Пропускаем QR и карту 2, сразу к сейфу
-        # Создаем фейковый query для _continue_to_safe
-        class FakeQuery:
-            def __init__(self, message):
-                self.message = message
-
-        fake_query = FakeQuery(update.message)
-        return await self._continue_to_safe(fake_query, context)
+        # Передаём message напрямую - у него есть reply_text
+        return await self._continue_to_safe(update.message, context)
 
     async def handle_skip_z_qr(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Skip z-report for QR"""
@@ -1043,7 +1031,7 @@ class ShiftWizard:
         ocr_result = None
         if self.improvements:
             await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
-            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            ocr_result = await self.improvements.process_z_report_ocr(photo, context.bot)
             if ocr_result:
                 context.user_data['shift_data']['z_qr_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для QR: {ocr_result}")
@@ -1082,7 +1070,7 @@ class ShiftWizard:
         ocr_result = None
         if self.improvements:
             await update.message.reply_text("⏳ Обрабатываю чек через OCR...")
-            ocr_result = await self.improvements.process_z_report_ocr(photo, self.bot_instance)
+            ocr_result = await self.improvements.process_z_report_ocr(photo, context.bot)
             if ocr_result:
                 context.user_data['shift_data']['z_card2_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для карты 2: {ocr_result}")
@@ -1314,7 +1302,7 @@ class ShiftWizard:
             if self.improvements:
                 admin_name = update.effective_user.first_name or update.effective_user.username or "Unknown"
                 await self.improvements.send_shift_notification_to_controller(
-                    bot=self.bot_instance,
+                    bot=context.bot,
                     shift_data=data,
                     admin_name=admin_name,
                     is_opening=False
@@ -1921,17 +1909,10 @@ class ShiftWizard:
                         'shift_type': shift_type,
                         'admin_id': confirmed_by
                     }
-                    try:
-                        await self.improvements.send_shift_notification_to_controller(
-                            bot=context.bot,
-                            shift_data=shift_data,
-                            admin_name=admin_name,
-                            is_opening=True
-                        )
-                    except Exception as e:
-                        logger.error(f"Failed to notify controller: {e}")
+                    # Removed controller notification for shift opening
+                    # Controller will only be notified when shift is closed
 
-                # Уведомления владельцу отключены - теперь только контролирующему
+                # Уведомления владельцу отключены - теперь только контролирующему при закрытии
             else:
                 await query.edit_message_text("❌ Ошибка при открытии смены")
             
