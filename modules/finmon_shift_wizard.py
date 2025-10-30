@@ -164,15 +164,31 @@ class ShiftWizard:
         """Check if user is owner"""
         return user_id in self.owner_ids
     
+    async def start_close_shift(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start close shift from inline button callback"""
+        query = update.callback_query
+        if query:
+            await query.answer()
+            # Create a fake update with message for cmd_shift
+            fake_update = Update(
+                update_id=update.update_id,
+                message=query.message
+            )
+            fake_update._effective_user = update.effective_user
+            fake_update._effective_chat = update.effective_chat
+            return await self.cmd_shift(fake_update, context)
+        else:
+            return await self.cmd_shift(update, context)
+
     async def cmd_shift(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start shift submission process (CLOSE shift)"""
         user_id = update.effective_user.id
-        
+
         # Check if shift manager is available
         if not self.shift_manager:
             await update.message.reply_text("❌ Модуль управления сменами недоступен")
             return ConversationHandler.END
-        
+
         # Check for active shift
         active_shift = self.shift_manager.get_active_shift(user_id)
         
@@ -913,6 +929,22 @@ class ShiftWizard:
     
     # ===== Expense Tracking (During Active Shift) =====
     
+    async def start_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start expense from inline button callback"""
+        query = update.callback_query
+        if query:
+            await query.answer()
+            # Create a fake update with message for cmd_expense
+            fake_update = Update(
+                update_id=update.update_id,
+                message=query.message
+            )
+            fake_update._effective_user = update.effective_user
+            fake_update._effective_chat = update.effective_chat
+            return await self.cmd_expense(fake_update, context)
+        else:
+            return await self.cmd_expense(update, context)
+
     async def cmd_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start expense tracking conversation"""
         user_id = update.effective_user.id
