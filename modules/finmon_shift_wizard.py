@@ -36,9 +36,11 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 # Conversation states for CLOSING shift
-(SELECT_CLUB, CONFIRM_IDENTITY, SELECT_ADMIN_FOR_SHIFT, ENTER_FACT_CASH, ENTER_FACT_CARD, 
- ENTER_QR, ENTER_CARD2, ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA, ENTER_GAMEPADS, ENTER_REPAIR, 
- ENTER_NEED_REPAIR, ENTER_GAMES, CONFIRM_SHIFT) = range(15)
+(SELECT_CLUB, CONFIRM_IDENTITY, SELECT_ADMIN_FOR_SHIFT, ENTER_FACT_CASH, ENTER_FACT_CARD,
+ ENTER_QR, ENTER_CARD2, ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA, ENTER_GAMEPADS, ENTER_REPAIR,
+ ENTER_NEED_REPAIR, ENTER_GAMES,
+ UPLOAD_Z_CASH, UPLOAD_Z_CARD, UPLOAD_Z_QR, UPLOAD_Z_CARD2,
+ CONFIRM_SHIFT) = range(19)
 
 # Conversation states for EXPENSE tracking (separate conversation)
 (EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM) = range(14, 18)
@@ -139,10 +141,10 @@ def get_shift_type_for_opening() -> str:
 class ShiftWizard:
     """Wizard for button-based shift submission"""
     
-    def __init__(self, finmon_simple, schedule, shift_manager=None, schedule_parser=None, owner_ids: list = None, bot_instance=None, admin_db=None):
+    def __init__(self, finmon_simple, schedule, shift_manager=None, schedule_parser=None, owner_ids: list = None, bot_instance=None, admin_db=None, db_path=None, openai_key=None, controller_id=None):
         """
         Initialize wizard
-        
+
         Args:
             finmon_simple: FinMonSimple instance
             schedule: FinMonSchedule instance
@@ -151,6 +153,9 @@ class ShiftWizard:
             owner_ids: List of owner telegram IDs
             bot_instance: ClubAssistantBot instance (for dynamic keyboard updates)
             admin_db: AdminDB instance (for admin list)
+            db_path: Path to database
+            openai_key: OpenAI API key
+            controller_id: Controller Telegram ID
         """
         self.finmon = finmon_simple
         self.schedule = schedule
@@ -159,6 +164,14 @@ class ShiftWizard:
         self.owner_ids = owner_ids or []
         self.bot_instance = bot_instance
         self.admin_db = admin_db
+
+        # Initialize improvements module
+        if db_path and openai_key and controller_id:
+            from modules.finmon_shift_improvements import FinMonShiftImprovements
+            self.improvements = FinMonShiftImprovements(db_path, openai_key, controller_id)
+        else:
+            self.improvements = None
+            logger.warning("⚠️ FinMonShiftImprovements not initialized - missing parameters")
     
     def is_owner(self, user_id: int) -> bool:
         """Check if user is owner"""

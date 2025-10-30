@@ -3368,6 +3368,7 @@ class ClubAssistantBot:
                 ENTER_FACT_CASH, ENTER_FACT_CARD, ENTER_QR, ENTER_CARD2,
                 ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA,
                 ENTER_GAMEPADS, ENTER_REPAIR, ENTER_NEED_REPAIR, ENTER_GAMES,
+                UPLOAD_Z_CASH, UPLOAD_Z_CARD, UPLOAD_Z_QR, UPLOAD_Z_CARD2,
                 CONFIRM_SHIFT,
                 EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM,
                 WITHDRAWAL_ENTER_AMOUNT, WITHDRAWAL_CONFIRM
@@ -3441,7 +3442,10 @@ class ClubAssistantBot:
                 schedule_parser=schedule_parser,
                 owner_ids=owner_ids,
                 bot_instance=self,
-                admin_db=admin_db
+                admin_db=admin_db,
+                db_path=DB_PATH,
+                openai_key=config.get('openai_api_key'),
+                controller_id=config.get('controller_id')
             )
             self.shift_wizard = shift_wizard  # Store for button handler
             
