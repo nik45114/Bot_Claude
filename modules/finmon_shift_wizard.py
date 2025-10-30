@@ -860,7 +860,7 @@ class ShiftWizard:
 
         # Move to z-report upload
         msg = "✅ Карта 2: 0 ₽ (без изменений)\n\n"
-        msg += "📸 Загрузите Z-отчет для кассы НАЛИЧНЫХ\n\n"
+        msg += "📸 Загрузите X-отчет для кассы НАЛИЧНЫХ\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
 
         keyboard = [
@@ -879,7 +879,7 @@ class ShiftWizard:
 
         # Move to z-report upload
         msg = "❌ Карта 2 не работала\n\n"
-        msg += "📸 Загрузите Z-отчет для кассы НАЛИЧНЫХ\n\n"
+        msg += "📸 Загрузите X-отчет для кассы НАЛИЧНЫХ\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
 
         keyboard = [
@@ -897,7 +897,7 @@ class ShiftWizard:
 
             # Move to z-report upload
             msg = f"✅ Карта 2: {value:,.0f} ₽\n\n"
-            msg += "📸 Загрузите Z-отчет для кассы НАЛИЧНЫХ\n\n"
+            msg += "📸 Загрузите X-отчет для кассы НАЛИЧНЫХ\n\n"
             msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
 
             keyboard = [
@@ -919,8 +919,8 @@ class ShiftWizard:
         query = update.callback_query
         await query.answer()
 
-        msg = "⏭️ Z-отчет наличных пропущен\n\n"
-        msg += "📸 Загрузите Z-отчет для КАРТЫ\n\n"
+        msg = "⏭️ X-отчет наличных пропущен\n\n"
+        msg += "📸 Загрузите X-отчет для КАРТЫ\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить'"
 
         keyboard = [
@@ -949,11 +949,11 @@ class ShiftWizard:
                 context.user_data['shift_data']['z_cash_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для наличных: {ocr_result}")
 
-        msg = "✅ Z-отчет наличных загружен\n\n"
+        msg = "✅ X-отчет наличных загружен\n\n"
         if ocr_result and 'total' in ocr_result:
             msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
 
-        msg += "📸 Загрузите Z-отчет для КАРТЫ\n\n"
+        msg += "📸 Загрузите X-отчет для КАРТЫ\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить'"
 
         keyboard = [
@@ -966,20 +966,11 @@ class ShiftWizard:
         return UPLOAD_Z_CARD
 
     async def handle_skip_z_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Skip z-report for card"""
+        """Skip z-report for card and go to safe"""
         query = update.callback_query
         await query.answer()
-
-        msg = "⏭️ Z-отчет карты пропущен\n\n"
-        msg += "📸 Загрузите Z-отчет для QR\n\n"
-        msg += "Отправьте фото чека или нажмите 'Пропустить'"
-
-        keyboard = [
-            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_qr")],
-            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
-        ]
-        await query.edit_message_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
-        return UPLOAD_Z_QR
+        # Пропускаем QR и карту 2, сразу к сейфу
+        return await self._continue_to_safe(query, context)
 
     async def upload_z_card(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle z-report photo upload for card register"""
@@ -998,29 +989,28 @@ class ShiftWizard:
                 context.user_data['shift_data']['z_card_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для карты: {ocr_result}")
 
-        msg = "✅ Z-отчет карты загружен\n\n"
+        msg = "✅ X-отчет карты загружен\n\n"
         if ocr_result and 'total' in ocr_result:
             msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
 
-        msg += "📸 Загрузите Z-отчет для QR\n\n"
-        msg += "Отправьте фото чека или нажмите 'Пропустить'"
+        await update.message.reply_text(msg)
 
-        keyboard = [
-            [InlineKeyboardButton("⏭️ Пропустить", callback_data="skip_z_qr")],
-            [InlineKeyboardButton("🚫 Отмена", callback_data="shift_cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        # Пропускаем QR и карту 2, сразу к сейфу
+        # Создаем фейковый query для _continue_to_safe
+        class FakeQuery:
+            def __init__(self, message):
+                self.message = message
 
-        await update.message.reply_text(msg, reply_markup=reply_markup)
-        return UPLOAD_Z_QR
+        fake_query = FakeQuery(update.message)
+        return await self._continue_to_safe(fake_query, context)
 
     async def handle_skip_z_qr(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Skip z-report for QR"""
         query = update.callback_query
         await query.answer()
 
-        msg = "⏭️ Z-отчет QR пропущен\n\n"
-        msg += "📸 Загрузите Z-отчет для КАРТЫ 2\n\n"
+        msg = "⏭️ X-отчет QR пропущен\n\n"
+        msg += "📸 Загрузите X-отчет для КАРТЫ 2\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить'"
 
         keyboard = [
@@ -1047,11 +1037,11 @@ class ShiftWizard:
                 context.user_data['shift_data']['z_qr_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для QR: {ocr_result}")
 
-        msg = "✅ Z-отчет QR загружен\n\n"
+        msg = "✅ X-отчет QR загружен\n\n"
         if ocr_result and 'total' in ocr_result:
             msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
 
-        msg += "📸 Загрузите Z-отчет для КАРТЫ 2\n\n"
+        msg += "📸 Загрузите X-отчет для КАРТЫ 2\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить'"
 
         keyboard = [
@@ -1086,7 +1076,7 @@ class ShiftWizard:
                 context.user_data['shift_data']['z_card2_ocr'] = json.dumps(ocr_result, ensure_ascii=False)
                 logger.info(f"✅ OCR для карты 2: {ocr_result}")
 
-        msg = "✅ Z-отчет карты 2 загружен\n\n"
+        msg = "✅ X-отчет карты 2 загружен\n\n"
         if ocr_result and 'total' in ocr_result:
             msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
 
