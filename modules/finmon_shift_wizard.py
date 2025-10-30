@@ -2164,64 +2164,82 @@ class ShiftWizard:
 
     async def cmd_shift_status(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показать статус смен и остатки в кассах"""
-        user_id = update.effective_user.id
+        try:
+            user_id = update.effective_user.id
 
-        # Проверка прав доступа - только владелец и контролирующий
-        allowed_ids = []
-        if self.owner_ids:
-            allowed_ids.extend(self.owner_ids)
-        if self.controller_id:
-            allowed_ids.append(self.controller_id)
+            # Проверка прав доступа - только владелец и контролирующий
+            allowed_ids = []
+            if self.owner_ids:
+                allowed_ids.extend(self.owner_ids)
+            if self.controller_id:
+                allowed_ids.append(self.controller_id)
 
-        if user_id not in allowed_ids:
-            await update.message.reply_text("❌ Команда доступна только владельцу и контролирующему")
-            return
+            if user_id not in allowed_ids:
+                await update.message.reply_text("❌ Команда доступна только владельцу и контролирующему")
+                return
 
-        # Получаем активные смены
-        if not self.shift_manager:
-            await update.message.reply_text("❌ Модуль управления сменами недоступен")
-            return
+            # Получаем активные смены
+            if not self.shift_manager:
+                await update.message.reply_text("❌ Модуль управления сменами недоступен")
+                return
 
-        active_shifts = self.shift_manager.get_all_active_shifts()
+            active_shifts = self.shift_manager.get_all_active_shifts()
 
-        # Получаем остатки из финмона
-        balances = {}
-        if self.finmon:
-            balances = self.finmon.get_balances()
+            # Получаем остатки из финмона
+            balances = {}
+            if self.finmon:
+                try:
+                    balances = self.finmon.get_balances()
+                except Exception as e:
+                    logger.error(f"Failed to get balances: {e}")
 
-        # Формируем сообщение
-        msg = "📊 <b>Статус смен</b>\n\n"
+            # Формируем сообщение
+            msg = "📊 <b>Статус смен</b>\n\n"
 
-        if active_shifts:
-            for shift in active_shifts:
-                shift_type_label = "☀️ Утро" if shift['shift_type'] == "morning" else "🌙 Вечер"
-                opened_at = datetime.fromisoformat(shift['opened_at'])
+            if active_shifts:
+                for shift in active_shifts:
+                    try:
+                        shift_type_label = "☀️ Утро" if shift.get('shift_type') == "morning" else "🌙 Вечер"
+                        opened_at = datetime.fromisoformat(shift['opened_at'])
 
-                # Получаем имя админа
-                admin_name = "Неизвестно"
-                if self.admin_manager:
-                    admin = self.admin_manager.get_admin(shift['admin_id'])
-                    if admin:
-                        admin_name = admin['name']
+                        # Получаем имя админа
+                        admin_name = f"ID {shift.get('admin_id', 'Unknown')}"
+                        if self.admin_db:
+                            try:
+                                admin = self.admin_db.get_admin(shift['admin_id'])
+                                if admin:
+                                    admin_name = admin.get('full_name') or admin.get('username') or admin_name
+                            except Exception as e:
+                                logger.error(f"Failed to get admin info: {e}")
 
-                msg += f"🏢 <b>{shift['club']}</b> {shift_type_label}\n"
-                msg += f"👤 {admin_name}\n"
-                msg += f"🕐 Открыта: {opened_at.strftime('%d.%m.%Y %H:%M')}\n"
-                msg += f"🆔 Смена: #{shift['id']}\n\n"
-        else:
-            msg += "❌ Нет открытых смен\n\n"
+                        msg += f"🏢 <b>{shift.get('club', 'N/A')}</b> {shift_type_label}\n"
+                        msg += f"👤 {admin_name}\n"
+                        msg += f"🕐 Открыта: {opened_at.strftime('%d.%m.%Y %H:%M')}\n"
+                        msg += f"🆔 Смена: #{shift.get('id', 'N/A')}\n\n"
+                    except Exception as e:
+                        logger.error(f"Error formatting shift: {e}")
+                        continue
+            else:
+                msg += "❌ Нет открытых смен\n\n"
 
-        # Показываем остатки в кассах
-        msg += "💰 <b>Остатки в кассах</b>\n\n"
+            # Показываем остатки в кассах
+            msg += "💰 <b>Остатки в кассах</b>\n\n"
 
-        if balances:
-            for club, amounts in balances.items():
-                msg += f"🏢 <b>{club}</b>\n"
-                msg += f"🔐 Сейф: {amounts.get('official', 0):,.0f} ₽\n"
-                msg += f"📦 Бокс: {amounts.get('box', 0):,.0f} ₽\n"
-                total = amounts.get('official', 0) + amounts.get('box', 0)
-                msg += f"💵 Всего: {total:,.0f} ₽\n\n"
-        else:
-            msg += "❌ Нет данных об остатках\n"
+            if balances:
+                for club, amounts in balances.items():
+                    try:
+                        msg += f"🏢 <b>{club}</b>\n"
+                        msg += f"🔐 Сейф: {amounts.get('official', 0):,.0f} ₽\n"
+                        msg += f"📦 Бокс: {amounts.get('box', 0):,.0f} ₽\n"
+                        total = amounts.get('official', 0) + amounts.get('box', 0)
+                        msg += f"💵 Всего: {total:,.0f} ₽\n\n"
+                    except Exception as e:
+                        logger.error(f"Error formatting balance for {club}: {e}")
+                        continue
+            else:
+                msg += "Данные отсутствуют (касса пуста)\n"
 
-        await update.message.reply_text(msg, parse_mode='HTML')
+            await update.message.reply_text(msg, parse_mode='HTML')
+        except Exception as e:
+            logger.error(f"Error in cmd_shift_status: {e}")
+            await update.message.reply_text(f"❌ Ошибка при получении статуса: {str(e)}")
