@@ -1878,14 +1878,33 @@ class ShiftWizard:
         if action == "confirm":
             # Duty person confirms - open shift immediately
             confirmed_by = query.from_user.id
+
+            # Log the replacement for tracking
+            confirmer_name = query.from_user.full_name or query.from_user.username or f"ID {confirmed_by}"
+            logger.info(f"🔄 REPLACEMENT: Shift {club}/{shift_type} confirmed by {confirmer_name} (ID: {confirmed_by})")
+
             shift_id = self.shift_manager.open_shift(opener_id, club, shift_type, confirmed_by)
 
             if shift_id:
+                # Get scheduled duty name to show if it was a replacement
+                scheduled_duty_name = None
+                if self.schedule:
+                    try:
+                        scheduled_duty_name = self.schedule.get_duty_name(club, date.today(), shift_type)
+                    except:
+                        pass
+
+                replacement_info = ""
+                if scheduled_duty_name and scheduled_duty_name != confirmer_name:
+                    replacement_info = f"\n\n🔄 Замена: {scheduled_duty_name} → {confirmer_name}"
+                    logger.info(f"📋 REPLACEMENT DETECTED: {scheduled_duty_name} → {confirmer_name}")
+
                 await query.edit_message_text(
                     f"✅ Смена подтверждена и открыта!\n\n"
                     f"🏢 {club} | {shift_label}\n"
                     f"🆔 ID смены: {shift_id}\n"
                     f"✅ Подтверждено: {query.from_user.full_name or 'Вы'}"
+                    f"{replacement_info}"
                 )
 
                 # Update the pending message in club account if exists
