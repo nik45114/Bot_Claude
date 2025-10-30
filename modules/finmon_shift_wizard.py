@@ -565,16 +565,20 @@ class ShiftWizard:
         
         try:
             admins = self.admin_db.get_all_admins(active_only=True)
-            
+
+            # Filter admins: only those with full_name (can work shifts)
+            admins = [admin for admin in admins if admin.get('full_name')]
+
             if not admins:
-                await query.edit_message_text("❌ Нет доступных администраторов")
+                await query.edit_message_text("❌ Нет доступных администраторов для работы на сменах\n\n"
+                                             "Админы должны иметь полное ФИО для работы на сменах.")
                 return
-            
+
             msg = f"🔄 Замена\n\n"
             msg += f"🏢 Клуб: {club}\n"
             msg += f"⏰ Смена: {'☀️ Утро' if shift_type == 'morning' else '🌙 Вечер'}\n\n"
             msg += "Выберите кто работает:"
-            
+
             # Build admin buttons (max 2 per row)
             keyboard = []
             for i in range(0, len(admins), 2):

@@ -19,7 +19,8 @@ PERMISSIONS = [
     'issues_view', 'issues_edit',
     'v2ray_view', 'v2ray_manage',
     'content_generate',
-    'can_manage_admins'
+    'can_manage_admins',
+    'can_work_shifts'  # Can work shifts and appear in shift replacement lists
 ]
 
 # Default permissions for each role
@@ -31,7 +32,8 @@ ROLE_PERMISSIONS = {
         'issues_view': True, 'issues_edit': True,
         'v2ray_view': True, 'v2ray_manage': False,
         'content_generate': True,
-        'can_manage_admins': True
+        'can_manage_admins': True,
+        'can_work_shifts': True
     },
     'moderator': {
         'cash_view': True, 'cash_edit': False,
@@ -39,7 +41,8 @@ ROLE_PERMISSIONS = {
         'issues_view': True, 'issues_edit': True,
         'v2ray_view': False, 'v2ray_manage': False,
         'content_generate': True,
-        'can_manage_admins': False
+        'can_manage_admins': False,
+        'can_work_shifts': True
     },
     'staff': {
         'cash_view': False, 'cash_edit': False,
@@ -47,7 +50,8 @@ ROLE_PERMISSIONS = {
         'issues_view': True, 'issues_edit': False,
         'v2ray_view': False, 'v2ray_manage': False,
         'content_generate': False,
-        'can_manage_admins': False
+        'can_manage_admins': False,
+        'can_work_shifts': False  # Staff can work shifts only if they have full_name
     }
 }
 
