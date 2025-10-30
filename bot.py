@@ -1918,7 +1918,14 @@ class ClubAssistantBot:
         # Проверяем, есть ли открытая смена у этого пользователя
         if user_id and hasattr(self, 'shift_manager') and self.shift_manager:
             try:
-                active_shift = self.shift_manager.get_active_shift(user_id)
+                # Проверяем смены где user_id является админом (admin_id или confirmed_by)
+                active_shift = None
+                all_shifts = self.shift_manager.get_all_active_shifts()
+                for shift in all_shifts:
+                    if shift.get('admin_id') == user_id or shift.get('confirmed_by') == user_id:
+                        active_shift = shift
+                        break
+
                 if active_shift:
                     # Получаем имя пользователя
                     admin_name = "Админ"
