@@ -296,6 +296,21 @@ class ShiftWizard:
         # Определяем откуда вызов - callback или обычное сообщение
         is_callback = update.callback_query is not None
 
+        # Check if user is a club account (only club accounts can open shifts)
+        club_accounts = {
+            5329834944: "Рио",   # Клуб Рио
+            5992731922: "Север"  # Клуб Север
+        }
+
+        if user_id not in club_accounts:
+            text = "❌ Открывать смены могут только клубные аккаунты\n\n" \
+                   "Используйте аккаунт клуба для открытия смен."
+            if is_callback:
+                await update.callback_query.answer(text, show_alert=True)
+            else:
+                await update.message.reply_text(text)
+            return
+
         # Check if shift manager is available
         if not self.shift_manager:
             text = "❌ Модуль управления сменами недоступен"
