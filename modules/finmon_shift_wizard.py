@@ -566,12 +566,20 @@ class ShiftWizard:
         try:
             admins = self.admin_db.get_all_admins(active_only=True)
 
-            # Filter admins: only those with full_name (can work shifts)
-            admins = [admin for admin in admins if admin.get('full_name')]
+            # Filter admins: only those with full_name (minimum 3 words: Фамилия Имя Отчество)
+            def has_full_name(admin):
+                full_name = admin.get('full_name')
+                if not full_name:
+                    return False
+                # Check if name has at least 3 words (surname, name, patronymic)
+                words = full_name.strip().split()
+                return len(words) >= 3
+
+            admins = [admin for admin in admins if has_full_name(admin)]
 
             if not admins:
                 await query.edit_message_text("❌ Нет доступных администраторов для работы на сменах\n\n"
-                                             "Админы должны иметь полное ФИО для работы на сменах.")
+                                             "Админы должны иметь полное ФИО (Фамилия Имя Отчество) для работы на сменах.")
                 return
 
             msg = f"🔄 Замена\n\n"
