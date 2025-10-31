@@ -2205,9 +2205,18 @@ class ClubAssistantBot:
                 conn.close()
 
                 # Фильтрация: только админы с полным ФИО (минимум 3 слова)
+                # Исключаем технические аккаунты клубов и служебные аккаунты
+                excluded_keywords = ['клуб', 'рио', 'север', 'главный', 'администратор', 'око', 'саурона']
                 admins = []
                 for user_id, full_name in all_admins:
-                    if full_name and len(full_name.strip().split()) >= 3:
+                    if not full_name or len(full_name.strip().split()) < 3:
+                        continue
+
+                    # Проверяем, что это не технический аккаунт
+                    full_name_lower = full_name.lower()
+                    is_technical = any(keyword in full_name_lower for keyword in excluded_keywords)
+
+                    if not is_technical:
                         admins.append((user_id, full_name))
             except Exception as db_error:
                 logger.error(f"❌ Database error in swap admin selection: {db_error}")
