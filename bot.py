@@ -2040,7 +2040,12 @@ class ClubAssistantBot:
             [InlineKeyboardButton("🔄 Обменяться сменой", callback_data="shifts_swap")],
             [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        try:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+        except Exception as e:
+            # Игнорируем ошибку "Message is not modified"
+            if "message is not modified" not in str(e).lower():
+                logger.error(f"❌ Error editing shifts menu: {e}")
 
     async def _show_swap_shift_selection(self, query, context):
         """Show user's shifts for swap selection"""
@@ -2136,16 +2141,26 @@ class ClubAssistantBot:
 
             keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")])
 
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            try:
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            except Exception as edit_error:
+                # Игнорируем ошибку "Message is not modified"
+                if "message is not modified" not in str(edit_error).lower():
+                    raise
 
         except Exception as e:
             logger.error(f"❌ Error showing swap shift selection: {e}")
             import traceback
             traceback.print_exc()
-            await query.edit_message_text(
-                f"❌ Ошибка при получении списка смен: {e}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
-            )
+            try:
+                await query.edit_message_text(
+                    f"❌ Ошибка при получении списка смен: {e}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+                )
+            except Exception as edit_error:
+                # Игнорируем ошибку "Message is not modified"
+                if "message is not modified" not in str(edit_error).lower():
+                    logger.error(f"❌ Error editing message: {edit_error}")
 
     async def _show_admin_selection_for_swap(self, query, context, callback_data):
         """Show list of admins to swap shift with"""
@@ -2219,16 +2234,26 @@ class ClubAssistantBot:
 
             keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")])
 
-            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            try:
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+            except Exception as edit_error:
+                # Игнорируем ошибку "Message is not modified"
+                if "message is not modified" not in str(edit_error).lower():
+                    raise
 
         except Exception as e:
             logger.error(f"❌ Error showing admin selection: {e}")
             import traceback
             traceback.print_exc()
-            await query.edit_message_text(
-                f"❌ Ошибка: {e}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
-            )
+            try:
+                await query.edit_message_text(
+                    f"❌ Ошибка: {e}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
+                )
+            except Exception as edit_error:
+                # Игнорируем ошибку "Message is not modified"
+                if "message is not modified" not in str(edit_error).lower():
+                    logger.error(f"❌ Error editing message: {edit_error}")
 
     async def _send_swap_request(self, query, context, callback_data):
         """Send swap request to selected admin"""
