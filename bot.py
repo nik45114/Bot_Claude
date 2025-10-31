@@ -810,8 +810,10 @@ class ClubAssistantBot:
         username = update.effective_user.username or "без username"
 
         # Show user ID info
+        # Экранируем специальные символы Markdown в username
+        username_escaped = username.replace('_', '\\_').replace('*', '\\*').replace('[', '\\[').replace('`', '\\`')
         id_text = f"🆔 Ваш Telegram ID: `{user_id}`\n"
-        id_text += f"👤 Username: @{username}\n\n"
+        id_text += f"👤 Username: @{username_escaped}\n\n"
 
         text = self._get_main_menu_text(user_id)
         # Add ID info at the beginning
@@ -1961,10 +1963,13 @@ class ClubAssistantBot:
                 if active_shift:
                     # Получаем имя пользователя
                     admin_name = "Админ"
-                    if hasattr(self, 'admin_manager') and self.admin_manager:
-                        admin = self.admin_manager.get_admin(user_id)
-                        if admin:
-                            admin_name = admin.get('full_name') or admin.get('name') or admin.get('username') or admin_name
+                    try:
+                        if hasattr(self, 'admin_db') and self.admin_db:
+                            admin = self.admin_db.get_admin(user_id)
+                            if admin:
+                                admin_name = admin.get('full_name') or admin.get('name') or admin.get('username') or admin_name
+                    except Exception as e:
+                        logger.error(f"Error getting admin name: {e}")
 
                     shift_type_label = "☀️ Дневная" if active_shift['shift_type'] == "morning" else "🌙 Ночная"
 
