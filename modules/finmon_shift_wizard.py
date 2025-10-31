@@ -582,13 +582,21 @@ class ShiftWizard:
             admins = self.admin_db.get_all_admins(active_only=True)
 
             # Filter admins: only those with full_name (minimum 3 words: Фамилия Имя Отчество)
+            # Исключаем технические аккаунты клубов и служебные аккаунты
+            excluded_keywords = ['клуб', 'рио', 'север', 'главный', 'администратор', 'око', 'саурона']
+
             def has_full_name(admin):
                 full_name = admin.get('full_name')
                 if not full_name:
                     return False
                 # Check if name has at least 3 words (surname, name, patronymic)
                 words = full_name.strip().split()
-                return len(words) >= 3
+                if len(words) < 3:
+                    return False
+                # Проверяем, что это не технический аккаунт
+                full_name_lower = full_name.lower()
+                is_technical = any(keyword in full_name_lower for keyword in excluded_keywords)
+                return not is_technical
 
             admins = [admin for admin in admins if has_full_name(admin)]
 
