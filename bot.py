@@ -806,13 +806,23 @@ class ClubAssistantBot:
                 return
 
         user_id = update.effective_user.id
+        username = update.effective_user.username or "без username"
+
+        # Show user ID info
+        id_text = f"🆔 Ваш Telegram ID: `{user_id}`\n"
+        id_text += f"👤 Username: @{username}\n\n"
+
         text = self._get_main_menu_text(user_id)
+        # Add ID info at the beginning
+        text = id_text + text
+
         inline_markup = self._build_main_menu_keyboard(user_id)
 
         # Отправить меню с inline кнопками
         await update.message.reply_text(
             text,
-            reply_markup=inline_markup
+            reply_markup=inline_markup,
+            parse_mode='Markdown'
         )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -918,7 +928,27 @@ class ClubAssistantBot:
 🤖 Умное автообучение: ВКЛ"""
 
         await update.message.reply_text(text)
-    
+
+    async def cmd_id(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Show user's Telegram ID and username"""
+        user = update.effective_user
+        user_id = user.id
+        username = user.username
+        first_name = user.first_name or ""
+        last_name = user.last_name or ""
+        full_name = f"{first_name} {last_name}".strip()
+
+        text = "🆔 **Ваша информация:**\n\n"
+        text += f"**ID:** `{user_id}`\n"
+        if username:
+            text += f"**Username:** @{username}\n"
+        if full_name:
+            text += f"**Имя:** {full_name}\n"
+
+        text += f"\n💡 ID можно скопировать нажав на него"
+
+        await update.message.reply_text(text, parse_mode='Markdown')
+
     async def cmd_admin(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         if not self.admin_manager.is_admin(update.effective_user.id):
             await update.message.reply_text("❌ Только для админов")
@@ -3771,6 +3801,7 @@ class ClubAssistantBot:
         application.add_handler(CommandHandler("menu", self.cmd_start))  # Алиас для /start
         application.add_handler(CommandHandler("help", self.cmd_help))
         application.add_handler(CommandHandler("stats", self.cmd_stats))
+        application.add_handler(CommandHandler("id", self.cmd_id))
         application.add_handler(CommandHandler("admin", self.cmd_admin))
         application.add_handler(CommandHandler("learn", self.cmd_learn))
         application.add_handler(CommandHandler("cleanup", self.cmd_cleanup))
