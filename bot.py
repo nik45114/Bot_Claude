@@ -2047,14 +2047,14 @@ class ClubAssistantBot:
 
         try:
             # Get admin info
-            if not hasattr(self, 'admin_db_instance') or not self.admin_db_instance:
+            if not hasattr(self, 'admin_db') or not self.admin_db:
                 await query.edit_message_text(
                     "❌ Ошибка: база данных админов недоступна",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
                 )
                 return
 
-            admin_info = self.admin_db_instance.get_admin(user_id)
+            admin_info = self.admin_db.get_admin(user_id)
             if not admin_info or not admin_info.get('full_name'):
                 await query.edit_message_text(
                     "❌ Вы не найдены в списке админов или у вас не указано полное ФИО.\n\n"
@@ -2141,7 +2141,7 @@ class ClubAssistantBot:
             }
 
             # Get list of all admins with full names
-            if not hasattr(self, 'admin_db_instance') or not self.admin_db_instance:
+            if not hasattr(self, 'admin_db') or not self.admin_db:
                 await query.edit_message_text(
                     "❌ Ошибка: база данных админов недоступна",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
@@ -2219,11 +2219,11 @@ class ClubAssistantBot:
 
             # Get requester info
             requester_id = query.from_user.id
-            requester_info = self.admin_db_instance.get_admin(requester_id)
+            requester_info = self.admin_db.get_admin(requester_id)
             requester_name = requester_info.get('full_name', 'Админ') if requester_info else 'Админ'
 
             # Get target admin info
-            target_info = self.admin_db_instance.get_admin(target_admin_id)
+            target_info = self.admin_db.get_admin(target_admin_id)
             target_name = target_info.get('full_name', 'Админ') if target_info else 'Админ'
 
             # Format shift info
@@ -2651,21 +2651,29 @@ class ClubAssistantBot:
 
         # View my shifts
         if data == "shifts_view":
-            # Convert CallbackQuery to a format compatible with cmd_my_shifts
-            # Create a fake update with message
+            # Delete the old message first
+            try:
+                await query.message.delete()
+            except Exception as e:
+                logger.warning(f"Could not delete message: {e}")
+
+            # Send new message with shifts
+            # Create a fake update with message that can send new messages
             class FakeMessage:
-                def __init__(self, query):
-                    self.chat_id = query.message.chat.id
-                    self.from_user = query.from_user
-                    self.reply_text = query.message.reply_text
+                def __init__(self, chat_id, bot):
+                    self.chat_id = chat_id
+                    self.bot = bot
+
+                async def reply_text(self, text, **kwargs):
+                    return await self.bot.send_message(chat_id=self.chat_id, text=text, **kwargs)
 
             class FakeUpdate:
-                def __init__(self, query):
-                    self.effective_user = query.from_user
-                    self.message = FakeMessage(query)
-                    self.callback_query = query
+                def __init__(self, user, message):
+                    self.effective_user = user
+                    self.message = message
 
-            fake_update = FakeUpdate(query)
+            fake_message = FakeMessage(query.message.chat.id, context.bot)
+            fake_update = FakeUpdate(query.from_user, fake_message)
             await self.schedule_commands.cmd_my_shifts(fake_update, context)
             return
 

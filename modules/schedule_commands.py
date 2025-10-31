@@ -674,7 +674,12 @@ class ScheduleCommands:
             total = len(current_shifts) + len(next_shifts)
             msg += f"📊 *Итого:* {total} смен"
 
-            await update.message.reply_text(msg, parse_mode='Markdown')
+            # Add back button if called from callback query
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+
+            await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=reply_markup)
 
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка получения смен: {e}")
