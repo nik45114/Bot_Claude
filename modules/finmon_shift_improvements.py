@@ -45,19 +45,20 @@ class FinMonShiftImprovements:
             cursor = conn.cursor()
 
             # Получить последнюю закрытую смену того же типа в том же клубе
+            # Note: knowledge.db uses different column names (fact_cash not cash_revenue, shift_time not shift_type)
             cursor.execute("""
-                SELECT cash_revenue, safe_cash_end, box_cash_end
+                SELECT safe_cash_end, box_cash_end
                 FROM finmon_shifts
-                WHERE club = ? AND shift_type = ?
-                ORDER BY closed_at DESC
+                WHERE shift_time = ?
+                ORDER BY shift_date DESC, id DESC
                 LIMIT 1
-            """, (club, shift_type))
+            """, (shift_type,))
 
             row = cursor.fetchone()
             conn.close()
 
             if row:
-                cash_revenue, safe_end, box_end = row
+                safe_end, box_end = row
                 # Возвращаем сумму остатков сейфа и бокса
                 return (safe_end or 0) + (box_end or 0)
 

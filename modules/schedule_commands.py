@@ -41,18 +41,20 @@ SHIFT_TYPE_ALIASES = {
 class ScheduleCommands:
     """Commands for managing duty schedule"""
     
-    def __init__(self, shift_manager, owner_ids: list = None, schedule_parser=None):
+    def __init__(self, shift_manager, owner_ids: list = None, schedule_parser=None, admin_db=None):
         """
         Initialize schedule commands
-        
+
         Args:
             shift_manager: ShiftManager instance
             owner_ids: List of owner telegram IDs
             schedule_parser: ScheduleParser instance (optional)
+            admin_db: AdminDB instance (optional)
         """
         self.shift_manager = shift_manager
         self.owner_ids = owner_ids or []
         self.schedule_parser = schedule_parser
+        self.admin_db = admin_db
     
     def is_owner(self, user_id: int) -> bool:
         """Check if user is owner"""
@@ -569,6 +571,114 @@ class ScheduleCommands:
         except Exception as e:
             await update.message.reply_text(f"❌ Ошибка теста: {e}")
             logger.error(f"❌ Test error: {e}")
+            import traceback
+            traceback.print_exc()
+
+    async def cmd_my_shifts(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """
+        Show user's shifts for current and next month
+
+        Usage: /my_shifts or button "Мои смены"
+        """
+        user_id = update.effective_user.id
+
+        try:
+            # Get admin info from admin_db if available
+            if hasattr(self, 'admin_db') and self.admin_db:
+                admin_info = self.admin_db.get_admin(user_id)
+                if not admin_info:
+                    await update.message.reply_text(
+                        "❌ Вы не найдены в списке админов.\n\n"
+                        "Эта функция доступна только для админов с полным ФИО в базе."
+                    )
+                    return
+
+                admin_name = admin_info.get('full_name')
+                if not admin_name:
+                    await update.message.reply_text(
+                        "❌ У вас не указано полное ФИО в базе админов.\n\n"
+                        "Обратитесь к владельцу для добавления."
+                    )
+                    return
+            else:
+                # Fallback - use telegram name
+                admin_name = update.effective_user.full_name
+                if not admin_name:
+                    await update.message.reply_text("❌ Не удалось определить ваше имя")
+                    return
+
+            if not self.schedule_parser:
+                await update.message.reply_text(
+                    "❌ Парсер расписания не настроен.\n\n"
+                    "Обратитесь к администратору."
+                )
+                return
+
+            # Get current and next month
+            today = date.today()
+            current_month = today.replace(day=1)
+            next_month = (current_month + timedelta(days=32)).replace(day=1)
+
+            # Get shifts for both months
+            current_shifts = self.schedule_parser.get_admin_shifts_for_month(admin_name, current_month)
+            next_shifts = self.schedule_parser.get_admin_shifts_for_month(admin_name, next_month)
+
+            # Format message
+            msg = f"📅 *Ваши смены*\n\n"
+            msg += f"👤 {admin_name}\n\n"
+
+            # Current month
+            month_names_ru = {
+                1: 'Января', 2: 'Февраля', 3: 'Марта', 4: 'Апреля',
+                5: 'Мая', 6: 'Июня', 7: 'Июля', 8: 'Августа',
+                9: 'Сентября', 10: 'Октября', 11: 'Ноября', 12: 'Декабря'
+            }
+
+            if current_shifts:
+                msg += f"🗓 *{month_names_ru[current_month.month]} {current_month.year}:*\n"
+                for shift in sorted(current_shifts, key=lambda x: x['date']):
+                    day = shift['date'].day
+                    weekday = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'][shift['date'].weekday()]
+                    club_emoji = '🔴' if shift['club'] == 'Рио' else '🔵'
+                    time_emoji = '☀️' if shift['shift_type'] == 'morning' else '🌙'
+
+                    # Mark past/today/future
+                    if shift['date'] < today:
+                        status = '✅'  # Past
+                    elif shift['date'] == today:
+                        status = '▶️'  # Today
+                    else:
+                        status = '📌'  # Future
+
+                    msg += f"{status} {day:2d} {weekday} - {club_emoji} {shift['club']} {time_emoji}\n"
+                msg += "\n"
+            else:
+                msg += f"🗓 *{month_names_ru[current_month.month]} {current_month.year}:*\n"
+                msg += "Смен нет\n\n"
+
+            # Next month
+            if next_shifts:
+                msg += f"🗓 *{month_names_ru[next_month.month]} {next_month.year}:*\n"
+                for shift in sorted(next_shifts, key=lambda x: x['date']):
+                    day = shift['date'].day
+                    weekday = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'][shift['date'].weekday()]
+                    club_emoji = '🔴' if shift['club'] == 'Рио' else '🔵'
+                    time_emoji = '☀️' if shift['shift_type'] == 'morning' else '🌙'
+                    msg += f"📌 {day:2d} {weekday} - {club_emoji} {shift['club']} {time_emoji}\n"
+                msg += "\n"
+            else:
+                msg += f"🗓 *{month_names_ru[next_month.month]} {next_month.year}:*\n"
+                msg += "Смен нет\n\n"
+
+            # Summary
+            total = len(current_shifts) + len(next_shifts)
+            msg += f"📊 *Итого:* {total} смен"
+
+            await update.message.reply_text(msg, parse_mode='Markdown')
+
+        except Exception as e:
+            await update.message.reply_text(f"❌ Ошибка получения смен: {e}")
+            logger.error(f"❌ Error in cmd_my_shifts: {e}")
             import traceback
             traceback.print_exc()
 

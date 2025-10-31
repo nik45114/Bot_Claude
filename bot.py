@@ -1896,6 +1896,7 @@ class ClubAssistantBot:
                 keyboard.append([InlineKeyboardButton("🔓 Открыть смену", callback_data="shift_open")])
 
             # Кнопки доступные всем админам
+            keyboard.append([InlineKeyboardButton("📅 Смены", callback_data="shifts_menu")])
             keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
             keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
 
@@ -1993,7 +1994,469 @@ class ClubAssistantBot:
             [InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]
         ]
         return InlineKeyboardMarkup(keyboard)
-    
+
+    async def _show_shifts_menu(self, query):
+        """Show shifts management menu"""
+        text = """📅 Смены
+
+Управление вашими сменами:
+
+👁 **Мои смены** - посмотреть ваши смены на текущий и следующий месяц
+🔄 **Обменяться сменой** - поменяться сменой с другим админом"""
+
+        keyboard = [
+            [InlineKeyboardButton("👁 Мои смены", callback_data="shifts_view")],
+            [InlineKeyboardButton("🔄 Обменяться сменой", callback_data="shifts_swap")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+    async def _show_swap_shift_selection(self, query, context):
+        """Show user's shifts for swap selection"""
+        user_id = query.from_user.id
+
+        try:
+            # Get admin info
+            if not hasattr(self, 'admin_db_instance') or not self.admin_db_instance:
+                await query.edit_message_text(
+                    "❌ Ошибка: база данных админов недоступна",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+                )
+                return
+
+            admin_info = self.admin_db_instance.get_admin(user_id)
+            if not admin_info or not admin_info.get('full_name'):
+                await query.edit_message_text(
+                    "❌ Вы не найдены в списке админов или у вас не указано полное ФИО.\n\n"
+                    "Эта функция доступна только для админов с полным ФИО в базе.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+                )
+                return
+
+            admin_name = admin_info.get('full_name')
+
+            # Get shifts for current and next month
+            from datetime import date, timedelta
+            today = date.today()
+            current_month = today.replace(day=1)
+            next_month = (current_month + timedelta(days=32)).replace(day=1)
+
+            schedule_parser = self.schedule_commands.schedule_parser
+            current_shifts = schedule_parser.get_admin_shifts_for_month(admin_name, current_month)
+            next_shifts = schedule_parser.get_admin_shifts_for_month(admin_name, next_month)
+
+            all_shifts = current_shifts + next_shifts
+
+            # Filter only future shifts
+            future_shifts = [s for s in all_shifts if s['date'] >= today]
+
+            if not future_shifts:
+                await query.edit_message_text(
+                    "❌ У вас нет предстоящих смен для обмена.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+                )
+                return
+
+            # Build keyboard with shifts
+            text = "🔄 **Выберите смену для обмена:**\n\n"
+            keyboard = []
+
+            for shift in future_shifts:
+                shift_date = shift['date']
+                club = shift['club']
+                shift_type = shift['shift_type']
+
+                # Format shift label
+                club_emoji = "🔴" if club == "Рио" else "🔵"
+                shift_emoji = "☀️" if shift_type == "morning" else "🌙"
+                weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][shift_date.weekday()]
+
+                label = f"{shift_date.day} {weekday} - {club_emoji} {club} {shift_emoji}"
+                callback_data = f"swap_select_{shift_date.strftime('%Y%m%d')}_{club}_{shift_type}"
+
+                keyboard.append([InlineKeyboardButton(label, callback_data=callback_data)])
+                text += f"• {label}\n"
+
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")])
+
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"❌ Error showing swap shift selection: {e}")
+            import traceback
+            traceback.print_exc()
+            await query.edit_message_text(
+                f"❌ Ошибка при получении списка смен: {e}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+            )
+
+    async def _show_admin_selection_for_swap(self, query, context, callback_data):
+        """Show list of admins to swap shift with"""
+        try:
+            # Parse selected shift from callback_data
+            # Format: swap_select_YYYYMMDD_club_shift_type
+            parts = callback_data.replace("swap_select_", "").split("_")
+            shift_date_str = parts[0]
+            club = parts[1]
+            shift_type = parts[2]
+
+            from datetime import datetime
+            shift_date = datetime.strptime(shift_date_str, "%Y%m%d").date()
+
+            # Store selected shift in context for later
+            context.user_data['swap_shift'] = {
+                'date': shift_date,
+                'club': club,
+                'shift_type': shift_type
+            }
+
+            # Get list of all admins with full names
+            if not hasattr(self, 'admin_db_instance') or not self.admin_db_instance:
+                await query.edit_message_text(
+                    "❌ Ошибка: база данных админов недоступна",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
+                )
+                return
+
+            # Get all admins
+            import sqlite3
+            conn = sqlite3.connect('club_assistant.db')
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT user_id, full_name
+                FROM admins
+                WHERE full_name IS NOT NULL
+                AND full_name != ''
+                AND user_id != ?
+                AND is_active = 1
+                ORDER BY full_name
+            """, (query.from_user.id,))
+            admins = cursor.fetchall()
+            conn.close()
+
+            if not admins:
+                await query.edit_message_text(
+                    "❌ Нет доступных админов для обмена сменой.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
+                )
+                return
+
+            # Format shift info
+            club_emoji = "🔴" if club == "Рио" else "🔵"
+            shift_emoji = "☀️" if shift_type == "morning" else "🌙"
+            weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][shift_date.weekday()]
+            month_names = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                          "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+            month_name = month_names[shift_date.month - 1]
+
+            text = f"🔄 **Обмен сменой**\n\n"
+            text += f"📅 Ваша смена: {shift_date.day} {month_name} ({weekday}) - {club_emoji} {club} {shift_emoji}\n\n"
+            text += f"👥 Выберите админа для обмена:\n"
+
+            keyboard = []
+            for admin_id, full_name in admins:
+                # Shorten name if too long
+                display_name = full_name if len(full_name) <= 30 else full_name[:27] + "..."
+                callback = f"swap_admin_{admin_id}_{shift_date_str}_{club}_{shift_type}"
+                keyboard.append([InlineKeyboardButton(display_name, callback_data=callback)])
+
+            keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")])
+
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='Markdown')
+
+        except Exception as e:
+            logger.error(f"❌ Error showing admin selection: {e}")
+            import traceback
+            traceback.print_exc()
+            await query.edit_message_text(
+                f"❌ Ошибка: {e}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
+            )
+
+    async def _send_swap_request(self, query, context, callback_data):
+        """Send swap request to selected admin"""
+        try:
+            # Parse callback_data
+            # Format: swap_admin_USERID_YYYYMMDD_club_shift_type
+            parts = callback_data.replace("swap_admin_", "").split("_")
+            target_admin_id = int(parts[0])
+            shift_date_str = parts[1]
+            club = parts[2]
+            shift_type = parts[3]
+
+            from datetime import datetime
+            shift_date = datetime.strptime(shift_date_str, "%Y%m%d").date()
+
+            # Get requester info
+            requester_id = query.from_user.id
+            requester_info = self.admin_db_instance.get_admin(requester_id)
+            requester_name = requester_info.get('full_name', 'Админ') if requester_info else 'Админ'
+
+            # Get target admin info
+            target_info = self.admin_db_instance.get_admin(target_admin_id)
+            target_name = target_info.get('full_name', 'Админ') if target_info else 'Админ'
+
+            # Format shift info
+            club_emoji = "🔴" if club == "Рио" else "🔵"
+            shift_emoji = "☀️" if shift_type == "morning" else "🌙"
+            weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][shift_date.weekday()]
+            month_names = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                          "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+            month_name = month_names[shift_date.month - 1]
+
+            # Get target admin's shift on that day (if any)
+            schedule_parser = self.schedule_commands.schedule_parser
+            target_shifts_month = schedule_parser.get_admin_shifts_for_month(target_name, shift_date.replace(day=1))
+            target_shift_on_date = None
+            for s in target_shifts_month:
+                if s['date'] == shift_date:
+                    target_shift_on_date = s
+                    break
+
+            # Send notification to target admin
+            notification_text = f"🔄 **Запрос на обмен сменой**\n\n"
+            notification_text += f"От: {requester_name}\n\n"
+            notification_text += f"📅 Смена: {shift_date.day} {month_name} ({weekday})\n"
+            notification_text += f"🏢 Клуб: {club_emoji} {club} {shift_emoji}\n\n"
+
+            if target_shift_on_date:
+                target_club_emoji = "🔴" if target_shift_on_date['club'] == "Рио" else "🔵"
+                target_shift_emoji = "☀️" if target_shift_on_date['shift_type'] == "morning" else "🌙"
+                notification_text += f"↔️ **Обмен на вашу смену:**\n"
+                notification_text += f"🏢 {target_club_emoji} {target_shift_on_date['club']} {target_shift_emoji}\n\n"
+                swap_type = "exchange"  # Both admins have shifts on this date
+            else:
+                notification_text += f"⚠️ У вас нет смены в этот день.\n\n"
+                swap_type = "takeover"  # Target admin will just take the shift
+
+            notification_text += f"Вы согласны?"
+
+            keyboard = [
+                [
+                    InlineKeyboardButton("✅ Согласен", callback_data=f"swap_confirm_{requester_id}_{shift_date_str}_{club}_{shift_type}_{swap_type}"),
+                    InlineKeyboardButton("❌ Отказать", callback_data=f"swap_reject_{requester_id}_{shift_date_str}_{club}_{shift_type}")
+                ]
+            ]
+
+            # Send to target admin
+            sent_message = await context.bot.send_message(
+                chat_id=target_admin_id,
+                text=notification_text,
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='Markdown'
+            )
+
+            # Store swap request info for later
+            if 'pending_swap_requests' not in context.bot_data:
+                context.bot_data['pending_swap_requests'] = {}
+
+            swap_key = f"{requester_id}_{shift_date_str}_{club}_{shift_type}"
+            context.bot_data['pending_swap_requests'][swap_key] = {
+                'requester_id': requester_id,
+                'requester_name': requester_name,
+                'target_id': target_admin_id,
+                'target_name': target_name,
+                'shift_date': shift_date,
+                'club': club,
+                'shift_type': shift_type,
+                'target_shift': target_shift_on_date,
+                'swap_type': swap_type,
+                'message_id': sent_message.message_id,
+                'chat_id': target_admin_id
+            }
+
+            # Confirm to requester
+            await query.edit_message_text(
+                f"✅ Запрос на обмен отправлен {target_name}!\n\n"
+                f"📅 Смена: {shift_date.day} {month_name} ({weekday}) - {club_emoji} {club} {shift_emoji}\n\n"
+                f"Ожидайте ответа...",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]])
+            )
+
+            logger.info(f"📤 Swap request sent: {requester_name} -> {target_name} for {shift_date} {club} {shift_type}")
+
+        except Exception as e:
+            logger.error(f"❌ Error sending swap request: {e}")
+            import traceback
+            traceback.print_exc()
+            await query.edit_message_text(
+                f"❌ Ошибка при отправке запроса: {e}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
+            )
+
+    async def _handle_swap_response(self, query, context, callback_data):
+        """Handle swap confirmation or rejection"""
+        try:
+            is_confirm = callback_data.startswith("swap_confirm_")
+
+            # Parse callback_data
+            if is_confirm:
+                # Format: swap_confirm_REQUESTERID_YYYYMMDD_club_shift_type_swaptype
+                parts = callback_data.replace("swap_confirm_", "").split("_")
+                requester_id = int(parts[0])
+                shift_date_str = parts[1]
+                club = parts[2]
+                shift_type = parts[3]
+                swap_type = parts[4]
+            else:
+                # Format: swap_reject_REQUESTERID_YYYYMMDD_club_shift_type
+                parts = callback_data.replace("swap_reject_", "").split("_")
+                requester_id = int(parts[0])
+                shift_date_str = parts[1]
+                club = parts[2]
+                shift_type = parts[3]
+                swap_type = None
+
+            from datetime import datetime
+            shift_date = datetime.strptime(shift_date_str, "%Y%m%d").date()
+
+            # Get swap request info
+            swap_key = f"{requester_id}_{shift_date_str}_{club}_{shift_type}"
+            swap_info = context.bot_data.get('pending_swap_requests', {}).get(swap_key)
+
+            if not swap_info:
+                await query.edit_message_text(
+                    "❌ Запрос на обмен не найден или уже обработан.",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]])
+                )
+                return
+
+            responder_id = query.from_user.id
+            responder_name = swap_info['target_name']
+            requester_name = swap_info['requester_name']
+
+            # Format shift info
+            club_emoji = "🔴" if club == "Рио" else "🔵"
+            shift_emoji = "☀️" if shift_type == "morning" else "🌙"
+            month_names = ["января", "февраля", "марта", "апреля", "мая", "июня",
+                          "июля", "августа", "сентября", "октября", "ноября", "декабря"]
+            month_name = month_names[shift_date.month - 1]
+            weekday = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][shift_date.weekday()]
+
+            if is_confirm:
+                # Update Google Sheets
+                schedule_parser = self.schedule_commands.schedule_parser
+
+                try:
+                    # Update the shift assignment
+                    success = schedule_parser.update_duty_assignment(
+                        duty_date=shift_date,
+                        club=club,
+                        shift_type=shift_type,
+                        old_admin_name=requester_name,
+                        new_admin_name=responder_name
+                    )
+
+                    if success:
+                        # If this was an exchange (both had shifts), update the second shift too
+                        if swap_type == "exchange" and swap_info.get('target_shift'):
+                            target_shift = swap_info['target_shift']
+                            success2 = schedule_parser.update_duty_assignment(
+                                duty_date=shift_date,
+                                club=target_shift['club'],
+                                shift_type=target_shift['shift_type'],
+                                old_admin_name=responder_name,
+                                new_admin_name=requester_name
+                            )
+
+                            if success2:
+                                result_text = f"✅ **Обмен сменами выполнен!**\n\n"
+                                result_text += f"📅 Дата: {shift_date.day} {month_name} ({weekday})\n\n"
+                                result_text += f"↔️ **Обмен:**\n"
+                                result_text += f"{requester_name}: {club_emoji} {club} {shift_emoji} → "
+                                target_club_emoji = "🔴" if target_shift['club'] == "Рио" else "🔵"
+                                target_shift_emoji = "☀️" if target_shift['shift_type'] == "morning" else "🌙"
+                                result_text += f"{target_club_emoji} {target_shift['club']} {target_shift_emoji}\n"
+                                result_text += f"{responder_name}: {target_club_emoji} {target_shift['club']} {target_shift_emoji} → {club_emoji} {club} {shift_emoji}"
+                            else:
+                                result_text = f"⚠️ **Частичный обмен**\n\n"
+                                result_text += f"Смена {club_emoji} {club} {shift_emoji} передана вам, но не удалось обновить вторую смену.\n"
+                                result_text += f"Обратитесь к владельцу для проверки."
+                        else:
+                            result_text = f"✅ **Смена передана!**\n\n"
+                            result_text += f"📅 {shift_date.day} {month_name} ({weekday}) - {club_emoji} {club} {shift_emoji}\n\n"
+                            result_text += f"{requester_name} → {responder_name}"
+
+                        logger.info(f"✅ Swap completed: {requester_name} <-> {responder_name} on {shift_date} {club} {shift_type}")
+
+                        # Notify requester
+                        await context.bot.send_message(
+                            chat_id=requester_id,
+                            text=f"✅ {responder_name} согласился на обмен!\n\n{result_text}",
+                            parse_mode='Markdown'
+                        )
+
+                        # Update responder's message
+                        await query.edit_message_text(
+                            result_text,
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]]),
+                            parse_mode='Markdown'
+                        )
+                    else:
+                        error_text = f"❌ Не удалось обновить расписание в Google Sheets.\n\n"
+                        error_text += f"Возможно, ячейки защищены. Обратитесь к владельцу."
+
+                        await query.edit_message_text(
+                            error_text,
+                            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]])
+                        )
+
+                        # Notify requester about failure
+                        await context.bot.send_message(
+                            chat_id=requester_id,
+                            text=f"❌ {responder_name} согласился, но не удалось обновить расписание.\n\n{error_text}"
+                        )
+
+                except Exception as e:
+                    logger.error(f"❌ Error updating Google Sheets for swap: {e}")
+                    import traceback
+                    traceback.print_exc()
+
+                    error_text = f"❌ Ошибка при обновлении расписания: {e}"
+                    await query.edit_message_text(
+                        error_text,
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]])
+                    )
+
+                    # Notify requester about error
+                    await context.bot.send_message(
+                        chat_id=requester_id,
+                        text=f"❌ Технический сбой при обмене сменой:\n\n{error_text}"
+                    )
+
+            else:
+                # Rejection
+                result_text = f"❌ **Запрос отклонен**\n\n"
+                result_text += f"📅 {shift_date.day} {month_name} ({weekday}) - {club_emoji} {club} {shift_emoji}\n\n"
+                result_text += f"Вы отклонили запрос от {requester_name}."
+
+                await query.edit_message_text(
+                    result_text,
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]]),
+                    parse_mode='Markdown'
+                )
+
+                # Notify requester
+                await context.bot.send_message(
+                    chat_id=requester_id,
+                    text=f"❌ {responder_name} отклонил запрос на обмен сменой.\n\n"
+                         f"📅 {shift_date.day} {month_name} ({weekday}) - {club_emoji} {club} {shift_emoji}"
+                )
+
+                logger.info(f"❌ Swap rejected: {requester_name} -> {responder_name} on {shift_date} {club} {shift_type}")
+
+            # Remove swap request from pending
+            context.bot_data['pending_swap_requests'].pop(swap_key, None)
+
+        except Exception as e:
+            logger.error(f"❌ Error handling swap response: {e}")
+            import traceback
+            traceback.print_exc()
+            await query.edit_message_text(
+                f"❌ Ошибка: {e}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Главное меню", callback_data="main_menu")]])
+            )
+
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик inline-кнопок"""
         query = update.callback_query
@@ -2149,6 +2612,51 @@ class ClubAssistantBot:
         # Проблемы клуба
         if data == "issue_menu":
             await self.issue_commands.show_issue_menu(update, context)
+            return
+
+        # Shifts menu
+        if data == "shifts_menu":
+            await self._show_shifts_menu(query)
+            return
+
+        # View my shifts
+        if data == "shifts_view":
+            # Convert CallbackQuery to a format compatible with cmd_my_shifts
+            # Create a fake update with message
+            class FakeMessage:
+                def __init__(self, query):
+                    self.chat_id = query.message.chat.id
+                    self.from_user = query.from_user
+                    self.reply_text = query.message.reply_text
+
+            class FakeUpdate:
+                def __init__(self, query):
+                    self.effective_user = query.from_user
+                    self.message = FakeMessage(query)
+                    self.callback_query = query
+
+            fake_update = FakeUpdate(query)
+            await self.schedule_commands.cmd_my_shifts(fake_update, context)
+            return
+
+        # Swap shifts - show user's shifts
+        if data == "shifts_swap":
+            await self._show_swap_shift_selection(query, context)
+            return
+
+        # Shift selected for swap - show admin selection
+        if data.startswith("swap_select_"):
+            await self._show_admin_selection_for_swap(query, context, data)
+            return
+
+        # Admin selected for swap - send confirmation request
+        if data.startswith("swap_admin_"):
+            await self._send_swap_request(query, context, data)
+            return
+
+        # Swap confirmation response
+        if data.startswith("swap_confirm_") or data.startswith("swap_reject_"):
+            await self._handle_swap_response(query, context, data)
             return
         
         if data == "issue_list":
@@ -3685,13 +4193,20 @@ class ClubAssistantBot:
             schedule_commands = ScheduleCommands(
                 shift_manager=shift_manager,
                 owner_ids=owner_ids,
-                schedule_parser=schedule_parser
+                schedule_parser=schedule_parser,
+                admin_db=admin_db_instance
             )
             application.add_handler(CommandHandler("schedule", schedule_commands.cmd_schedule))
-            
+            application.add_handler(CommandHandler("my_shifts", schedule_commands.cmd_my_shifts))
+            application.add_handler(MessageHandler(
+                filters.TEXT & filters.Regex("^📅 Мои смены$"),
+                schedule_commands.cmd_my_shifts
+            ))
+            self.schedule_commands = schedule_commands  # Store for button handler
+
             logger.info("✅ Shift wizard registered")
-            logger.info("   Commands: /shift, /balances, /movements, /finmon, /schedule")
-            logger.info("   Button: 💰 Сдать смену (reply keyboard)")
+            logger.info("   Commands: /shift, /balances, /movements, /finmon, /schedule, /my_shifts")
+            logger.info("   Buttons: 💰 Сдать смену, 📅 Мои смены")
 
             # ================================================
             # Finance Analytics Module

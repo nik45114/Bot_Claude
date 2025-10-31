@@ -695,22 +695,36 @@ class ShiftWizard:
         msg += f"   {opener_name or 'Неизвестно'}\n\n"
         msg += "Это вы работаете на смене?\n"
         msg += "Подтвердите в своем личном Telegram:"
-        
+
         keyboard = [
-            [InlineKeyboardButton("✅ Да, подтверждаю", 
+            [InlineKeyboardButton("✅ Да, подтверждаю",
                                 callback_data=f"duty_confirm_{opener_id}_{club}_{shift_type}")],
-            [InlineKeyboardButton("❌ Нет, это ошибка", 
+            [InlineKeyboardButton("❌ Нет, это ошибка",
                                 callback_data=f"duty_reject_{opener_id}_{club}_{shift_type}")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         try:
-            await context.bot.send_message(
+            sent_message = await context.bot.send_message(
                 chat_id=admin_id,
                 text=msg,
                 reply_markup=reply_markup
             )
-            logger.info(f"✅ Confirmation request sent to admin {admin_id}")
+
+            # Save message_id to delete later if needed (store as list since multiple admins can receive)
+            if 'pending_confirmation_messages' not in context.bot_data:
+                context.bot_data['pending_confirmation_messages'] = {}
+
+            confirmation_key = f"{opener_id}_{club}_{shift_type}"
+            if confirmation_key not in context.bot_data['pending_confirmation_messages']:
+                context.bot_data['pending_confirmation_messages'][confirmation_key] = []
+
+            context.bot_data['pending_confirmation_messages'][confirmation_key].append({
+                'chat_id': admin_id,
+                'message_id': sent_message.message_id
+            })
+
+            logger.info(f"✅ Confirmation request sent to admin {admin_id} (msg_id: {sent_message.message_id})")
         except Exception as e:
             logger.error(f"❌ Failed to send confirmation to admin {admin_id}: {e}")
     
@@ -1883,21 +1897,67 @@ class ShiftWizard:
             confirmer_name = query.from_user.full_name or query.from_user.username or f"ID {confirmed_by}"
             logger.info(f"🔄 REPLACEMENT: Shift {club}/{shift_type} confirmed by {confirmer_name} (ID: {confirmed_by})")
 
+            # Get full name from admin database for Google Sheets update
+            confirmer_full_name = None
+            if self.admin_db:
+                admin_info = self.admin_db.get_admin(confirmed_by)
+                if admin_info:
+                    confirmer_full_name = admin_info.get('full_name')
+                    logger.info(f"📋 Got full name from admin DB: {confirmer_full_name}")
+
             shift_id = self.shift_manager.open_shift(opener_id, club, shift_type, confirmed_by)
 
             if shift_id:
                 # Get scheduled duty name to show if it was a replacement
                 scheduled_duty_name = None
-                if self.schedule:
+                if self.schedule_parser:
                     try:
-                        scheduled_duty_name = self.schedule.get_duty_name(club, date.today(), shift_type)
-                    except:
-                        pass
+                        scheduled_duty_name = self.schedule_parser.get_duty_name(club, date.today(), shift_type)
+                        logger.info(f"🔍 Got scheduled duty name: {scheduled_duty_name} for {club}/{shift_type}")
+                    except Exception as e:
+                        logger.error(f"❌ Failed to get scheduled duty name: {e}")
 
                 replacement_info = ""
                 if scheduled_duty_name and scheduled_duty_name != confirmer_name:
                     replacement_info = f"\n\n🔄 Замена: {scheduled_duty_name} → {confirmer_name}"
                     logger.info(f"📋 REPLACEMENT DETECTED: {scheduled_duty_name} → {confirmer_name}")
+
+                    # Update Google Sheets with replacement (use full name if available)
+                    if self.schedule_parser and confirmer_full_name:
+                        try:
+                            success = self.schedule_parser.update_duty_assignment(
+                                duty_date=date.today(),
+                                club=club,
+                                shift_type=shift_type,
+                                old_admin_name=scheduled_duty_name,
+                                new_admin_name=confirmer_full_name
+                            )
+                            if success:
+                                logger.info(f"✅ Google Sheets updated with replacement")
+                            else:
+                                logger.warning(f"⚠️ Failed to update Google Sheets")
+                        except Exception as e:
+                            logger.error(f"❌ Error updating Google Sheets: {e}")
+
+                # Delete ALL pending confirmation messages for this shift
+                confirmation_key = f"{opener_id}_{club}_{shift_type}"
+                if 'pending_confirmation_messages' in context.bot_data:
+                    messages_to_delete = context.bot_data['pending_confirmation_messages'].get(confirmation_key, [])
+                    for msg_info in messages_to_delete:
+                        try:
+                            # Skip the current message (it will be edited below)
+                            if msg_info['chat_id'] == query.message.chat_id and msg_info['message_id'] == query.message.message_id:
+                                continue
+                            await context.bot.delete_message(
+                                chat_id=msg_info['chat_id'],
+                                message_id=msg_info['message_id']
+                            )
+                            logger.info(f"✅ Deleted confirmation message from chat {msg_info['chat_id']}")
+                        except Exception as e:
+                            logger.warning(f"⚠️ Could not delete message {msg_info['message_id']} from {msg_info['chat_id']}: {e}")
+
+                    # Clear the list
+                    context.bot_data['pending_confirmation_messages'].pop(confirmation_key, None)
 
                 await query.edit_message_text(
                     f"✅ Смена подтверждена и открыта!\n\n"
@@ -1964,11 +2024,35 @@ class ShiftWizard:
                 await query.edit_message_text("❌ Ошибка при открытии смены")
             
         elif action == "reject":
-            # Duty person says it's an error
-            await query.edit_message_text(
-                f"❌ Замена отклонена\n\n"
-                f"Вы отметили это как ошибку"
-            )
+            # Duty person says it's an error - delete the message
+            try:
+                await query.message.delete()
+                logger.info(f"✅ Deleted confirmation message from admin {query.from_user.id}")
+            except Exception as e:
+                logger.error(f"❌ Failed to delete confirmation message: {e}")
+                # Fallback - edit message instead
+                await query.edit_message_text(
+                    f"❌ Замена отклонена\n\n"
+                    f"Вы отметили это как ошибку"
+                )
+
+            # Delete ALL pending confirmation messages for this shift
+            confirmation_key = f"{opener_id}_{club}_{shift_type}"
+            if 'pending_confirmation_messages' in context.bot_data:
+                messages_to_delete = context.bot_data['pending_confirmation_messages'].get(confirmation_key, [])
+                for msg_info in messages_to_delete:
+                    try:
+                        await context.bot.delete_message(
+                            chat_id=msg_info['chat_id'],
+                            message_id=msg_info['message_id']
+                        )
+                        logger.info(f"✅ Deleted confirmation message from chat {msg_info['chat_id']}")
+                    except Exception as e:
+                        # Message might already be deleted
+                        logger.warning(f"⚠️ Could not delete message {msg_info['message_id']} from {msg_info['chat_id']}: {e}")
+
+                # Clear the list
+                context.bot_data['pending_confirmation_messages'].pop(confirmation_key, None)
 
             # Notify the opener
             try:
