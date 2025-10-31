@@ -672,16 +672,17 @@ class RAGAnswerer:
 class ClubAssistantBot:
     def __init__(self, config: dict):
         self.config = config
-        
+        self.db_path = DB_PATH  # Store DB path for easy access
+
         # Инициализация улучшенной системы управления админами и сменами
         self.enhanced_admin_shift_integration = None
-        
+
         logger.info("🚀 Инициализация v4.8...")
-        
+
         self.embedding_service = EmbeddingService(config['openai_api_key'])
         self.vector_store = VectorStore()
         self.vector_store.load()
-        
+
         self.admin_manager = AdminManager(DB_PATH)
         self.creds_manager = CredentialManager(DB_PATH)
         self.kb = KnowledgeBase(DB_PATH, self.embedding_service, self.vector_store)
@@ -2046,24 +2047,50 @@ class ClubAssistantBot:
         user_id = query.from_user.id
 
         try:
-            # Get admin info
-            if not hasattr(self, 'admin_db') or not self.admin_db:
-                await query.edit_message_text(
-                    "❌ Ошибка: база данных админов недоступна",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
-                )
-                return
+            # Get admin info - try admin_db first, then use direct database access
+            admin_info = None
+            admin_name = None
 
-            admin_info = self.admin_db.get_admin(user_id)
-            if not admin_info or not admin_info.get('full_name'):
+            try:
+                if hasattr(self, 'admin_db') and self.admin_db is not None:
+                    admin_info = self.admin_db.get_admin(user_id)
+                    if admin_info:
+                        admin_name = admin_info.get('full_name')
+                else:
+                    logger.warning("⚠️ admin_db not available, using direct database access")
+            except Exception as e:
+                logger.warning(f"⚠️ admin_db error, using direct access: {e}")
+
+            # Fallback to direct database access if admin_db failed
+            if not admin_name:
+                try:
+                    import sqlite3
+                    # Use the db_path from config
+                    db_path = getattr(self, 'db_path', '/opt/club_assistant/bot_data.db')
+                    conn = sqlite3.connect(db_path)
+                    cursor = conn.cursor()
+                    cursor.execute('SELECT full_name FROM admins WHERE user_id = ? AND is_active = 1', (user_id,))
+                    result = cursor.fetchone()
+                    conn.close()
+                    if result:
+                        admin_name = result[0]
+                except Exception as db_error:
+                    logger.error(f"❌ Database error in swap shift selection: {db_error}")
+                    import traceback
+                    traceback.print_exc()
+                    await query.edit_message_text(
+                        f"❌ Ошибка доступа к базе данных: {db_error}\n\nОбратитесь к владельцу.",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+                    )
+                    return
+
+            if not admin_name:
                 await query.edit_message_text(
                     "❌ Вы не найдены в списке админов или у вас не указано полное ФИО.\n\n"
                     "Эта функция доступна только для админов с полным ФИО в базе.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
                 )
                 return
-
-            admin_name = admin_info.get('full_name')
 
             # Get shifts for current and next month
             from datetime import date, timedelta
@@ -2141,28 +2168,28 @@ class ClubAssistantBot:
             }
 
             # Get list of all admins with full names
-            if not hasattr(self, 'admin_db') or not self.admin_db:
+            try:
+                import sqlite3
+                conn = sqlite3.connect(self.db_path)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT user_id, full_name
+                    FROM admins
+                    WHERE full_name IS NOT NULL
+                    AND full_name != ''
+                    AND user_id != ?
+                    AND is_active = 1
+                    ORDER BY full_name
+                """, (query.from_user.id,))
+                admins = cursor.fetchall()
+                conn.close()
+            except Exception as db_error:
+                logger.error(f"❌ Database error in swap admin selection: {db_error}")
                 await query.edit_message_text(
-                    "❌ Ошибка: база данных админов недоступна",
+                    f"❌ Ошибка доступа к базе данных: {db_error}\n\nОбратитесь к владельцу.",
                     reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_swap")]])
                 )
                 return
-
-            # Get all admins
-            import sqlite3
-            conn = sqlite3.connect('club_assistant.db')
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT user_id, full_name
-                FROM admins
-                WHERE full_name IS NOT NULL
-                AND full_name != ''
-                AND user_id != ?
-                AND is_active = 1
-                ORDER BY full_name
-            """, (query.from_user.id,))
-            admins = cursor.fetchall()
-            conn.close()
 
             if not admins:
                 await query.edit_message_text(

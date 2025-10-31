@@ -305,8 +305,13 @@ class ScheduleCommands:
         
         if len(msg) > 4000:
             msg = msg[:4000] + "..."
-        
-        await update.message.reply_text(msg)
+
+        # Add back button
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = [[InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(msg, reply_markup=reply_markup)
     
     async def cmd_schedule_today(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Show today's schedule"""
@@ -340,8 +345,13 @@ class ScheduleCommands:
         
         if not has_data:
             msg += "Нет данных\n\nИспользуйте /schedule add для добавления"
-        
-        await update.message.reply_text(msg)
+
+        # Add back button
+        from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+        keyboard = [[InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await update.message.reply_text(msg, reply_markup=reply_markup)
     
     async def cmd_schedule_remove(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """
@@ -583,13 +593,18 @@ class ScheduleCommands:
         user_id = update.effective_user.id
 
         try:
+            # Prepare back button for error messages
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            back_button = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+
             # Get admin info from admin_db if available
             if hasattr(self, 'admin_db') and self.admin_db:
                 admin_info = self.admin_db.get_admin(user_id)
                 if not admin_info:
                     await update.message.reply_text(
                         "❌ Вы не найдены в списке админов.\n\n"
-                        "Эта функция доступна только для админов с полным ФИО в базе."
+                        "Эта функция доступна только для админов с полным ФИО в базе.",
+                        reply_markup=back_button
                     )
                     return
 
@@ -597,20 +612,25 @@ class ScheduleCommands:
                 if not admin_name:
                     await update.message.reply_text(
                         "❌ У вас не указано полное ФИО в базе админов.\n\n"
-                        "Обратитесь к владельцу для добавления."
+                        "Обратитесь к владельцу для добавления.",
+                        reply_markup=back_button
                     )
                     return
             else:
                 # Fallback - use telegram name
                 admin_name = update.effective_user.full_name
                 if not admin_name:
-                    await update.message.reply_text("❌ Не удалось определить ваше имя")
+                    await update.message.reply_text(
+                        "❌ Не удалось определить ваше имя",
+                        reply_markup=back_button
+                    )
                     return
 
             if not self.schedule_parser:
                 await update.message.reply_text(
                     "❌ Парсер расписания не настроен.\n\n"
-                    "Обратитесь к администратору."
+                    "Обратитесь к администратору.",
+                    reply_markup=back_button
                 )
                 return
 
@@ -674,15 +694,16 @@ class ScheduleCommands:
             total = len(current_shifts) + len(next_shifts)
             msg += f"📊 *Итого:* {total} смен"
 
-            # Add back button if called from callback query
-            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
-            keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-
-            await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=reply_markup)
+            # Send message with back button
+            await update.message.reply_text(msg, parse_mode='Markdown', reply_markup=back_button)
 
         except Exception as e:
-            await update.message.reply_text(f"❌ Ошибка получения смен: {e}")
+            from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+            back_button = InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+            await update.message.reply_text(
+                f"❌ Ошибка получения смен: {e}",
+                reply_markup=back_button
+            )
             logger.error(f"❌ Error in cmd_my_shifts: {e}")
             import traceback
             traceback.print_exc()
