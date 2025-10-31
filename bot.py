@@ -2089,12 +2089,17 @@ class ClubAssistantBot:
                     )
                     return
 
-            if not admin_name:
-                await query.edit_message_text(
-                    "❌ Вы не найдены в списке админов или у вас не указано полное ФИО.\n\n"
-                    "Эта функция доступна только для админов с полным ФИО в базе.",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
-                )
+            # Проверка наличия полного ФИО (минимум 3 слова: Фамилия Имя Отчество)
+            if not admin_name or len(admin_name.strip().split()) < 3:
+                try:
+                    await query.edit_message_text(
+                        "❌ Вы не найдены в списке админов или у вас не указано полное ФИО.\n\n"
+                        "Эта функция доступна только для админов с полным ФИО (Фамилия Имя Отчество).",
+                        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("◀️ Назад", callback_data="shifts_menu")]])
+                    )
+                except Exception as edit_error:
+                    if "message is not modified" not in str(edit_error).lower():
+                        logger.error(f"❌ Error editing message: {edit_error}")
                 return
 
             # Get shifts for current and next month
@@ -2182,7 +2187,7 @@ class ClubAssistantBot:
                 'shift_type': shift_type
             }
 
-            # Get list of all admins with full names
+            # Get list of all admins with full names (minimum 3 words: Фамилия Имя Отчество)
             try:
                 import sqlite3
                 conn = sqlite3.connect(self.db_path)
@@ -2196,8 +2201,14 @@ class ClubAssistantBot:
                     AND is_active = 1
                     ORDER BY full_name
                 """, (query.from_user.id,))
-                admins = cursor.fetchall()
+                all_admins = cursor.fetchall()
                 conn.close()
+
+                # Фильтрация: только админы с полным ФИО (минимум 3 слова)
+                admins = []
+                for user_id, full_name in all_admins:
+                    if full_name and len(full_name.strip().split()) >= 3:
+                        admins.append((user_id, full_name))
             except Exception as db_error:
                 logger.error(f"❌ Database error in swap admin selection: {db_error}")
                 await query.edit_message_text(
