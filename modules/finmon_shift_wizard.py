@@ -239,6 +239,11 @@ class ShiftWizard:
         if self.improvements:
             previous_cash = self.improvements.get_previous_shift_cash(club, shift_type)
 
+        # Get previous shift revenue
+        previous_revenue = None
+        if self.finmon_simple:
+            previous_revenue = self.finmon_simple.get_previous_shift_revenue(club, shift_type)
+
         # Initialize shift data in context
         context.user_data['shift_data'] = {
             'admin_id': user_id,
@@ -267,6 +272,7 @@ class ShiftWizard:
         context.user_data['shift_club'] = club
         context.user_data['shift_time'] = shift_type
         context.user_data['active_shift_id'] = shift_id
+        context.user_data['previous_revenue'] = previous_revenue
 
         # Get expenses from this shift
         expenses = self.shift_manager.get_shift_expenses(shift_id)
@@ -758,9 +764,17 @@ class ShiftWizard:
         """Handle 'no change' button for cash"""
         query = update.callback_query
         await query.answer()
-        context.user_data['shift_data']['fact_cash'] = 0.0
 
-        msg = f"✅ Наличка факт: 0 ₽ (без изменений)\n\n"
+        # Use previous shift revenue if available
+        previous_revenue = context.user_data.get('previous_revenue')
+        if previous_revenue and previous_revenue.get('fact_cash'):
+            cash_value = previous_revenue['fact_cash']
+            context.user_data['shift_data']['fact_cash'] = cash_value
+            msg = f"✅ Наличка факт: {cash_value:,.0f} ₽ (как в прошлой смене)\n\n"
+        else:
+            context.user_data['shift_data']['fact_cash'] = 0.0
+            msg = f"✅ Наличка факт: 0 ₽ (без изменений)\n\n"
+
         msg += "💳 Введите карту факт:\n\nПример: 12345"
 
         keyboard = [
@@ -819,9 +833,18 @@ class ShiftWizard:
         """Handle 'no change' button for card"""
         query = update.callback_query
         await query.answer()
-        context.user_data['shift_data']['fact_card'] = 0.0
 
-        msg = "✅ Карта факт: 0 ₽ (без изменений)\n\n📱 Введите QR:\n\nПример: 500 (или 0 если нет)"
+        # Use previous shift revenue if available
+        previous_revenue = context.user_data.get('previous_revenue')
+        if previous_revenue and previous_revenue.get('fact_card'):
+            card_value = previous_revenue['fact_card']
+            context.user_data['shift_data']['fact_card'] = card_value
+            msg = f"✅ Карта факт: {card_value:,.0f} ₽ (как в прошлой смене)\n\n"
+        else:
+            context.user_data['shift_data']['fact_card'] = 0.0
+            msg = "✅ Карта факт: 0 ₽ (без изменений)\n\n"
+
+        msg += "📱 Введите QR:\n\nПример: 500 (или 0 если нет)"
         keyboard = [
             [InlineKeyboardButton("Без изменений (0)", callback_data="qr_no_change")],
             [InlineKeyboardButton("❌ Касса не работала", callback_data="qr_disabled")],
@@ -872,9 +895,18 @@ class ShiftWizard:
         """Handle 'no change' button for QR"""
         query = update.callback_query
         await query.answer()
-        context.user_data['shift_data']['qr'] = 0.0
 
-        msg = "✅ QR: 0 ₽ (без изменений)\n\n💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
+        # Use previous shift revenue if available
+        previous_revenue = context.user_data.get('previous_revenue')
+        if previous_revenue and previous_revenue.get('qr'):
+            qr_value = previous_revenue['qr']
+            context.user_data['shift_data']['qr'] = qr_value
+            msg = f"✅ QR: {qr_value:,.0f} ₽ (как в прошлой смене)\n\n"
+        else:
+            context.user_data['shift_data']['qr'] = 0.0
+            msg = "✅ QR: 0 ₽ (без изменений)\n\n"
+
+        msg += "💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
         keyboard = [
             [InlineKeyboardButton("Без изменений (0)", callback_data="card2_no_change")],
             [InlineKeyboardButton("❌ Касса не работала", callback_data="card2_disabled")],
@@ -925,10 +957,18 @@ class ShiftWizard:
         """Handle 'no change' button for card2"""
         query = update.callback_query
         await query.answer()
-        context.user_data['shift_data']['card2'] = 0.0
+
+        # Use previous shift revenue if available
+        previous_revenue = context.user_data.get('previous_revenue')
+        if previous_revenue and previous_revenue.get('card2'):
+            card2_value = previous_revenue['card2']
+            context.user_data['shift_data']['card2'] = card2_value
+            msg = f"✅ Безнал вторая касса: {card2_value:,.0f} ₽ (как в прошлой смене)\n\n"
+        else:
+            context.user_data['shift_data']['card2'] = 0.0
+            msg = "✅ Безнал вторая касса: 0 ₽ (без изменений)\n\n"
 
         # Move to z-report upload
-        msg = "✅ Безнал вторая касса: 0 ₽ (без изменений)\n\n"
         msg += "📸 Загрузите ИТОГОВЫЙ ОТЧЕТ\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
 

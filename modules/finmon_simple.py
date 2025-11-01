@@ -297,11 +297,11 @@ class FinMonSimple:
     def get_recent_movements(self, club: str = None, limit: int = 10) -> List[Dict]:
         """
         Get recent movements from CSV log
-        
+
         Args:
             club: Filter by club (None for all)
             limit: Maximum number of rows to return
-        
+
         Returns:
             List of movement dictionaries
         """
@@ -309,17 +309,46 @@ class FinMonSimple:
             with open(self.log_file, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
                 rows = list(reader)
-            
+
             # Filter by club if specified
             if club:
                 rows = [r for r in rows if r.get('club') == club]
-            
+
             # Return most recent first
             rows.reverse()
             return rows[:limit]
         except Exception as e:
             logger.error(f"❌ Error reading movements: {e}")
             return []
+
+    def get_previous_shift_revenue(self, club: str, shift_type: str) -> Optional[Dict]:
+        """
+        Get revenue from previous shift of same type
+
+        Args:
+            club: Club name
+            shift_type: 'morning' or 'evening'
+
+        Returns:
+            Dict with revenue data or None
+        """
+        try:
+            movements = self.get_recent_movements(club, limit=20)
+
+            # Find most recent shift of same type
+            for mov in movements:
+                if mov.get('shift_time') == shift_type:
+                    return {
+                        'fact_cash': float(mov.get('fact_cash', 0)),
+                        'fact_card': float(mov.get('fact_card', 0)),
+                        'qr': float(mov.get('qr', 0)),
+                        'card2': float(mov.get('card2', 0))
+                    }
+
+            return None
+        except Exception as e:
+            logger.error(f"❌ Error getting previous shift revenue: {e}")
+            return None
     
     def format_shift_summary(self, data: Dict, duty_name: str = "") -> str:
         """Format shift data as summary for confirmation"""

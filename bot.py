@@ -66,7 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "4.18"
+VERSION = "4.19"
 
 
 class AdminManager:
