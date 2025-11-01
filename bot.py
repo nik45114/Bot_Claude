@@ -3951,7 +3951,6 @@ class ClubAssistantBot:
         # Message summarizer commands
         if self.message_summarizer:
             application.add_handler(CommandHandler("summary", self.cmd_summary))
-            application.add_handler(CommandHandler("пересказ", self.cmd_summary))
         
         # === BUTTON HANDLERS ===
         # Note: Button handlers for "Закрыть смену", "Списать с кассы", "Взять зарплату"
