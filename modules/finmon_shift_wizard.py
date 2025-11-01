@@ -1279,16 +1279,13 @@ class ShiftWizard:
             msg += f"  ИТОГО: {total_expenses:,.0f} ₽\n"
         
         msg += "\n🔐 Остатки:\n"
-        msg += f"  • Основная касса (офиц): {new_official:,.0f} ₽\n"
-        msg += f"  • Коробка: {new_box:,.0f} ₽\n\n"
-        
+        msg += f"  • Основная касса (офиц): {new_official:,.0f} ₽\n\n"
+
         msg += "📈 Прошлый раз:\n"
-        msg += f"  • Основная: {prev_official:,.0f} ₽\n"
-        msg += f"  • Коробка: {prev_box:,.0f} ₽\n\n"
-        
+        msg += f"  • Основная: {prev_official:,.0f} ₽\n\n"
+
         msg += "📊 Движение:\n"
         msg += f"  • Основная: {delta_official:+,.0f} ₽\n"
-        msg += f"  • Коробка: {delta_box:+,.0f} ₽\n"
         
         keyboard = [
             [InlineKeyboardButton("✅ Подтвердить", callback_data="shift_confirm")],
@@ -1390,7 +1387,6 @@ class ShiftWizard:
                 msg += f"💸 Списано расходов: {total_expenses:,.0f} ₽\n"
             msg += f"💰 Остатки:\n"
             msg += f"  • Основная касса (офиц): {balances['official']:,.0f} ₽\n"
-            msg += f"  • Коробка: {balances['box']:,.0f} ₽\n"
 
             await query.edit_message_text(msg)
 

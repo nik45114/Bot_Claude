@@ -339,7 +339,6 @@ class FinMonSimple:
         
         summary += "🔐 Остатки:\n"
         summary += f"  • Сейф (офиц): {data.get('safe_cash_end', 0):,.0f}\n"
-        summary += f"  • Коробка: {data.get('box_cash_end', 0):,.0f}\n"
         
         return summary
     
@@ -350,8 +349,7 @@ class FinMonSimple:
         text = "💰 Текущие остатки\n\n"
         for club, amounts in balances.items():
             text += f"🏢 {club}:\n"
-            text += f"  • Офиц (сейф): {amounts['official']:,.0f}\n"
-            text += f"  • Коробка: {amounts['box']:,.0f}\n\n"
+            text += f"  • Офиц (сейф): {amounts['official']:,.0f}\n\n"
         
         return text
     
@@ -373,7 +371,6 @@ class FinMonSimple:
             text += f"📅 {date_str} ({time_str})\n"
             if duty:
                 text += f"👤 {duty}\n"
-            text += f"  Δ Офиц: {delta_off:+,.0f}\n"
-            text += f"  Δ Коробка: {delta_box:+,.0f}\n\n"
+            text += f"  Δ Офиц: {delta_off:+,.0f}\n\n"
         
         return text

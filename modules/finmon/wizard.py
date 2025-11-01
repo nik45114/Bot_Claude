@@ -545,8 +545,7 @@ class FinMonWizard:
             if prev_balances:
                 balance_info = (
                     f"\n📊 Предыдущие балансы:\n"
-                    f"   💰 Сейф: {prev_balances['official']:.2f}\n"
-                    f"   📦 Коробка: {prev_balances['box']:.2f}\n\n"
+                    f"   💰 Сейф: {prev_balances['official']:.2f}\n\n"
                 )
             
             await update.message.reply_text(
@@ -865,8 +864,7 @@ class FinMonWizard:
             if balances:
                 success_msg += (
                     f"💰 Новые балансы:\n"
-                    f"   🏦 Сейф: {balances['official']:,.2f} ₽\n"
-                    f"   📦 Коробка: {balances['box']:,.2f} ₽\n\n"
+                    f"   🏦 Сейф: {balances['official']:,.2f} ₽\n\n"
                 )
             
             if duty_admin:
@@ -931,8 +929,7 @@ class FinMonWizard:
         summary += f"🛒 Товарка: {shift_data.get('goods_cash', 0):,.0f} ₽\n\n"
         
         summary += "💰 КАССЫ\n"
-        summary += f"🏦 Сейф: {new_official:,.0f} ₽ (было: {prev_official:,.0f}, дельта: {delta_official:+,.0f})\n"
-        summary += f"📦 Коробка: {new_box:,.0f} ₽ (было: {prev_box:,.0f}, дельта: {delta_box:+,.0f})\n\n"
+        summary += f"🏦 Сейф: {new_official:,.0f} ₽ (было: {prev_official:,.0f}, дельта: {delta_official:+,.0f})\n\n"
         
         summary += f"📉 Расходы: комп {shift_data.get('compensations', 0):,.0f} / зп {shift_data.get('salary_payouts', 0):,.0f} / прочие {shift_data.get('other_expenses', 0):,.0f} ₽\n\n"
         summary += f"🎮 Геймпады: {shift_data.get('joysticks_total', 0)} (ремонт: {shift_data.get('joysticks_in_repair', 0)}, нужен: {shift_data.get('joysticks_need_repair', 0)})\n"
@@ -958,8 +955,7 @@ class FinMonWizard:
             balances = self.db.get_balances(club['id'])
             if balances:
                 text += f"🏢 {club['name']}\n"
-                text += f"   💼 Официальная: {balances['official']:,.2f} ₽\n"
-                text += f"   📦 Коробка: {balances['box']:,.2f} ₽\n\n"
+                text += f"   💼 Официальная: {balances['official']:,.2f} ₽\n\n"
         
         await update.message.reply_text(text)
     

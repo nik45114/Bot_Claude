@@ -537,8 +537,7 @@ class EnhancedAdminShiftCommands:
         text += f"  • Карта 2: {report['card2_amount']:,.0f} ₽\n\n"
         
         text += f"💵 **Кассы:**\n"
-        text += f"  • Сейф: {report['safe_cash_end']:,.0f} ₽\n"
-        text += f"  • Коробка: {report['box_cash_end']:,.0f} ₽\n\n"
+        text += f"  • Сейф: {report['safe_cash_end']:,.0f} ₽\n\n"
         
         text += f"🔍 **OCR:** {ocr_emoji} ({report['ocr_confidence']:.1%})\n"
         text += f"📸 **Фото:** {'Есть' if report['photo_path'] else 'Нет'}\n"
