@@ -18,16 +18,17 @@ class ShiftManager:
     def __init__(self, db_path: str):
         self.db_path = db_path
     
-    def open_shift(self, admin_id: int, club: str, shift_type: str, confirmed_by: Optional[int] = None) -> Optional[int]:
+    def open_shift(self, admin_id: int, club: str, shift_type: str, shift_date: Optional[date] = None, confirmed_by: Optional[int] = None) -> Optional[int]:
         """
         Open a new shift
-        
+
         Args:
             admin_id: Admin user ID
             club: Club name ('rio' or 'sever')
             shift_type: 'morning' or 'evening'
+            shift_date: Date of the shift (optional, defaults to today)
             confirmed_by: User ID who confirmed (optional, can be same as admin_id)
-        
+
         Returns:
             shift_id if successful, None otherwise
         """
@@ -37,22 +38,28 @@ class ShiftManager:
             if existing:
                 logger.warning(f"Admin {admin_id} already has an open shift: {existing['id']}")
                 return None
-            
+
+            # Default shift_date to today if not provided
+            if shift_date is None:
+                shift_date = date.today()
+
+            shift_date_str = shift_date.strftime('%Y-%m-%d')
+
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                INSERT INTO active_shifts (admin_id, club, shift_type, confirmed_by, status)
-                VALUES (?, ?, ?, ?, 'open')
-            ''', (admin_id, club, shift_type, confirmed_by))
-            
+                INSERT INTO active_shifts (admin_id, club, shift_type, shift_date, confirmed_by, status)
+                VALUES (?, ?, ?, ?, ?, 'open')
+            ''', (admin_id, club, shift_type, shift_date_str, confirmed_by))
+
             shift_id = cursor.lastrowid
             conn.commit()
             conn.close()
-            
-            logger.info(f"✅ Opened shift {shift_id}: admin={admin_id}, club={club}, type={shift_type}")
+
+            logger.info(f"✅ Opened shift {shift_id}: admin={admin_id}, club={club}, type={shift_type}, date={shift_date_str}")
             return shift_id
-            
+
         except Exception as e:
             logger.error(f"❌ Failed to open shift: {e}")
             return None
@@ -108,7 +115,7 @@ class ShiftManager:
             cursor = conn.cursor()
             
             cursor.execute('''
-                SELECT id, admin_id, club, shift_type, opened_at, confirmed_by, status
+                SELECT id, admin_id, club, shift_type, shift_date, opened_at, confirmed_by, status
                 FROM active_shifts
                 WHERE (admin_id = ? OR confirmed_by = ?) AND status = 'open'
                 ORDER BY opened_at DESC
@@ -138,7 +145,7 @@ class ShiftManager:
             cursor = conn.cursor()
 
             cursor.execute('''
-                SELECT id, admin_id, club, shift_type, opened_at, confirmed_by, status
+                SELECT id, admin_id, club, shift_type, shift_date, opened_at, confirmed_by, status
                 FROM active_shifts
                 WHERE status = 'open'
                 ORDER BY opened_at DESC
@@ -160,7 +167,7 @@ class ShiftManager:
             cursor = conn.cursor()
             
             cursor.execute('''
-                SELECT id, admin_id, club, shift_type, opened_at, confirmed_by, status
+                SELECT id, admin_id, club, shift_type, shift_date, opened_at, confirmed_by, status
                 FROM active_shifts
                 WHERE id = ?
             ''', (shift_id,))

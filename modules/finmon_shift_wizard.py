@@ -517,7 +517,8 @@ class ShiftWizard:
         # Если админ подтверждает сам за себя - сразу открываем смену
         if opener_id == admin_id:
             # Открываем смену сразу
-            shift_id = self.shift_manager.open_shift(admin_id, club, shift_type, admin_id)
+            shift_date = context.user_data.get('shift_date')
+            shift_id = self.shift_manager.open_shift(admin_id, club, shift_type, shift_date, admin_id)
 
             if shift_id:
                 await query.edit_message_text(
@@ -1928,14 +1929,17 @@ class ShiftWizard:
                     confirmer_full_name = admin_info.get('full_name')
                     logger.info(f"📋 Got full name from admin DB: {confirmer_full_name}")
 
-            shift_id = self.shift_manager.open_shift(opener_id, club, shift_type, confirmed_by)
+            # Determine shift_date based on shift_type
+            _, shift_date = get_shift_type_for_opening()
+
+            shift_id = self.shift_manager.open_shift(opener_id, club, shift_type, shift_date, confirmed_by)
 
             if shift_id:
                 # Get scheduled duty name to show if it was a replacement
                 scheduled_duty_name = None
                 if self.schedule_parser:
                     try:
-                        scheduled_duty_name = self.schedule_parser.get_duty_name(club, date.today(), shift_type)
+                        scheduled_duty_name = self.schedule_parser.get_duty_name(club, shift_date, shift_type)
                         logger.info(f"🔍 Got scheduled duty name: {scheduled_duty_name} for {club}/{shift_type}")
                     except Exception as e:
                         logger.error(f"❌ Failed to get scheduled duty name: {e}")
