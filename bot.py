@@ -66,7 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "4.19"
+VERSION = "4.20"
 
 
 class AdminManager:
@@ -769,7 +769,17 @@ class ClubAssistantBot:
             logger.error(f"❌ Failed to initialize ContentGenerator: {e}")
             raise
         self.content_commands = ContentCommands(self.content_generator, self.admin_manager)
-        
+
+        # Message Summarizer - AI пересказ сообщений
+        logger.info("📝 Initializing MessageSummarizer...")
+        try:
+            from modules.message_summarizer import MessageSummarizer
+            self.message_summarizer = MessageSummarizer(config['openai_api_key'])
+            logger.info("✅ MessageSummarizer initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize MessageSummarizer: {e}")
+            self.message_summarizer = None
+
         # Video generation (if enabled)
         video_config = config.get('content_generation', {}).get('video', {})
         if video_config.get('enabled'):
@@ -1847,6 +1857,31 @@ class ClubAssistantBot:
             logger.error(f"❌ Image generation error: {e}")
             await update.message.reply_text(f"❌ Ошибка: {e}")
     
+    async def cmd_summary(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Summarize messages - use with reply or in group"""
+        # Check if summarizer is available
+        if not hasattr(self, 'message_summarizer') or not self.message_summarizer:
+            await update.message.reply_text("❌ Пересказ сообщений отключен (нет OpenAI API ключа)")
+            return
+
+        user_id = update.effective_user.id
+
+        # Check if user is owner
+        if user_id not in self.owner_ids:
+            await update.message.reply_text("❌ Эта команда доступна только владельцу бота")
+            return
+
+        # For now, show info about upcoming feature
+        await update.message.reply_text(
+            "📝 Функция пересказа сообщений\n\n"
+            "⚠️ В разработке. Скоро будет доступна!\n\n"
+            "Планируемые возможности:\n"
+            "• Пересказ последних N сообщений из группы\n"
+            "• Пересказ переслан ных сообщений\n"
+            "• Автоматическое выделение ключевых моментов\n\n"
+            "Это будет дешевле автообучения, так как использует gpt-4o-mini."
+        )
+
     async def cmd_video(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Generate video via OpenAI Sora"""
         if not self.video_generator:
@@ -3912,6 +3947,11 @@ class ClubAssistantBot:
         application.add_handler(CommandHandler("image", self.cmd_image))
         if self.video_generator:
             application.add_handler(CommandHandler("video", self.cmd_video))
+
+        # Message summarizer commands
+        if self.message_summarizer:
+            application.add_handler(CommandHandler("summary", self.cmd_summary))
+            application.add_handler(CommandHandler("пересказ", self.cmd_summary))
         
         # === BUTTON HANDLERS ===
         # Note: Button handlers for "Закрыть смену", "Списать с кассы", "Взять зарплату"
