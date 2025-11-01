@@ -38,10 +38,10 @@ logger = logging.getLogger(__name__)
 
 # Conversation states for CLOSING shift
 (SELECT_CLUB, CONFIRM_IDENTITY, SELECT_ADMIN_FOR_SHIFT, ENTER_FACT_CASH, ENTER_FACT_CARD,
- ENTER_QR, ENTER_CARD2, ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA, ENTER_GAMEPADS, ENTER_REPAIR,
+ ENTER_QR, ENTER_CARD2, ENTER_SAFE, ENTER_ACTUAL_CASH, ENTER_BOX, ENTER_TOVARKA, ENTER_GAMEPADS, ENTER_REPAIR,
  ENTER_NEED_REPAIR, ENTER_GAMES,
  UPLOAD_Z_CASH, UPLOAD_Z_CARD, UPLOAD_Z_QR, UPLOAD_Z_CARD2,
- CONFIRM_SHIFT) = range(19)
+ CONFIRM_SHIFT) = range(20)
 
 # Conversation states for EXPENSE tracking (separate conversation)
 (EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM) = range(14, 18)
@@ -1177,24 +1177,116 @@ class ShiftWizard:
         """Handle 'no change' button for safe"""
         query = update.callback_query
         await query.answer()
-        
+
         # Use previous balance
         prev_official = context.user_data.get('prev_official', 0)
         context.user_data['shift_data']['safe_cash_end'] = prev_official
-        
-        return await self._continue_to_box(query, context)
+
+        return await self._continue_to_actual_cash(query, context)
     
     async def receive_safe(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive safe balance"""
         try:
             value = float(update.message.text.replace(' ', '').replace(',', '.'))
             context.user_data['shift_data']['safe_cash_end'] = value
-            
-            return await self._continue_to_box(update.message, context)
+
+            return await self._continue_to_actual_cash(update.message, context)
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_SAFE
-    
+
+    async def _continue_to_actual_cash(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
+        """Continue to actual cash verification"""
+        prev_official = context.user_data.get('prev_official', 0)
+        cash_revenue = context.user_data['shift_data'].get('fact_cash', 0)
+
+        # Get expenses
+        expenses = context.user_data.get('expenses', [])
+        total_expenses = sum(exp['amount'] for exp in expenses if exp.get('cash_source') == 'main')
+
+        # Calculate expected cash
+        expected_cash = prev_official + cash_revenue - total_expenses
+
+        msg = f"💵 Теперь проверим фактические наличные в кассе\n\n"
+        msg += f"📊 Ожидаемая сумма:\n"
+        msg += f"  • Было: {prev_official:,.0f} ₽\n"
+        msg += f"  • Наличка за смену: +{cash_revenue:,.0f} ₽\n"
+        if total_expenses > 0:
+            msg += f"  • Расходы: -{total_expenses:,.0f} ₽\n"
+        msg += f"  • Должно быть: {expected_cash:,.0f} ₽\n\n"
+        msg += f"💰 Введите ФАКТИЧЕСКУЮ сумму наличных в кассе:\n"
+        msg += f"(посчитайте физически все деньги в кассе)"
+
+        keyboard = [
+            [InlineKeyboardButton("✅ Совпадает", callback_data="actual_cash_matches")],
+            [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        # Store expected cash for comparison
+        context.user_data['expected_cash'] = expected_cash
+
+        if hasattr(message_or_query, 'reply_text'):
+            await message_or_query.reply_text(msg, reply_markup=reply_markup)
+        else:
+            await message_or_query.edit_message_text(msg, reply_markup=reply_markup)
+
+        return ENTER_ACTUAL_CASH
+
+    async def handle_actual_cash_matches(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle 'actual cash matches' button"""
+        query = update.callback_query
+        await query.answer()
+
+        # Actual cash matches expected, so store expected value
+        expected_cash = context.user_data.get('expected_cash', 0)
+        context.user_data['shift_data']['actual_cash'] = expected_cash
+        context.user_data['cash_verified'] = True
+
+        msg = f"✅ Наличные совпадают: {expected_cash:,.0f} ₽\n\n"
+        await query.edit_message_text(msg)
+
+        return await self._continue_to_box(query, context)
+
+    async def receive_actual_cash(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Receive actual cash amount and verify against expected"""
+        try:
+            actual_cash = float(update.message.text.replace(' ', '').replace(',', '.'))
+            expected_cash = context.user_data.get('expected_cash', 0)
+
+            context.user_data['shift_data']['actual_cash'] = actual_cash
+
+            discrepancy = actual_cash - expected_cash
+
+            if abs(discrepancy) < 1:  # Allow 1 ruble tolerance
+                # Cash matches!
+                context.user_data['cash_verified'] = True
+                msg = f"✅ Отлично! Наличные совпадают: {actual_cash:,.0f} ₽\n"
+                await update.message.reply_text(msg)
+            elif discrepancy > 0:
+                # More cash than expected
+                context.user_data['cash_verified'] = False
+                msg = f"⚠️ ВНИМАНИЕ! Излишек наличных!\n\n"
+                msg += f"💰 Ожидалось: {expected_cash:,.0f} ₽\n"
+                msg += f"💵 Фактически: {actual_cash:,.0f} ₽\n"
+                msg += f"📈 Излишек: +{discrepancy:,.0f} ₽\n\n"
+                msg += f"❗ Проверьте правильность подсчета и пересчитайте наличные!"
+                await update.message.reply_text(msg)
+            else:
+                # Less cash than expected
+                context.user_data['cash_verified'] = False
+                msg = f"❌ ВНИМАНИЕ! Недостача наличных!\n\n"
+                msg += f"💰 Ожидалось: {expected_cash:,.0f} ₽\n"
+                msg += f"💵 Фактически: {actual_cash:,.0f} ₽\n"
+                msg += f"📉 Недостача: {discrepancy:,.0f} ₽\n\n"
+                msg += f"❗ Проверьте правильность подсчета и пересчитайте наличные!"
+                await update.message.reply_text(msg)
+
+            return await self._continue_to_box(update.message, context)
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат. Введите число:")
+            return ENTER_ACTUAL_CASH
+
     async def _continue_to_box(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
         """Continue to box input"""
         prev_box = context.user_data.get('prev_box', 0)

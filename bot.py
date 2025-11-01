@@ -66,7 +66,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VERSION = "4.16"
+VERSION = "4.17"
 
 
 class AdminManager:
@@ -4055,7 +4055,7 @@ class ClubAssistantBot:
             from modules.finmon_shift_wizard import (
                 ShiftWizard, SELECT_CLUB, CONFIRM_IDENTITY,
                 ENTER_FACT_CASH, ENTER_FACT_CARD, ENTER_QR, ENTER_CARD2,
-                ENTER_SAFE, ENTER_BOX, ENTER_TOVARKA,
+                ENTER_SAFE, ENTER_ACTUAL_CASH, ENTER_BOX, ENTER_TOVARKA,
                 ENTER_GAMEPADS, ENTER_REPAIR, ENTER_NEED_REPAIR, ENTER_GAMES,
                 UPLOAD_Z_CASH, UPLOAD_Z_CARD, UPLOAD_Z_QR, UPLOAD_Z_CARD2,
                 CONFIRM_SHIFT,
@@ -4216,6 +4216,11 @@ class ClubAssistantBot:
                         CallbackQueryHandler(shift_wizard.handle_safe_no_change, pattern="^safe_no_change$"),
                         CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_safe)
+                    ],
+                    ENTER_ACTUAL_CASH: [
+                        CallbackQueryHandler(shift_wizard.handle_actual_cash_matches, pattern="^actual_cash_matches$"),
+                        CallbackQueryHandler(shift_wizard.cancel_shift, pattern="^shift_cancel$"),
+                        MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_actual_cash)
                     ],
                     ENTER_BOX: [
                         CallbackQueryHandler(shift_wizard.handle_box_no_change, pattern="^box_no_change$"),
