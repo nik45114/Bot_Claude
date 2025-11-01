@@ -120,23 +120,36 @@ def get_current_shift_window() -> Optional[Dict]:
     return None
 
 
-def get_shift_type_for_opening() -> str:
+def get_shift_type_for_opening() -> tuple[str, date]:
     """
     Auto-detect which shift type to open based on current MSK time
     Можно открывать смену за 1 час до начала
-    
+
     Returns:
-        'morning' or 'evening'
+        Tuple[shift_type, shift_date]:
+            - shift_type: 'morning' or 'evening'
+            - shift_date: date object для этой смены
     """
     now = now_msk()
     current_hour = now.hour
-    
-    # 09:00-22:00 = morning shift (дневная смена, можно открыть за час до 10:00, закроется в 22:00)
-    # 21:00-10:00 = evening shift (ночная смена, можно открыть за час до 22:00, закроется в 10:00)
-    if 9 <= current_hour < 22:
-        return 'morning'
-    else:
-        return 'evening'
+    current_date = now.date()
+
+    # 10:00-22:00 = morning shift (дневная смена, открывается утром, закроется вечером)
+    # 22:00-10:00 = evening shift (ночная смена, открывается вечером, закроется утром следующего дня)
+
+    # Утреннее окно (10:00-22:00) - дневная смена
+    if 10 <= current_hour < 22:
+        return 'morning', current_date
+
+    # Вечернее окно (22:00-23:59) - ночная смена с сегодняшней датой
+    elif current_hour >= 22:
+        return 'evening', current_date
+
+    # Утреннее окно (00:00-10:00) - ночная смена ВЧЕРАШНЕГО дня!
+    # Если сейчас 9:00 01.11, то это смена 31.10→01.11
+    else:  # 0 <= current_hour < 10
+        yesterday = current_date - timedelta(days=1)
+        return 'evening', yesterday
 
 
 class ShiftWizard:
@@ -379,27 +392,27 @@ class ShiftWizard:
         user_id = update.effective_user.id if not is_callback else update.callback_query.from_user.id
         user = update.effective_user if not is_callback else update.callback_query.from_user
         
-        # Auto-detect shift type based on time
-        shift_type = get_shift_type_for_opening()
+        # Auto-detect shift type and date based on time
+        shift_type, shift_date = get_shift_type_for_opening()
         shift_label = "☀️ Утро (дневная смена)" if shift_type == "morning" else "🌙 Вечер (ночная смена)"
         close_time = "22:00" if shift_type == "morning" else "10:00"
-        
+
         # Parse schedule from Google Sheets if available
         if self.schedule_parser:
             try:
-                logger.info(f"📊 Parsing Google Sheets for {date.today()}, club={club}, shift={shift_type}")
-                schedule_data = self.schedule_parser.parse_for_date(date.today())
-                
+                logger.info(f"📊 Parsing Google Sheets for {shift_date}, club={club}, shift={shift_type}")
+                schedule_data = self.schedule_parser.parse_for_date(shift_date)
+
                 # Get duty for this club and shift type
                 duty_key = (club, shift_type)
                 if duty_key in schedule_data:
                     parsed_duty = schedule_data[duty_key]
                     logger.info(f"✅ Found duty in Google Sheets: {parsed_duty}")
-                    
+
                     # Update database with fresh data from Google Sheets
                     if parsed_duty.get('admin_name'):
                         self.shift_manager.add_duty_schedule(
-                            duty_date=date.today(),
+                            duty_date=shift_date,
                             club=club,
                             shift_type=shift_type,
                             admin_id=parsed_duty.get('admin_id'),
@@ -408,17 +421,17 @@ class ShiftWizard:
                         logger.info(f"💾 Updated DB with Google Sheets data")
                 else:
                     logger.info(f"📋 No duty found in Google Sheets for {duty_key}")
-                    
+
             except Exception as e:
                 logger.error(f"❌ Failed to parse Google Sheets: {e}")
                 import traceback
                 traceback.print_exc()
                 # Continue with DB fallback
-        
+
         # Check if there's an expected duty person (from DB, potentially updated from Sheets)
         duty_info = None
         if self.shift_manager:
-            duty_info = self.shift_manager.get_expected_duty(club, shift_type, date.today())
+            duty_info = self.shift_manager.get_expected_duty(club, shift_type, shift_date)
         
         # Build confirmation message
         username = f"@{user.username}" if user.username else "Без username"
@@ -451,6 +464,7 @@ class ShiftWizard:
             context.user_data['expected_duty_name'] = expected_name
             context.user_data['shift_club'] = club
             context.user_data['shift_type'] = shift_type
+            context.user_data['shift_date'] = shift_date
             
             # Two options: confirm it's the scheduled person, or select replacement
             keyboard = [
@@ -467,6 +481,7 @@ class ShiftWizard:
             # No schedule data - just select admin
             context.user_data['shift_club'] = club
             context.user_data['shift_type'] = shift_type
+            context.user_data['shift_date'] = shift_date
             
             keyboard = [
                 [InlineKeyboardButton("👤 Выбрать администратора", 
