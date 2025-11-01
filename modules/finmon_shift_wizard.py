@@ -1264,28 +1264,84 @@ class ShiftWizard:
                 msg = f"✅ Отлично! Наличные совпадают: {actual_cash:,.0f} ₽\n"
                 await update.message.reply_text(msg)
             elif discrepancy > 0:
-                # More cash than expected
+                # More cash than expected - SURPLUS
                 context.user_data['cash_verified'] = False
+                context.user_data['cash_discrepancy'] = discrepancy
+                context.user_data['cash_discrepancy_type'] = 'surplus'
+
                 msg = f"⚠️ ВНИМАНИЕ! Излишек наличных!\n\n"
                 msg += f"💰 Ожидалось: {expected_cash:,.0f} ₽\n"
                 msg += f"💵 Фактически: {actual_cash:,.0f} ₽\n"
                 msg += f"📈 Излишек: +{discrepancy:,.0f} ₽\n\n"
-                msg += f"❗ Проверьте правильность подсчета и пересчитайте наличные!"
+                msg += f"ℹ️ Информация отправлена контроллеру.\n"
+                msg += f"Продолжайте закрытие смены."
                 await update.message.reply_text(msg)
+
+                # Notify controller about surplus
+                await self._notify_controller_cash_discrepancy(update, context, 'surplus', discrepancy, expected_cash, actual_cash)
             else:
-                # Less cash than expected
+                # Less cash than expected - SHORTAGE
                 context.user_data['cash_verified'] = False
+                context.user_data['cash_discrepancy'] = abs(discrepancy)
+                context.user_data['cash_discrepancy_type'] = 'shortage'
+
                 msg = f"❌ ВНИМАНИЕ! Недостача наличных!\n\n"
                 msg += f"💰 Ожидалось: {expected_cash:,.0f} ₽\n"
                 msg += f"💵 Фактически: {actual_cash:,.0f} ₽\n"
                 msg += f"📉 Недостача: {discrepancy:,.0f} ₽\n\n"
-                msg += f"❗ Проверьте правильность подсчета и пересчитайте наличные!"
+                msg += f"ℹ️ Информация отправлена контроллеру.\n"
+                msg += f"Продолжайте закрытие смены."
                 await update.message.reply_text(msg)
+
+                # Notify controller about shortage
+                await self._notify_controller_cash_discrepancy(update, context, 'shortage', abs(discrepancy), expected_cash, actual_cash)
 
             return await self._continue_to_box(update.message, context)
         except ValueError:
             await update.message.reply_text("❌ Неверный формат. Введите число:")
             return ENTER_ACTUAL_CASH
+
+    async def _notify_controller_cash_discrepancy(self, update: Update, context: ContextTypes.DEFAULT_TYPE,
+                                                   discrepancy_type: str, discrepancy: float,
+                                                   expected: float, actual: float):
+        """Send notification to controller about cash discrepancy"""
+        if not self.controller_id:
+            return
+
+        try:
+            user = update.effective_user
+            admin_name = user.full_name or user.username or f"ID {user.id}"
+            club = context.user_data.get('shift_club', 'N/A')
+            shift_time = context.user_data.get('shift_time', 'N/A')
+            shift_label = "☀️ Утро" if shift_time == "morning" else "🌙 Вечер"
+
+            if discrepancy_type == 'surplus':
+                icon = "⚠️"
+                title = "ИЗЛИШЕК НАЛИЧНЫХ"
+                diff_text = f"📈 Излишек: +{discrepancy:,.0f} ₽"
+            else:
+                icon = "❌"
+                title = "НЕДОСТАЧА НАЛИЧНЫХ"
+                diff_text = f"📉 Недостача: -{discrepancy:,.0f} ₽"
+
+            notification = (
+                f"{icon} {title}\n\n"
+                f"👤 Администратор: {admin_name}\n"
+                f"🏢 Клуб: {club}\n"
+                f"⏰ Смена: {shift_label}\n\n"
+                f"💰 Ожидалось: {expected:,.0f} ₽\n"
+                f"💵 Фактически: {actual:,.0f} ₽\n"
+                f"{diff_text}\n\n"
+                f"⚠️ Требуется проверка!"
+            )
+
+            await context.bot.send_message(
+                chat_id=self.controller_id,
+                text=notification
+            )
+            logger.info(f"📨 Sent cash discrepancy notification to controller: {discrepancy_type} {discrepancy:,.0f} ₽")
+        except Exception as e:
+            logger.error(f"❌ Failed to send controller notification: {e}")
 
     async def _continue_to_box(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
         """Continue to box input"""
