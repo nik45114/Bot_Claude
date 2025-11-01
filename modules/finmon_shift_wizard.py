@@ -241,8 +241,8 @@ class ShiftWizard:
 
         # Get previous shift revenue
         previous_revenue = None
-        if self.finmon_simple:
-            previous_revenue = self.finmon_simple.get_previous_shift_revenue(club, shift_type)
+        if self.finmon:
+            previous_revenue = self.finmon.get_previous_shift_revenue(club, shift_type)
 
         # Initialize shift data in context
         context.user_data['shift_data'] = {
