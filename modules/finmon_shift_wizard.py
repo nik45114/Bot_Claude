@@ -1197,41 +1197,43 @@ class ShiftWizard:
 
     async def _continue_to_actual_cash(self, message_or_query, context: ContextTypes.DEFAULT_TYPE):
         """Continue to actual cash verification"""
-        prev_official = context.user_data.get('prev_official', 0)
-        cash_revenue = context.user_data['shift_data'].get('fact_cash', 0)
+        try:
+            prev_official = context.user_data.get('prev_official', 0)
+            cash_revenue = context.user_data['shift_data'].get('fact_cash', 0)
 
-        # Get expenses
-        expenses = context.user_data.get('expenses', [])
-        total_expenses = sum(exp['amount'] for exp in expenses if exp.get('cash_source') == 'main')
+            # Get expenses
+            expenses = context.user_data.get('expenses', [])
+            total_expenses = sum(exp['amount'] for exp in expenses if exp.get('cash_source') == 'main')
 
-        # Calculate expected cash
-        expected_cash = prev_official + cash_revenue - total_expenses
+            # Calculate expected cash
+            expected_cash = prev_official + cash_revenue - total_expenses
 
-        msg = f"💵 Теперь проверим фактические наличные в кассе\n\n"
-        msg += f"📊 Ожидаемая сумма:\n"
-        msg += f"  • Было: {prev_official:,.0f} ₽\n"
-        msg += f"  • Наличка за смену: +{cash_revenue:,.0f} ₽\n"
-        if total_expenses > 0:
-            msg += f"  • Расходы: -{total_expenses:,.0f} ₽\n"
-        msg += f"  • Должно быть: {expected_cash:,.0f} ₽\n\n"
-        msg += f"💰 Введите ФАКТИЧЕСКУЮ сумму наличных в кассе:\n"
-        msg += f"(посчитайте физически все деньги в кассе)"
+            msg = f"💵 Проверим фактические наличные\n\n"
+            msg += f"📊 Должно быть: {expected_cash:,.0f} ₽\n"
+            msg += f"(Было {prev_official:,.0f} + выручка {cash_revenue:,.0f}"
+            if total_expenses > 0:
+                msg += f" - расходы {total_expenses:,.0f}"
+            msg += f")\n\n💰 Посчитайте и введите фактическую сумму:"
 
-        keyboard = [
-            [InlineKeyboardButton("✅ Совпадает", callback_data="actual_cash_matches")],
-            [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
+            keyboard = [
+                [InlineKeyboardButton("✅ Совпадает", callback_data="actual_cash_matches")],
+                [InlineKeyboardButton("❌ Отменить", callback_data="shift_cancel")]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
 
-        # Store expected cash for comparison
-        context.user_data['expected_cash'] = expected_cash
+            # Store expected cash for comparison
+            context.user_data['expected_cash'] = expected_cash
 
-        if hasattr(message_or_query, 'reply_text'):
-            await message_or_query.reply_text(msg, reply_markup=reply_markup)
-        else:
-            await message_or_query.edit_message_text(msg, reply_markup=reply_markup)
+            if hasattr(message_or_query, 'reply_text'):
+                await message_or_query.reply_text(msg, reply_markup=reply_markup)
+            else:
+                await message_or_query.edit_message_text(msg, reply_markup=reply_markup)
 
-        return ENTER_ACTUAL_CASH
+            return ENTER_ACTUAL_CASH
+        except Exception as e:
+            logger.error(f"❌ Error in _continue_to_actual_cash: {e}")
+            # Skip cash verification on error, go directly to box
+            return await self._continue_to_box(message_or_query, context)
 
     async def handle_actual_cash_matches(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle 'actual cash matches' button"""
