@@ -174,7 +174,7 @@ async def show_current_checklists(update: Update, context: ContextTypes.DEFAULT_
                 # Получаем прогресс чек-листа
                 cursor.execute("""
                     SELECT COUNT(*) as total,
-                           SUM(CASE WHEN is_checked = 1 THEN 1 ELSE 0 END) as checked
+                           SUM(CASE WHEN status = 'ok' THEN 1 ELSE 0 END) as checked
                     FROM shift_checklist_responses
                     WHERE shift_id = ?
                 """, (shift['id'],))
@@ -248,7 +248,7 @@ async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         # Получаем смену дежурного на сегодня
         cursor.execute("""
-            SELECT id, user_id, username, shift_date, opened_at, closed_at
+            SELECT id, user_id, username, shift_date, started_at, ended_at
             FROM duty_shifts
             WHERE shift_date = ?
             ORDER BY id DESC
@@ -261,12 +261,13 @@ async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE
         text += f"📅 Дата: {today.strftime('%d.%m.%Y')}\n\n"
 
         if duty_shift:
-            # Получаем чек-лист дежурного
+            # Получаем чек-лист дежурного с информацией о пунктах
             cursor.execute("""
-                SELECT item_text, is_checked, notes, category
-                FROM duty_checklist_responses
-                WHERE shift_id = ?
-                ORDER BY category, id
+                SELECT dcp.checked, dcp.notes, dci.item_name, dci.category
+                FROM duty_checklist_progress dcp
+                JOIN duty_checklist_items dci ON dcp.item_id = dci.id
+                WHERE dcp.shift_id = ?
+                ORDER BY dci.category, dci.sort_order
             """, (duty_shift['id'],))
             checklist_items = cursor.fetchall()
 
@@ -283,8 +284,8 @@ async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE
                 for category, items in categories.items():
                     text += f"<b>{category}:</b>\n"
                     for item in items:
-                        status = "✅" if item['is_checked'] else "❌"
-                        text += f"  {status} {item['item_text']}"
+                        status = "✅" if item['checked'] else "❌"
+                        text += f"  {status} {item['item_name']}"
                         if item['notes']:
                             text += f" - <i>{item['notes']}</i>"
                         text += "\n"
@@ -292,7 +293,7 @@ async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE
 
                 # Считаем прогресс
                 total = len(checklist_items)
-                checked = sum(1 for item in checklist_items if item['is_checked'])
+                checked = sum(1 for item in checklist_items if item['checked'])
                 percent = int((checked / total) * 100) if total > 0 else 0
                 text += f"<b>Прогресс:</b> {checked}/{total} ({percent}%)\n"
             else:
@@ -549,20 +550,21 @@ async def show_shift_report(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         if shift['notes']:
             text += f"📝 Примечания: {shift['notes']}\n\n"
 
-        # Получаем чек-лист смены
+        # Получаем чек-лист смены с именами пунктов
         cursor.execute("""
-            SELECT item_text, is_checked, notes
-            FROM shift_checklist_responses
-            WHERE shift_id = ?
-            ORDER BY id
+            SELECT scr.status, scr.notes, sci.item_name
+            FROM shift_checklist_responses scr
+            JOIN shift_checklist_items sci ON scr.item_id = sci.id
+            WHERE scr.shift_id = ?
+            ORDER BY scr.id
         """, (shift['active_shift_id'],))
         checklist_items = cursor.fetchall()
 
         if checklist_items:
             text += f"✅ <b>Чек-лист приёма смены ({len(checklist_items)} пунктов):</b>\n"
             for item in checklist_items:
-                status = "✅" if item['is_checked'] else "❌"
-                text += f"  {status} {item['item_text']}"
+                status = "✅" if item['status'] == 'ok' else "❌"
+                text += f"  {status} {item['item_name']}"
                 if item['notes']:
                     text += f" ({item['notes']})"
                 text += "\n"
