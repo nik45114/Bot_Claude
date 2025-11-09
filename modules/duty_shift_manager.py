@@ -484,10 +484,9 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
 
             # Получаем дежурных на этот день
             cursor.execute("""
-                SELECT d.club, d.shift_type, ad.full_name, ad.user_id
+                SELECT d.club, d.shift_type, d.admin_name, d.admin_id
                 FROM duty_schedule d
-                LEFT JOIN admins ad ON d.admin_id = ad.user_id
-                WHERE d.duty_date = ?
+                WHERE d.date = ?
                 ORDER BY d.club, d.shift_type
             """, (day_date.isoformat(),))
 
@@ -495,7 +494,7 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
 
             if duties:
                 for duty in duties:
-                    admin_name = duty['full_name'] or f"ID:{duty['user_id']}"
+                    admin_name = duty['admin_name'] or f"ID:{duty['admin_id']}" if duty['admin_id'] else "Не назначено"
                     shift_emoji = "☀️" if duty['shift_type'] == 'morning' else "🌙"
                     text += f"  {shift_emoji} {duty['club']} - {admin_name}\n"
             else:
