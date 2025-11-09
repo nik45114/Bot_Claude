@@ -23,16 +23,39 @@ name_queue = []
 queue_lock = threading.Lock()
 
 # Список матов для фильтрации
-PROFANITY_LIST = [
-    "хуй", "пизд", "ебл", "ебан", "бля", "сук", "dick", "fuck", "shit",
-    "bitch", "ass", "cunt", "cock", "damn", "hell", "nigga", "nigger"
+RUSSIAN_PROFANITY = [
+    "хуй", "хуя", "хуи", "хуе", "хую",
+    "пизд", "пизда", "пизде", "пиздец",
+    "ебл", "ебал", "ебан", "ебать", "ебло", "ебало",
+    "бля", "блят", "блядь", "блять",
+    "сук", "сука", "суки",
+    "мудак", "мудил", "мудило",
+    "говн", "гавн",
 ]
+
+ENGLISH_PROFANITY = [
+    "dick", "fuck", "shit", "bitch", "ass", "cunt", "cock",
+    "damn", "hell", "nigga", "nigger", "fag", "faggot",
+]
+
+TRANSLIT_PROFANITY = [
+    "blyat", "blya", "blyad", "blyat'", "bl9d", "bleat",
+    "hui", "huy", "huй", "huya", "huilo", "huylo",
+    "pizda", "pizd", "pizdec", "pizdets",
+    "ebat", "eban", "ebal", "ebalo",
+    "suka", "suka_", "suка",
+    "nahui", "nahuy", "naxui", "naxuy",
+    "mudak", "mudila", "mudilo",
+    "govno", "govnо",
+]
+
+ALL_PROFANITY = list(set([word.lower() for word in RUSSIAN_PROFANITY + ENGLISH_PROFANITY + TRANSLIT_PROFANITY]))
 
 
 def contains_profanity(text: str) -> bool:
     """Проверить на наличие мата"""
     text_lower = text.lower()
-    return any(word in text_lower for word in PROFANITY_LIST)
+    return any(word in text_lower for word in ALL_PROFANITY)
 
 
 def sanitize_name(name: str) -> str:
@@ -42,14 +65,6 @@ def sanitize_name(name: str) -> str:
     # Обрезать длину
     if len(name) > MAX_NAME_LENGTH:
         name = name[:MAX_NAME_LENGTH]
-
-    # Заменить мат звёздочками
-    if contains_profanity(name):
-        for word in PROFANITY_LIST:
-            if word in name.lower():
-                name = name.replace(word, "*" * len(word))
-                name = name.replace(word.upper(), "*" * len(word))
-                name = name.replace(word.capitalize(), "*" * len(word))
 
     return name
 
@@ -244,7 +259,7 @@ class QRServerHandler(BaseHTTPRequestHandler):
         </form>
         <div class="hint">
             От 2 до 12 символов<br>
-            Мат фильтруется автоматически
+            Мат запрещён в именах
         </div>
     </div>
 </body>
@@ -287,7 +302,64 @@ class QRServerHandler(BaseHTTPRequestHandler):
             params = urllib.parse.parse_qs(post_data)
 
             name = params.get('name', [''])[0]
+            original_name = name
             name = sanitize_name(name)
+
+            # Проверка на мат
+            if contains_profanity(original_name):
+                self.send_response(200)
+                self.send_header("Content-type", "text/html; charset=utf-8")
+                self.end_headers()
+
+                html = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ошибка</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background: linear-gradient(135deg, #051420 0%, #0a2030 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: rgba(20, 30, 35, 0.9);
+            border: 2px solid #ff6b6b;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 500px;
+            text-align: center;
+        }
+        h1 { color: #ff6b6b; margin-bottom: 20px; font-size: 2.5em; }
+        p { color: #ffffff; font-size: 1.1em; margin-bottom: 30px; }
+        a {
+            display: inline-block;
+            padding: 15px 30px;
+            background: #00ffff;
+            color: #051420;
+            text-decoration: none;
+            border-radius: 10px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>❌ Ошибка</h1>
+        <p>Нельзя использовать мат в имени</p>
+        <a href="/form">Попробовать снова</a>
+    </div>
+</body>
+</html>
+                """
+                self.wfile.write(html.encode('utf-8'))
+                return
 
             # Проверка длины
             if len(name) < MIN_NAME_LENGTH or len(name) > MAX_NAME_LENGTH:
