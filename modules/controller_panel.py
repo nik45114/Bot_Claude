@@ -106,7 +106,7 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("🔄 Обновить", callback_data="controller_panel")],
         [InlineKeyboardButton("📋 Текущие чек-листы", callback_data="ctrl_current_checklists")],
         [InlineKeyboardButton("📂 Архив отчётов", callback_data="ctrl_archive")],
-        [InlineKeyboardButton("📝 Чек-лист дежурного", callback_data="ctrl_duty_checklist")],
+        [InlineKeyboardButton("👁 Чек-лист Глаза", callback_data="ctrl_duty_checklist")],
         [InlineKeyboardButton("🔍 Проверка клубов", callback_data="ctrl_club_check")],
         [InlineKeyboardButton("◀️ Назад в главное меню", callback_data="main_menu")]
     ]
