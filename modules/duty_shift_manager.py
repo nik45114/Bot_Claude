@@ -458,20 +458,69 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
     if query:
         await query.answer()
 
-    text = """📅 **График дежурств**
+    db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
 
-Функционал временно недоступен.
-Модуль находится в разработке.
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
 
-Здесь будет отображаться график дежурств контролёров."""
+        # Получаем график на неделю вперед
+        today = datetime.now(MSK).date()
+        week_dates = [today + timedelta(days=i) for i in range(7)]
+
+        text = "📅 **График дежурств на неделю**\n\n"
+
+        for day_date in week_dates:
+            # Форматируем дату
+            day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][day_date.weekday()]
+            date_str = day_date.strftime('%d.%m')
+
+            # Эмодзи для текущего дня
+            day_emoji = "📍" if day_date == today else "📆"
+
+            text += f"{day_emoji} **{day_name} {date_str}**\n"
+
+            # Получаем дежурных на этот день
+            cursor.execute("""
+                SELECT d.club, d.shift_type, ad.full_name, ad.user_id
+                FROM duty_schedule d
+                LEFT JOIN admins ad ON d.admin_id = ad.user_id
+                WHERE d.duty_date = ?
+                ORDER BY d.club, d.shift_type
+            """, (day_date.isoformat(),))
+
+            duties = cursor.fetchall()
+
+            if duties:
+                for duty in duties:
+                    admin_name = duty['full_name'] or f"ID:{duty['user_id']}"
+                    shift_emoji = "☀️" if duty['shift_type'] == 'morning' else "🌙"
+                    text += f"  {shift_emoji} {duty['club']} - {admin_name}\n"
+            else:
+                text += "  _Не назначено_\n"
+
+            text += "\n"
+
+        conn.close()
+
+    except Exception as e:
+        logger.error(f"Error in show_controller_schedule: {e}")
+        text = f"📅 **График дежурств**\n\n❌ Ошибка загрузки данных: {e}"
 
     keyboard = [
+        [InlineKeyboardButton("🔄 Обновить", callback_data="ctrl_schedule")],
         [InlineKeyboardButton("◀️ Назад в главное меню", callback_data="main_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     if query:
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        except Exception as e:
+            logger.error(f"Error editing message: {e}")
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
