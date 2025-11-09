@@ -53,12 +53,14 @@ class ShiftChecklistManager:
         """Получить соединение с БД"""
         return sqlite3.connect(self.db_path)
 
-    def get_checklist_items(self, category: Optional[str] = None) -> List[Dict]:
+    def get_checklist_items(self, category: Optional[str] = None, club: Optional[str] = None, shift_type: Optional[str] = None) -> List[Dict]:
         """
         Получить пункты чек-листа
 
         Args:
             category: категория (опционально, если None - все категории)
+            club: клуб ('rio' или 'sever', опционально)
+            shift_type: тип смены ('morning' или 'evening', опционально)
 
         Returns:
             Список пунктов чек-листа
@@ -66,20 +68,33 @@ class ShiftChecklistManager:
         conn = self._get_connection()
         cursor = conn.cursor()
 
+        # Базовый WHERE
+        where_conditions = ["is_active = 1"]
+        params = []
+
+        # Добавляем фильтр по категории
         if category:
-            cursor.execute("""
-                SELECT id, category, item_name, description, is_required, requires_photo, sort_order
-                FROM shift_checklist_items
-                WHERE category = ? AND is_active = 1
-                ORDER BY sort_order
-            """, (category,))
-        else:
-            cursor.execute("""
-                SELECT id, category, item_name, description, is_required, requires_photo, sort_order
-                FROM shift_checklist_items
-                WHERE is_active = 1
-                ORDER BY category, sort_order
-            """)
+            where_conditions.append("category = ?")
+            params.append(category)
+
+        # Добавляем фильтр по клубу (показывать если club NULL или совпадает)
+        if club:
+            where_conditions.append("(club IS NULL OR club = ?)")
+            params.append(club)
+
+        # Добавляем фильтр по типу смены (показывать если shift_type NULL или совпадает)
+        if shift_type:
+            where_conditions.append("(shift_type IS NULL OR shift_type = ?)")
+            params.append(shift_type)
+
+        where_clause = " AND ".join(where_conditions)
+
+        cursor.execute(f"""
+            SELECT id, category, item_name, description, is_required, requires_photo, sort_order
+            FROM shift_checklist_items
+            WHERE {where_clause}
+            ORDER BY category, sort_order
+        """, params)
 
         items = []
         for row in cursor.fetchall():
@@ -96,29 +111,56 @@ class ShiftChecklistManager:
         conn.close()
         return items
 
-    def get_categories(self) -> List[str]:
-        """Получить список уникальных категорий"""
+    def get_categories(self, club: Optional[str] = None, shift_type: Optional[str] = None) -> List[str]:
+        """
+        Получить список уникальных категорий
+
+        Args:
+            club: клуб ('rio' или 'sever', опционально)
+            shift_type: тип смены ('morning' или 'evening', опционально)
+
+        Returns:
+            Список категорий
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        cursor.execute("""
+        # Базовый WHERE
+        where_conditions = ["is_active = 1"]
+        params = []
+
+        # Добавляем фильтр по клубу
+        if club:
+            where_conditions.append("(club IS NULL OR club = ?)")
+            params.append(club)
+
+        # Добавляем фильтр по типу смены
+        if shift_type:
+            where_conditions.append("(shift_type IS NULL OR shift_type = ?)")
+            params.append(shift_type)
+
+        where_clause = " AND ".join(where_conditions)
+
+        cursor.execute(f"""
             SELECT category, MIN(sort_order) as min_order
             FROM shift_checklist_items
-            WHERE is_active = 1
+            WHERE {where_clause}
             GROUP BY category
             ORDER BY min_order
-        """)
+        """, params)
 
         categories = [row[0] for row in cursor.fetchall()]
         conn.close()
         return categories
 
-    def start_checklist(self, shift_id: int) -> bool:
+    def start_checklist(self, shift_id: int, club: Optional[str] = None, shift_type: Optional[str] = None) -> bool:
         """
         Начать прохождение чек-листа для смены
 
         Args:
             shift_id: ID смены
+            club: клуб ('rio' или 'sever', опционально)
+            shift_type: тип смены ('morning' или 'evening', опционально)
 
         Returns:
             True если успешно, False если чек-лист уже начат
@@ -135,10 +177,23 @@ class ShiftChecklistManager:
             conn.close()
             return False
 
-        # Подсчитываем общее количество активных пунктов
-        cursor.execute("""
-            SELECT COUNT(*) FROM shift_checklist_items WHERE is_active = 1
-        """)
+        # Подсчитываем общее количество активных пунктов с учетом фильтров
+        where_conditions = ["is_active = 1"]
+        params = []
+
+        if club:
+            where_conditions.append("(club IS NULL OR club = ?)")
+            params.append(club)
+
+        if shift_type:
+            where_conditions.append("(shift_type IS NULL OR shift_type = ?)")
+            params.append(shift_type)
+
+        where_clause = " AND ".join(where_conditions)
+
+        cursor.execute(f"""
+            SELECT COUNT(*) FROM shift_checklist_items WHERE {where_clause}
+        """, params)
         total_items = cursor.fetchone()[0]
 
         # Создаем запись о прогрессе
@@ -373,17 +428,36 @@ async def start_checklist_conversation(update: Update, context: ContextTypes.DEF
     shift_id = context.user_data['current_shift_id']
     db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
 
+    # Получаем информацию о смене (клуб и тип смены)
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT club, shift_type FROM active_shifts WHERE id = ?
+    """, (shift_id,))
+    shift_info = cursor.fetchone()
+    conn.close()
+
+    if not shift_info:
+        await query.edit_message_text("❌ Ошибка: смена не найдена в базе")
+        return ConversationHandler.END
+
+    club = shift_info['club']
+    shift_type = shift_info['shift_type']
+
     checklist_manager = ShiftChecklistManager(db_path)
 
     # Начинаем чек-лист
-    if not checklist_manager.start_checklist(shift_id):
+    if not checklist_manager.start_checklist(shift_id, club=club, shift_type=shift_type):
         await query.edit_message_text("⚠️ Чек-лист для этой смены уже начат")
         return ConversationHandler.END
 
     # Сохраняем manager и текущую категорию в context
     context.user_data['checklist_manager'] = checklist_manager
     context.user_data['checklist_shift_id'] = shift_id
-    context.user_data['checklist_categories'] = checklist_manager.get_categories()
+    context.user_data['checklist_club'] = club
+    context.user_data['checklist_shift_type'] = shift_type
+    context.user_data['checklist_categories'] = checklist_manager.get_categories(club=club, shift_type=shift_type)
     context.user_data['checklist_current_category_idx'] = 0
     context.user_data['checklist_current_item_idx'] = 0
 
@@ -395,6 +469,8 @@ async def show_next_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     """Показать следующий пункт чек-листа"""
     checklist_manager: ShiftChecklistManager = context.user_data['checklist_manager']
     categories = context.user_data['checklist_categories']
+    club = context.user_data.get('checklist_club')
+    shift_type = context.user_data.get('checklist_shift_type')
     cat_idx = context.user_data['checklist_current_category_idx']
 
     # Проверяем, не закончились ли категории
@@ -402,7 +478,7 @@ async def show_next_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return await complete_checklist(update, context)
 
     current_category = categories[cat_idx]
-    items = checklist_manager.get_checklist_items(current_category)
+    items = checklist_manager.get_checklist_items(current_category, club=club, shift_type=shift_type)
 
     # Сохраняем items для текущей категории
     if 'checklist_current_items' not in context.user_data or \
@@ -427,10 +503,10 @@ async def show_next_item(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     category_name = CATEGORY_NAMES.get(current_category, current_category)
 
     # Считаем прогресс локально без запроса к БД
-    total_items = sum(len(checklist_manager.get_checklist_items(cat)) for cat in categories)
+    total_items = sum(len(checklist_manager.get_checklist_items(cat, club=club, shift_type=shift_type)) for cat in categories)
     checked_items = 0
     for cat_i in range(cat_idx):
-        checked_items += len(checklist_manager.get_checklist_items(categories[cat_i]))
+        checked_items += len(checklist_manager.get_checklist_items(categories[cat_i], club=club, shift_type=shift_type))
     checked_items += item_idx
 
     text = f"✅ *Чек-лист приема смены*\n\n"
