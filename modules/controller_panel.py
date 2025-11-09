@@ -253,9 +253,9 @@ async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
 
         # Получаем смену дежурного на сегодня
         cursor.execute("""
-            SELECT id, user_id, username, date, started_at, ended_at
+            SELECT id, user_id, username, shift_date, started_at, ended_at
             FROM duty_shifts
-            WHERE date = ?
+            WHERE shift_date = ?
             ORDER BY id DESC
             LIMIT 1
         """, (today,))
