@@ -381,36 +381,92 @@ class SalaryCalculator:
             logger.error(f"Failed to get payment history: {e}")
             return []
     
-    def record_cash_withdrawal(self, shift_id: int, admin_id: int, amount: float, reason: str = 'salary') -> int:
+    def record_cash_withdrawal(self, shift_id: int, admin_id: int, amount: float, reason: str = 'salary', cash_source: str = 'main') -> int:
         """
         Record cash withdrawal during shift
-        
+
         Args:
             shift_id: Shift ID
             admin_id: Admin user ID
             amount: Amount withdrawn
             reason: Reason for withdrawal
-        
+            cash_source: 'main' or 'box' cash register
+
         Returns:
             Withdrawal record ID
         """
         try:
             conn = self._get_conn()
             cursor = conn.cursor()
-            
+
             cursor.execute('''
-                INSERT INTO shift_cash_withdrawals (shift_id, admin_id, amount, reason)
-                VALUES (?, ?, ?, ?)
-            ''', (shift_id, admin_id, amount, reason))
-            
+                INSERT INTO shift_cash_withdrawals (shift_id, admin_id, amount, reason, cash_source)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (shift_id, admin_id, amount, reason, cash_source))
+
             withdrawal_id = cursor.lastrowid
             conn.commit()
             conn.close()
-            
-            logger.info(f"Recorded cash withdrawal {withdrawal_id}: {amount} for admin {admin_id}")
+
+            logger.info(f"Recorded cash withdrawal {withdrawal_id}: {amount} from {cash_source} for admin {admin_id}")
             return withdrawal_id
-            
+
         except Exception as e:
             logger.error(f"Failed to record cash withdrawal: {e}")
             return 0
+
+    def revert_withdrawal(self, withdrawal_id: int, reverted_by: int, reverted_by_name: str) -> Optional[Dict]:
+        """
+        Revert (cancel) a cash withdrawal and return money to cash
+
+        Args:
+            withdrawal_id: ID of withdrawal to revert
+            reverted_by: User ID who is reverting
+            reverted_by_name: Full name of user who is reverting
+
+        Returns:
+            Dict with withdrawal info if successful, None otherwise
+        """
+        try:
+            conn = self._get_conn()
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            # Get withdrawal info before reverting
+            cursor.execute('''
+                SELECT w.*, s.club, s.shift_type
+                FROM shift_cash_withdrawals w
+                JOIN active_shifts s ON w.shift_id = s.id
+                WHERE w.id = ?
+            ''', (withdrawal_id,))
+
+            withdrawal_row = cursor.fetchone()
+            if not withdrawal_row:
+                conn.close()
+                logger.error(f"❌ Withdrawal {withdrawal_id} not found")
+                return None
+
+            withdrawal_info = dict(withdrawal_row)
+
+            # Mark withdrawal as reverted by adding a negative entry
+            cursor.execute('''
+                INSERT INTO shift_cash_withdrawals (shift_id, admin_id, amount, reason, cash_source)
+                VALUES (?, ?, ?, ?, ?)
+            ''', (
+                withdrawal_info['shift_id'],
+                withdrawal_info['admin_id'],
+                -withdrawal_info['amount'],  # Negative amount = return money
+                f"❌ ВОЗВРАТ снятия (возврат: {reverted_by_name})",
+                withdrawal_info.get('cash_source', 'main')
+            ))
+
+            conn.commit()
+            conn.close()
+
+            logger.info(f"✅ Reverted withdrawal {withdrawal_id} by {reverted_by_name} (ID: {reverted_by})")
+            return withdrawal_info
+
+        except Exception as e:
+            logger.error(f"❌ Failed to revert withdrawal: {e}")
+            return None
 

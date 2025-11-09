@@ -1,0 +1,111 @@
+СПИСОК ФУНКЦИЙ СПИСАНИЯ ДЕНЕГ СО СМЕНЫ
+========================================
+
+1. СПИСАНИЕ РАСХОДОВ (EXPENSE)
+   
+   Основная функция:
+   - cmd_expense() [строка 1743 - finmon_shift_wizard.py]
+     Запускает диалог списания с проверкой открытой смены
+   
+   Обработчики состояний:
+   - expense_select_cash_source() [строка 1785]
+     Обработка выбора кассы (main/box)
+   
+   - expense_receive_amount() [строка 1817]
+     Получение и валидация суммы (> 0)
+   
+   - expense_receive_reason() [строка 1849]
+     Получение и валидация причины (1-200 символов)
+   
+   - expense_confirm() [строка 1883]
+     Сохранение в БД + уведомление владельца
+   
+   Сохранение в БД:
+   - ShiftManager.add_expense() [строка 186 - shift_manager.py]
+     INSERT INTO shift_expenses (shift_id, cash_source, amount, reason)
+
+
+2. СНЯТИЕ НАЛИЧНЫХ/ЗАРПЛАТА (WITHDRAWAL)
+   
+   Основная функция:
+   - start_cash_withdrawal() [строка 2428 - finmon_shift_wizard.py]
+     Запускает диалог снятия с проверкой активной смены
+   
+   Обработчики состояний:
+   - receive_withdrawal_amount() [строка 2470]
+     Получение и валидация суммы (> 0)
+   
+   - handle_withdrawal_confirmation() [строка 2518]
+     Подтверждение и сохранение в БД + уведомление
+   
+   Сохранение в БД:
+   - SalaryCalculator.record_cash_withdrawal() [строка 384 - salary_calculator.py]
+     INSERT INTO shift_cash_withdrawals (shift_id, admin_id, amount, reason)
+
+
+3. КНОПКИ ПОЛЬЗОВАТЕЛЬСКОГО ИНТЕРФЕЙСА
+   
+   В главном меню [строка 2237 - bot.py]:
+   - "💸 Списать с кассы" → callback_data="shift_expense"
+   - "💰 Взять зарплату" → callback_data="shift_salary"
+   
+   Регистрация обработчиков [строки 4770-4813 - bot.py]:
+   - expense_handler (ConversationHandler)
+   - withdrawal_handler (ConversationHandler)
+
+
+4. УВЕДОМЛЕНИЯ ВЛАДЕЛЬЦУ
+   
+   Для расходов [строки 1914-1930 - finmon_shift_wizard.py]:
+   - Отправляет: смена, клуб, касса, сумма, причина, пользователь
+   
+   Для снятий [строки 2567-2580 - finmon_shift_wizard.py]:
+   - Отправляет: администратор, клуб, смена, сумма, время
+
+
+5. ТАБЛИЦЫ БД
+   
+   shift_expenses [add_shift_management.sql, строки 16-25]:
+   - id (PK)
+   - shift_id (FK to active_shifts)
+   - cash_source (main/box)
+   - amount (REAL)
+   - reason (TEXT)
+   - created_at (TIMESTAMP)
+   
+   shift_cash_withdrawals [add_salary_system.sql, строки 27-37]:
+   - id (PK)
+   - shift_id (FK to active_shifts)
+   - admin_id (FK to admins)
+   - amount (REAL)
+   - reason (TEXT)
+   - created_at (TIMESTAMP)
+
+
+6. СОСТОЯНИЯ ДИАЛОГА
+   
+   Расходы [финмон_shift_wizard.py, строка 61]:
+   - EXPENSE_SELECT_CASH_SOURCE = 14
+   - EXPENSE_ENTER_AMOUNT = 15
+   - EXPENSE_ENTER_REASON = 16
+   - EXPENSE_CONFIRM = 17
+   
+   Снятие [финмон_shift_wizard.py, строка 64]:
+   - WITHDRAWAL_ENTER_AMOUNT = 18
+   - WITHDRAWAL_CONFIRM = 19
+
+
+7. ПОЛУЧЕНИЕ ИНФОРМАЦИИ
+   
+   - ShiftManager.get_shift_expenses() [строка 218]
+   - ShiftManager.get_expenses_summary() [строка 249]
+   - SalaryCalculator.get_cash_withdrawals() [строка 123]
+
+
+КЛЮЧЕВЫЕ ФАЙЛЫ:
+- /opt/club_assistant/modules/finmon_shift_wizard.py (основной модуль)
+- /opt/club_assistant/modules/shift_manager.py (управление сменами и расходами)
+- /opt/club_assistant/modules/salary_calculator.py (расчет и запись снятий)
+- /opt/club_assistant/bot.py (регистрация обработчиков)
+- /opt/club_assistant/migrations/add_shift_management.sql (таблица расходов)
+- /opt/club_assistant/migrations/add_salary_system.sql (таблица снятий)

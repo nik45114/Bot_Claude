@@ -25,6 +25,7 @@ except ImportError:
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
+from telegram.error import BadRequest
 
 # Try to import analytics module
 try:
@@ -47,7 +48,7 @@ logger = logging.getLogger(__name__)
 (EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM) = range(14, 18)
 
 # Conversation states for CASH WITHDRAWAL (separate conversation)
-(WITHDRAWAL_ENTER_AMOUNT, WITHDRAWAL_CONFIRM) = range(18, 20)
+(WITHDRAWAL_SELECT_CASH_SOURCE, WITHDRAWAL_ENTER_AMOUNT, WITHDRAWAL_CONFIRM) = range(18, 21)
 
 # Timezone and shift windows
 TIMEZONE = 'Europe/Moscow'
@@ -239,6 +240,11 @@ class ShiftWizard:
         if self.improvements:
             previous_cash = self.improvements.get_previous_shift_cash(club, shift_type)
 
+        # Get previous shift balances separately for safe and box
+        prev_safe, prev_box = (0, 0)
+        if self.improvements:
+            prev_safe, prev_box = self.improvements.get_previous_shift_balances(club, shift_type)
+
         # Get previous shift revenue
         previous_revenue = None
         if self.finmon:
@@ -273,6 +279,8 @@ class ShiftWizard:
         context.user_data['shift_time'] = shift_type
         context.user_data['active_shift_id'] = shift_id
         context.user_data['previous_revenue'] = previous_revenue
+        context.user_data['prev_official'] = prev_safe
+        context.user_data['prev_box'] = prev_box
 
         # Get expenses from this shift
         expenses = self.shift_manager.get_shift_expenses(shift_id)
@@ -496,9 +504,16 @@ class ShiftWizard:
             ]
         
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
+
         if is_callback:
-            await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+            try:
+                await update.callback_query.edit_message_text(msg, reply_markup=reply_markup)
+            except BadRequest as e:
+                if "message is not modified" in str(e).lower():
+                    # Ignore error if message content is the same
+                    logger.info("ℹ️ Message not modified (content is the same)")
+                else:
+                    raise
         else:
             await update.message.reply_text(msg, reply_markup=reply_markup)
     
@@ -527,11 +542,23 @@ class ShiftWizard:
             shift_id = self.shift_manager.open_shift(admin_id, club, shift_type, shift_date, admin_id)
 
             if shift_id:
+                # Save shift_id in context for checklist
+                context.user_data['current_shift_id'] = shift_id
+
+                # Добавляем кнопку чек-листа приема смены
+                from telegram import InlineKeyboardButton, InlineKeyboardMarkup
+                keyboard = [
+                    [InlineKeyboardButton("✅ Чек-лист приема смены", callback_data="checklist_start")],
+                    [InlineKeyboardButton("« Главное меню", callback_data="main_menu")]
+                ]
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
                 await query.edit_message_text(
                     f"✅ Смена открыта!\n\n"
                     f"🏢 {club} | {shift_label}\n"
                     f"🆔 ID смены: {shift_id}\n\n"
-                    f"Используйте кнопки в главном меню для работы"
+                    f"Рекомендуется пройти чек-лист приема смены для проверки оборудования и состояния клуба.",
+                    reply_markup=reply_markup
                 )
 
                 # Send notification to controller
@@ -1594,25 +1621,51 @@ class ShiftWizard:
         """Edit shift - restart from beginning"""
         query = update.callback_query
         await query.answer()
-        
+
         club = context.user_data.get('shift_club')
         shift_time = context.user_data.get('shift_time')
         shift_label = "☀️ Утро (дневная смена)" if shift_time == "morning" else "🌙 Вечер (ночная смена)"
-        
+
+        # Save important values that should not be cleared
+        prev_official = context.user_data.get('prev_official', 0)
+        prev_box = context.user_data.get('prev_box', 0)
+        previous_revenue = context.user_data.get('previous_revenue')
+        active_shift_id = context.user_data.get('active_shift_id')
+        shift_expenses = context.user_data.get('shift_expenses', [])
+        previous_cash = context.user_data.get('shift_data', {}).get('safe_cash_start', 0)
+
         # Clear shift data but keep club and shift_time
         context.user_data['shift_data'] = {
+            'admin_id': update.effective_user.id,
+            'club': club,
+            'shift_type': shift_time,
+            'active_shift_id': active_shift_id,
             'fact_cash': 0.0,
             'fact_card': 0.0,
             'qr': 0.0,
             'card2': 0.0,
+            'safe_cash_start': previous_cash,
             'safe_cash_end': 0.0,
+            'box_cash_start': 0.0,
             'box_cash_end': 0.0,
             'tovarka': 0.0,
             'gamepads': 0,
             'repair': 0,
             'need_repair': 0,
-            'games': 0
+            'games': 0,
+            'cash_disabled': False,
+            'card_disabled': False,
+            'qr_disabled': False,
+            'card2_disabled': False,
+            'expenses': shift_expenses
         }
+
+        # Restore important values
+        context.user_data['prev_official'] = prev_official
+        context.user_data['prev_box'] = prev_box
+        context.user_data['previous_revenue'] = previous_revenue
+        context.user_data['active_shift_id'] = active_shift_id
+        context.user_data['shift_expenses'] = shift_expenses
         
         msg = f"📋 Закрытие смены\n\n"
         msg += f"🏢 Клуб: {club}\n"
@@ -2121,6 +2174,9 @@ class ShiftWizard:
             shift_id = self.shift_manager.open_shift(opener_id, club, shift_type, shift_date, confirmed_by)
 
             if shift_id:
+                # Save shift_id in context for checklist
+                context.user_data['current_shift_id'] = shift_id
+
                 # Get scheduled duty name to show if it was a replacement
                 scheduled_duty_name = None
                 if self.schedule_parser:
@@ -2345,33 +2401,92 @@ class ShiftWizard:
     
     async def start_cash_withdrawal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Start cash withdrawal process during shift"""
-        user_id = update.effective_user.id
-        
+        # Handle both message and callback query
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            user_id = query.from_user.id
+            send_method = query.edit_message_text
+        else:
+            user_id = update.effective_user.id
+            send_method = update.message.reply_text
+
         # Check if user has active shift
         active_shift = None
         if self.shift_manager:
             active_shift = self.shift_manager.get_active_shift(user_id)
-        
+
         if not active_shift:
-            await update.message.reply_text(
+            await send_method(
                 "❌ У вас нет активной смены\n\n"
                 "Сначала откройте смену, чтобы взять зарплату с кассы"
             )
-            return
-        
+            return ConversationHandler.END
+
+        # Store shift info in context
+        context.user_data['withdrawal_shift_id'] = active_shift['id']
+        context.user_data['withdrawal_club'] = active_shift['club']
+
         # Get admin name for display
-        admin_name = update.effective_user.full_name or "Админ"
-        
+        if update.callback_query:
+            admin_name = query.from_user.full_name or "Админ"
+        else:
+            admin_name = update.effective_user.full_name or "Админ"
+
         msg = f"💰 Взять зарплату с кассы\n\n"
         msg += f"👤 {admin_name}\n"
         msg += f"🏢 Клуб: {active_shift['club']}\n"
         msg += f"🆔 Смена: #{active_shift['id']}\n\n"
+        msg += "Выберите кассу:"
+
+        keyboard = [
+            [InlineKeyboardButton("🔐 Основная касса", callback_data="withdrawal_main")],
+            [InlineKeyboardButton("📦 Бокс", callback_data="withdrawal_box")],
+            [InlineKeyboardButton("❌ Отменить", callback_data="withdrawal_cancel")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await send_method(msg, reply_markup=reply_markup)
+        return WITHDRAWAL_SELECT_CASH_SOURCE
+
+    async def withdrawal_select_cash_source(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle cash source selection for withdrawal"""
+        query = update.callback_query
+        await query.answer()
+
+        if query.data == "withdrawal_cancel":
+            await query.edit_message_text("❌ Снятие отменено")
+            return ConversationHandler.END
+
+        # Parse cash source
+        if query.data == "withdrawal_main":
+            cash_source = "main"
+            source_label = "🔐 Основная касса"
+        elif query.data == "withdrawal_box":
+            cash_source = "box"
+            source_label = "📦 Бокс"
+        else:
+            await query.edit_message_text("❌ Неверный выбор кассы")
+            return ConversationHandler.END
+
+        # Store cash source in context
+        context.user_data['withdrawal_cash_source'] = cash_source
+        context.user_data['withdrawal_source_label'] = source_label
+
+        # Ask for amount
+        club = context.user_data.get('withdrawal_club', 'Неизвестно')
+        shift_id = context.user_data.get('withdrawal_shift_id', 0)
+
+        msg = f"💰 Взять зарплату с кассы\n\n"
+        msg += f"🏢 Клуб: {club}\n"
+        msg += f"🆔 Смена: #{shift_id}\n"
+        msg += f"💼 Касса: {source_label}\n\n"
         msg += "Введите сумму для снятия:\n\n"
         msg += "Пример: 5000"
-        
-        await update.message.reply_text(msg)
+
+        await query.edit_message_text(msg)
         return WITHDRAWAL_ENTER_AMOUNT
-    
+
     async def receive_withdrawal_amount(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Receive withdrawal amount"""
         try:
@@ -2396,11 +2511,13 @@ class ShiftWizard:
                 return
             
             admin_name = update.effective_user.full_name or "Админ"
-            
+            source_label = context.user_data.get('withdrawal_source_label', '🔐 Основная касса')
+
             msg = f"💰 Подтверждение снятия\n\n"
             msg += f"👤 {admin_name}\n"
             msg += f"🏢 Клуб: {active_shift['club']}\n"
-            msg += f"🆔 Смена: #{active_shift['id']}\n\n"
+            msg += f"🆔 Смена: #{active_shift['id']}\n"
+            msg += f"💼 Касса: {source_label}\n\n"
             msg += f"💵 Сумма: {amount:,.0f} ₽\n\n"
             msg += "Подтвердите снятие зарплаты с кассы:"
             
@@ -2432,44 +2549,48 @@ class ShiftWizard:
         if query.data == "withdrawal_confirm":
             user_id = query.from_user.id
             amount = context.user_data.get('withdrawal_amount', 0)
-            
+            cash_source = context.user_data.get('withdrawal_cash_source', 'main')
+            source_label = context.user_data.get('withdrawal_source_label', '🔐 Основная касса')
+
             if amount <= 0:
                 await query.edit_message_text("❌ Неверная сумма")
                 return
-            
+
             # Get active shift
             active_shift = self.shift_manager.get_active_shift(user_id) if self.shift_manager else None
             if not active_shift:
                 await query.edit_message_text("❌ Активная смена не найдена")
                 return
-            
+
             # Record withdrawal in database
             try:
                 # Import salary calculator to record withdrawal
                 from modules.salary_calculator import SalaryCalculator
                 salary_calc = SalaryCalculator(self.shift_manager.db_path if hasattr(self.shift_manager, 'db_path') else 'club_assistant.db')
-                
+
                 withdrawal_id = salary_calc.record_cash_withdrawal(
                     shift_id=active_shift['id'],
                     admin_id=user_id,
                     amount=amount,
-                    reason='salary'
+                    reason='salary',
+                    cash_source=cash_source
                 )
-                
+
                 if withdrawal_id:
                     admin_name = query.from_user.full_name or "Админ"
-                    
+
                     await query.edit_message_text(
                         f"✅ Зарплата снята с кассы\n\n"
                         f"👤 {admin_name}\n"
                         f"🏢 Клуб: {active_shift['club']}\n"
-                        f"🆔 Смена: #{active_shift['id']}\n\n"
+                        f"🆔 Смена: #{active_shift['id']}\n"
+                        f"💼 Касса: {source_label}\n\n"
                         f"💵 Сумма: {amount:,.0f} ₽\n"
                         f"📝 Запись: #{withdrawal_id}\n\n"
                         f"Сумма будет учтена при расчете зарплаты"
                     )
-                    
-                    # Notify owner about cash withdrawal
+
+                    # Notify owner about cash withdrawal with revert button
                     if self.owner_ids:
                         for owner_id in self.owner_ids:
                             try:
@@ -2477,12 +2598,28 @@ class ShiftWizard:
                                 notify_msg += f"👤 {admin_name} (ID: {user_id})\n"
                                 notify_msg += f"🏢 Клуб: {active_shift['club']}\n"
                                 notify_msg += f"🆔 Смена: #{active_shift['id']}\n"
+                                notify_msg += f"💼 Касса: {source_label}\n"
                                 notify_msg += f"💵 Сумма: {amount:,.0f} ₽\n"
-                                notify_msg += f"📅 {datetime.now().strftime('%d.%m.%Y %H:%M')}"
-                                
-                                await context.bot.send_message(chat_id=owner_id, text=notify_msg)
-                            except:
-                                pass
+                                notify_msg += f"📅 {now_msk().strftime('%d.%m.%Y %H:%M')} МСК"
+
+                                # Add revert button only for controller
+                                keyboard = []
+                                if owner_id == self.controller_id:
+                                    keyboard.append([
+                                        InlineKeyboardButton(
+                                            "🔄 Вернуть деньги",
+                                            callback_data=f"revert_withdrawal_{withdrawal_id}"
+                                        )
+                                    ])
+
+                                reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+                                await context.bot.send_message(
+                                    chat_id=owner_id,
+                                    text=notify_msg,
+                                    reply_markup=reply_markup
+                                )
+                            except Exception as e:
+                                logger.error(f"Failed to send withdrawal notification: {e}")
                 else:
                     await query.edit_message_text("❌ Не удалось записать снятие")
                     
@@ -2571,3 +2708,65 @@ class ShiftWizard:
         except Exception as e:
             logger.error(f"Error in cmd_shift_status: {e}")
             await update.message.reply_text(f"❌ Ошибка при получении статуса: {str(e)}")
+
+    async def handle_revert_withdrawal(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle withdrawal revert button press (only for controller)"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = query.from_user.id
+
+        # Check if user is controller
+        if user_id != self.controller_id:
+            await query.answer("❌ Только контролирующий может возвращать деньги", show_alert=True)
+            return
+
+        # Parse callback data: revert_withdrawal_{withdrawal_id}
+        try:
+            parts = query.data.split('_')
+            withdrawal_id = int(parts[2])
+        except (IndexError, ValueError):
+            await query.answer("❌ Ошибка: неверный формат данных", show_alert=True)
+            return
+
+        # Get controller info
+        controller_name = query.from_user.full_name or query.from_user.username or f"ID {user_id}"
+
+        # Revert withdrawal
+        try:
+            from modules.salary_calculator import SalaryCalculator
+            salary_calc = SalaryCalculator(self.shift_manager.db_path if hasattr(self.shift_manager, 'db_path') else 'club_assistant.db')
+
+            withdrawal_info = salary_calc.revert_withdrawal(withdrawal_id, user_id, controller_name)
+
+            if withdrawal_info:
+                # Update the message to show it's reverted
+                original_text = query.message.text
+                reverted_text = f"🔄 ДЕНЬГИ ВОЗВРАЩЕНЫ\n\n{original_text}\n\n"
+                reverted_text += f"✅ Возврат выполнен: {controller_name}\n"
+                reverted_text += f"⏰ {now_msk().strftime('%d.%m.%Y %H:%M')} МСК"
+
+                await query.edit_message_text(reverted_text)
+
+                # Notify all owners about the revert
+                if self.owner_ids:
+                    for owner_id in self.owner_ids:
+                        try:
+                            cash_source_label = "🔐 Основная касса" if withdrawal_info.get('cash_source') == 'main' else "📦 Бокс"
+                            notify_msg = f"🔄 Возврат снятия зарплаты\n\n"
+                            notify_msg += f"🆔 Снятие #{withdrawal_id}\n"
+                            notify_msg += f"🏢 {withdrawal_info['club']}\n"
+                            notify_msg += f"💼 Касса: {cash_source_label}\n"
+                            notify_msg += f"💰 {withdrawal_info['amount']:,.0f} ₽ возвращено в кассу\n\n"
+                            notify_msg += f"👤 Возврат выполнен: {controller_name}"
+
+                            await context.bot.send_message(chat_id=owner_id, text=notify_msg)
+                        except Exception as e:
+                            logger.error(f"Failed to send revert notification: {e}")
+
+                await query.answer("✅ Деньги возвращены в кассу", show_alert=True)
+            else:
+                await query.answer("❌ Ошибка при возврате. Возможно, снятие уже было отменено.", show_alert=True)
+        except Exception as e:
+            logger.error(f"Failed to revert withdrawal: {e}")
+            await query.answer(f"❌ Ошибка при возврате: {str(e)}", show_alert=True)

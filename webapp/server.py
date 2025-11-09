@@ -23,7 +23,7 @@ app = Flask(__name__, template_folder='templates', static_folder='static')
 CORS(app)
 
 # Инициализация модулей
-DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'club_assistant.db')
+DB_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'knowledge.db')
 analytics = FinanceAnalytics(db_path=DB_PATH)
 admin_db = AdminDB(DB_PATH)
 
@@ -64,7 +64,7 @@ def api_overview():
         start_date = end_date - timedelta(days=7)
 
     try:
-        # Получить реальные данные из закрытых смен
+        # Получить реальные данные из закрытых смен (обе таблицы)
         with analytics._get_db() as conn:
             cursor = conn.cursor()
 
@@ -75,15 +75,19 @@ def api_overview():
             """)
 
             if cursor.fetchone():
-                # Таблица существует - получить данные
+                # Объединяем данные из обеих таблиц
+                # finmon_shifts - новая таблица с детальными данными
+                # active_shifts - старая таблица, только для подсчета смен
+
+                # Получаем данные из finmon_shifts
                 cursor.execute("""
                     SELECT
                         COUNT(*) as shifts_count,
                         SUM(total_revenue) as total_revenue,
                         SUM(total_expenses) as total_expenses,
-                        SUM(bar_revenue) as bar_revenue,
-                        SUM(hookah_revenue) as hookah_revenue,
-                        SUM(kitchen_revenue) as kitchen_revenue
+                        SUM(cash_revenue) as cash_revenue,
+                        SUM(card_revenue) as card_revenue,
+                        SUM(qr_revenue) as qr_revenue
                     FROM finmon_shifts
                     WHERE closed_at IS NOT NULL
                     AND DATE(closed_at) BETWEEN ? AND ?
@@ -93,27 +97,58 @@ def api_overview():
                 shifts_count = row[0] or 0
                 total_revenue = row[1] or 0
                 total_expenses = row[2] or 0
-                bar_revenue = row[3] or 0
-                hookah_revenue = row[4] or 0
-                kitchen_revenue = row[5] or 0
+                cash_revenue = row[3] or 0
+                card_revenue = row[4] or 0
+                qr_revenue = row[5] or 0
 
-                # Статистика по клубам
+                # Добавляем смены из active_shifts (старые смены без детальной статистики)
                 cursor.execute("""
-                    SELECT
-                        club,
-                        SUM(total_revenue) as revenue,
-                        COUNT(*) as shifts
-                    FROM finmon_shifts
-                    WHERE closed_at IS NOT NULL
-                    AND DATE(closed_at) BETWEEN ? AND ?
-                    GROUP BY club
+                    SELECT COUNT(*) as old_shifts_count
+                    FROM active_shifts
+                    WHERE status = 'closed'
+                    AND DATE(opened_at) BETWEEN ? AND ?
                 """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+
+                old_shifts = cursor.fetchone()[0] or 0
+                shifts_count += old_shifts
+
+                bar_revenue = 0  # Пока нет этих данных
+                hookah_revenue = 0
+                kitchen_revenue = 0
+
+                # Статистика по клубам (объединяем обе таблицы)
+                cursor.execute("""
+                    SELECT club, SUM(revenue) as revenue, SUM(shifts) as shifts
+                    FROM (
+                        SELECT
+                            club,
+                            SUM(total_revenue) as revenue,
+                            COUNT(*) as shifts
+                        FROM finmon_shifts
+                        WHERE closed_at IS NOT NULL
+                        AND DATE(closed_at) BETWEEN ? AND ?
+                        GROUP BY club
+
+                        UNION ALL
+
+                        SELECT
+                            club,
+                            0 as revenue,
+                            COUNT(*) as shifts
+                        FROM active_shifts
+                        WHERE status = 'closed'
+                        AND DATE(opened_at) BETWEEN ? AND ?
+                        GROUP BY club
+                    )
+                    GROUP BY club
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'),
+                      start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
 
                 clubs_data = {}
                 for club, revenue, shifts in cursor.fetchall():
                     clubs_data[club or 'Неизвестно'] = {
                         'revenue': int(revenue or 0),
-                        'shifts': shifts
+                        'shifts': int(shifts or 0)
                     }
 
                 # Динамика по дням
@@ -304,21 +339,57 @@ def api_admins():
 
             if cursor.fetchone():
                 # Получить статистику смен каждого админа за период
+                # Объединяем данные из обеих таблиц
+                # ВАЖНО: в обеих таблицах admin_id может быть ID клуба, нужно использовать confirmed_by
                 cursor.execute("""
                     SELECT
                         a.user_id,
                         a.full_name,
-                        COUNT(s.shift_id) as shifts_count,
-                        SUM(s.total_revenue) as total_revenue,
-                        AVG(s.total_revenue) as avg_revenue
+                        COUNT(all_shifts.shift_id) as shifts_count,
+                        SUM(all_shifts.revenue) as total_revenue,
+                        AVG(all_shifts.revenue) as avg_revenue
                     FROM admins a
-                    LEFT JOIN finmon_shifts s ON a.user_id = s.admin_id
-                        AND s.closed_at IS NOT NULL
-                        AND DATE(s.closed_at) BETWEEN ? AND ?
+                    LEFT JOIN (
+                        -- Смены из finmon_shifts (с детальной статистикой)
+                        -- Получаем реального админа через active_shifts по времени и клубу
+                        SELECT
+                            f.id as shift_id,
+                            COALESCE(act.confirmed_by, f.admin_id) as admin_id,
+                            f.total_revenue as revenue,
+                            f.closed_at as shift_date
+                        FROM finmon_shifts f
+                        LEFT JOIN active_shifts act
+                            ON datetime(f.opened_at) = datetime(act.opened_at)
+                            AND f.club = act.club
+                        WHERE f.closed_at IS NOT NULL
+                        AND DATE(f.closed_at) BETWEEN ? AND ?
+
+                        UNION ALL
+
+                        -- Смены из active_shifts (старые, без выручки)
+                        -- Исключаем те, что уже есть в finmon_shifts
+                        SELECT
+                            act.id as shift_id,
+                            act.confirmed_by as admin_id,
+                            0 as revenue,
+                            act.opened_at as shift_date
+                        FROM active_shifts act
+                        WHERE act.status = 'closed'
+                        AND act.confirmed_by IS NOT NULL
+                        AND DATE(act.opened_at) BETWEEN ? AND ?
+                        AND NOT EXISTS (
+                            SELECT 1 FROM finmon_shifts f
+                            WHERE datetime(f.opened_at) = datetime(act.opened_at)
+                            AND f.club = act.club
+                        )
+                    ) all_shifts ON a.user_id = all_shifts.admin_id
+                    -- Исключаем технические аккаунты клубов
+                    WHERE a.user_id NOT IN (5329834944, 5992731922)
                     GROUP BY a.user_id, a.full_name
                     HAVING shifts_count > 0
-                    ORDER BY total_revenue DESC
-                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
+                    ORDER BY shifts_count DESC, total_revenue DESC
+                """, (start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d'),
+                      start_date.strftime('%Y-%m-%d'), end_date.strftime('%Y-%m-%d')))
 
                 rows = cursor.fetchall()
 
@@ -329,7 +400,7 @@ def api_admins():
                         'name': full_name or f'Админ #{user_id}',
                         'shifts': shifts_count,
                         'revenue': int(total_revenue or 0),
-                        'avg_revenue': int(avg_revenue or 0)
+                        'avg_revenue': int(avg_revenue or 0) if avg_revenue else 0
                     })
             else:
                 # Таблица не существует - вернуть пустой список

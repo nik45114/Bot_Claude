@@ -89,9 +89,15 @@ class FinanceAnalytics:
             shift_type,
             opened_at,
             closed_at,
-            status
-        FROM active_shifts
-        WHERE {where_sql}
+            total_revenue,
+            cash_revenue,
+            card_revenue,
+            qr_revenue,
+            card2_revenue,
+            total_expenses,
+            'closed' as status
+        FROM finmon_shifts
+        WHERE closed_at IS NOT NULL AND {where_sql}
         ORDER BY opened_at DESC
         """
 
@@ -434,8 +440,8 @@ class FinanceAnalytics:
             club,
             opened_at,
             closed_at
-        FROM active_shifts
-        WHERE {where_sql}
+        FROM finmon_shifts
+        WHERE closed_at IS NOT NULL AND {where_sql}
         """
 
         cursor.execute(query, params)

@@ -64,8 +64,9 @@ class IssueCommands:
             if not self.shift_manager:
                 return False
             try:
-                active_shifts = self.shift_manager.get_all_active_shifts()
-                return len(active_shifts) > 0
+                # Check if this specific user has an active shift
+                active_shift = self.shift_manager.get_active_shift(user_id)
+                return active_shift is not None
             except Exception as e:
                 logger.error(f"Ошибка проверки смены: {e}")
                 return False
@@ -154,10 +155,11 @@ class IssueCommands:
         context.user_data['issue_club'] = club
         
         club_name = "Рио" if club == 'rio' else "Мичуринская/Север"
-        
+
         await query.edit_message_text(
             f"Клуб: {club_name}\n\n"
-            "Опишите проблему подробно:"
+            "Опишите проблему:\n\n"
+            "💡 Для удобства старайтесь уложиться в 80 символов"
         )
         
         return ISSUE_ENTER_DESCRIPTION
@@ -312,10 +314,10 @@ class IssueCommands:
             
             keyboard = []
             
-            for issue in issues[:10]:  # Показываем максимум 10
+            for issue in issues[:15]:  # Показываем максимум 15
                 club_emoji = "🏢"
-                desc_short = issue['description'][:30] + "..." if len(issue['description']) > 30 else issue['description']
-                
+                desc_short = issue['description'][:80] + "..." if len(issue['description']) > 80 else issue['description']
+
                 keyboard.append([InlineKeyboardButton(
                     f"#{issue['id']} | {desc_short}",
                     callback_data=f"issue_manage_{issue['id']}"
@@ -419,10 +421,11 @@ class IssueCommands:
         context.user_data['edit_issue_id'] = issue_id
         
         issue = self.issue_manager.get_issue(issue_id)
-        
+
         await query.edit_message_text(
             f"Текущее описание:\n{issue['description']}\n\n"
-            "Введите новое описание:"
+            "Введите новое описание:\n\n"
+            "💡 Для удобства старайтесь уложиться в 80 символов"
         )
         
         return ISSUE_EDIT_DESCRIPTION

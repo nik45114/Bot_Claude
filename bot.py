@@ -10,10 +10,21 @@ import sys
 import sqlite3
 import json
 import logging
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import List, Dict, Optional, Tuple
 import base64
 import subprocess
+
+# Moscow timezone (UTC+3)
+MSK = timezone(timedelta(hours=3))
+
+def get_msk_now():
+    """Получить текущее время в московском часовом поясе"""
+    return datetime.now(MSK)
+
+def get_msk_today():
+    """Получить сегодняшнюю дату по московскому времени"""
+    return get_msk_now().date()
 
 # Load environment variables
 try:
@@ -53,6 +64,22 @@ try:
     # Улучшенные модули управления админами и сменами
     from modules.enhanced_admin_shift_integration import register_enhanced_admin_shift_management
     from modules.backup_commands import register_backup_commands
+    # Accounting receipts and invoices
+    from modules.accounting_receipts import (
+        AccountingReceipts,
+        RECEIPT_ENTER_QR, RECEIPT_ENTER_CATEGORY, RECEIPT_CONFIRM,
+        INVOICE_ENTER_SUPPLIER, INVOICE_ENTER_AMOUNT, INVOICE_UPLOAD_PHOTO, INVOICE_ENTER_DESCRIPTION, INVOICE_CONFIRM,
+        start_send_receipt, receipt_enter_qr, receipt_select_category, receipt_confirm,
+        start_send_invoice, invoice_enter_supplier, invoice_enter_amount, invoice_upload_photo, invoice_enter_description, invoice_confirm,
+        cancel_operation
+    )
+    # Shift checklist and controller panel
+    from modules.shift_checklist import create_checklist_conversation_handler, ShiftChecklistManager
+    from modules.controller_panel import create_controller_callback_handler, show_controller_panel
+    # Duty shift manager
+    from modules.duty_shift_manager import create_duty_shift_handlers, show_duty_shift_menu
+    # Maintenance tasks
+    from modules.maintenance_commands import create_maintenance_handlers, show_maintenance_tasks
 except ImportError as e:
     print(f"Ошибка: Не найдены модули v4.15: {e}")
     sys.exit(1)
@@ -755,6 +782,16 @@ class ClubAssistantBot:
                 logger.info(f"🧹 Очищено {deleted} старых решенных проблем")
         except Exception as e:
             logger.error(f"❌ Ошибка при очистке старых проблем: {e}")
+
+        # Shift Checklist Manager - чек-листы приема смены
+        logger.info("✅ Initializing ShiftChecklistManager...")
+        try:
+            db_path_for_checklist = os.getenv('DB_PATH', '/opt/club_assistant/club_assistant.db')
+            self.shift_checklist_manager = ShiftChecklistManager(db_path_for_checklist)
+            logger.info("✅ ShiftChecklistManager initialized successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize ShiftChecklistManager: {e}")
+            self.shift_checklist_manager = None
         
         # Content Generator - AI content generation
         logger.info("🎨 Initializing ContentGenerator...")
@@ -831,11 +868,17 @@ class ClubAssistantBot:
 
         inline_markup = self._build_main_menu_keyboard(user_id)
 
-        # Отправить меню с inline кнопками
+        # Отправить меню с inline кнопками, удалив reply-клавиатуру
         await update.message.reply_text(
             text,
             reply_markup=inline_markup,
             parse_mode='Markdown'
+        )
+
+        # Удалить reply-клавиатуру отдельным сообщением
+        await update.message.reply_text(
+            "Используйте кнопки выше для навигации ⬆️",
+            reply_markup=ReplyKeyboardRemove()
         )
     
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1937,14 +1980,20 @@ class ClubAssistantBot:
         """Построить клавиатуру главного меню"""
         keyboard = []
 
-        # Кнопки для всех пользователей
-        keyboard.append([InlineKeyboardButton("📖 Справка", callback_data="help")])
-        keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data="stats")])
-        keyboard.append([InlineKeyboardButton("🎨 Генерация контента", callback_data="content_menu")])
+        # Проверяем, является ли пользователь контролером
+        controller_id = self.config.get('controller_id')
+        is_controller = controller_id and user_id == controller_id
 
-        if self.admin_manager.is_admin(user_id):
-            # Проверка активной смены для админов
-            active_shift = None
+        # Кнопки для всех пользователей (кроме контролера)
+        if not is_controller:
+            keyboard.append([InlineKeyboardButton("📖 Справка", callback_data="help")])
+            keyboard.append([InlineKeyboardButton("📊 Статистика", callback_data="stats")])
+            keyboard.append([InlineKeyboardButton("🎨 Генерация контента", callback_data="content_menu")])
+
+        # Проверка активной смены для админов
+        active_shift = None
+        if self.admin_manager.is_admin(user_id) and not is_controller:
+            # Проверка активной смены для админов (но не для контролера)
             if hasattr(self, 'shift_manager') and self.shift_manager:
                 try:
                     active_shift = self.shift_manager.get_active_shift(user_id)
@@ -1967,6 +2016,7 @@ class ClubAssistantBot:
             keyboard.append([InlineKeyboardButton("📅 Смены", callback_data="shifts_menu")])
             keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
             keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
+            keyboard.append([InlineKeyboardButton("🔧 Задачи обслуживания", callback_data="maintenance_tasks")])
 
         # Админ панель, управление админами и аналитика только для владельца
         if user_id == self.owner_id:
@@ -1978,6 +2028,24 @@ class ClubAssistantBot:
             from telegram import WebAppInfo
             webapp_url = "https://tmbclz.ru/"
             keyboard.append([InlineKeyboardButton("📊 Аналитика (графики)", web_app=WebAppInfo(url=webapp_url))])
+
+        # Панель большого брата (для контролера)
+        controller_id = self.config.get('controller_id')
+        if controller_id and user_id == controller_id:
+            keyboard.append([InlineKeyboardButton("👁 Панель большого брата", callback_data="controller_panel")])
+
+        # График дежурств (для контролера и владельца)
+        if (controller_id and user_id == controller_id) or user_id == self.owner_id:
+            keyboard.append([InlineKeyboardButton("📅 График дежурств", callback_data="ctrl_schedule")])
+
+        # Кнопка чек-листа дежурного (для аккаунтов клубов и админов на смене)
+        club_accounts = self.config.get('club_accounts', {})
+        rio_account = club_accounts.get('rio')
+        sever_account = club_accounts.get('sever')
+
+        # Показываем чек-лист для аккаунтов клубов или для админа с открытой сменой
+        if user_id == rio_account or user_id == sever_account or (self.admin_manager.is_admin(user_id) and active_shift):
+            keyboard.append([InlineKeyboardButton("✅ Чек-лист дежурного", callback_data="duty_checklist")])
 
         return InlineKeyboardMarkup(keyboard)
     
@@ -2760,6 +2828,7 @@ class ClubAssistantBot:
 
         # Shifts menu
         if data == "shifts_menu":
+            logger.info(f"shifts_menu callback from user {query.from_user.id} ({query.from_user.full_name})")
             await self._show_shifts_menu(query)
             return
 
@@ -3737,9 +3806,24 @@ class ClubAssistantBot:
         user = update.effective_user
         message = update.message
         text = message.text.strip()
-        
+
         # DEBUG: Log all incoming messages
         logger.info(f"📨 Message from {user.id}: '{text}' (len={len(text)}, repr={repr(text)})")
+
+        # IMPORTANT: Skip if user is in a conversation (ConversationHandler is active)
+        # Check for common conversation states to avoid conflicts
+        conversation_keys = [
+            'shift_data', 'shift_club', 'shift_type',  # Shift closing
+            'product_add_state', 'product_take_state',  # Product management
+            'issue_state',  # Issue reporting
+            'checklist_manager', 'checklist_shift_id',  # Checklist
+            'waiting_for_expense_amount', 'waiting_for_withdrawal_amount'  # Finance
+        ]
+
+        # If any conversation key exists in user_data, skip general message handling
+        if any(key in context.user_data for key in conversation_keys):
+            logger.info(f"⏩ Skipping message handling - user in conversation (keys: {[k for k in conversation_keys if k in context.user_data]})")
+            return
 
         # Note: Reply keyboard buttons are handled by MessageHandlers in group=-1
         # See button handlers registration at the top of run() method
@@ -4052,7 +4136,25 @@ class ClubAssistantBot:
             fallbacks=[CallbackQueryHandler(self.issue_commands.cancel, pattern="^issue_current$")]
         )
         application.add_handler(issue_edit_handler)
-        
+
+        # ConversationHandler для чек-листа приема смены
+        try:
+            checklist_handler = create_checklist_conversation_handler()
+            application.add_handler(checklist_handler)
+            logger.info("✅ Shift checklist ConversationHandler registered")
+        except Exception as e:
+            logger.error(f"❌ Failed to register checklist handler: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Callback handler для уведомления контролера о проблемах
+        try:
+            from modules.shift_checklist import notify_controller
+            application.add_handler(CallbackQueryHandler(notify_controller, pattern="^checklist_notify_controller$"))
+            logger.info("✅ Checklist notify controller handler registered")
+        except Exception as e:
+            logger.error(f"❌ Failed to register notify controller handler: {e}")
+
         # === END CONVERSATION HANDLERS ===
         
         # Admin Management module (MUST be registered BEFORE general CallbackQueryHandler)
@@ -4099,7 +4201,7 @@ class ClubAssistantBot:
                 UPLOAD_Z_CASH, UPLOAD_Z_CARD, UPLOAD_Z_QR, UPLOAD_Z_CARD2,
                 CONFIRM_SHIFT,
                 EXPENSE_SELECT_CASH_SOURCE, EXPENSE_ENTER_AMOUNT, EXPENSE_ENTER_REASON, EXPENSE_CONFIRM,
-                WITHDRAWAL_ENTER_AMOUNT, WITHDRAWAL_CONFIRM
+                WITHDRAWAL_SELECT_CASH_SOURCE, WITHDRAWAL_ENTER_AMOUNT, WITHDRAWAL_CONFIRM
             )
             
             # Get owner IDs
@@ -4309,9 +4411,13 @@ class ClubAssistantBot:
             withdrawal_handler = ConversationHandler(
                 entry_points=[
                     CommandHandler("withdrawal", shift_wizard.start_cash_withdrawal),
-                    MessageHandler(filters.TEXT & filters.Regex("^💰 Взять зарплату$"), shift_wizard.start_cash_withdrawal)
+                    MessageHandler(filters.TEXT & filters.Regex("^💰 Взять зарплату$"), shift_wizard.start_cash_withdrawal),
+                    CallbackQueryHandler(shift_wizard.start_cash_withdrawal, pattern="^shift_salary$")
                 ],
                 states={
+                    WITHDRAWAL_SELECT_CASH_SOURCE: [
+                        CallbackQueryHandler(shift_wizard.withdrawal_select_cash_source, pattern="^withdrawal_")
+                    ],
                     WITHDRAWAL_ENTER_AMOUNT: [
                         MessageHandler(filters.TEXT & ~filters.COMMAND, shift_wizard.receive_withdrawal_amount)
                     ],
@@ -4324,6 +4430,12 @@ class ClubAssistantBot:
                 ]
             )
             application.add_handler(withdrawal_handler)
+
+            # Register withdrawal revert handler (only for controller)
+            application.add_handler(CallbackQueryHandler(
+                shift_wizard.handle_revert_withdrawal,
+                pattern="^revert_withdrawal_"
+            ))
             
             # Register callback handlers for shift opening (not in conversation)
             application.add_handler(CallbackQueryHandler(shift_wizard.handle_open_club_selection, pattern="^open_"))
@@ -4396,7 +4508,43 @@ class ClubAssistantBot:
             logger.warning(f"⚠️ FinMon Simple module registration failed: {e}")
             import traceback
             traceback.print_exc()
-        
+
+        # Controller panel CallbackQueryHandler
+        try:
+            controller_handler = create_controller_callback_handler()
+            application.add_handler(controller_handler)
+            # Store database path and controller_id in bot_data for controller panel
+            application.bot_data['db_path'] = DB_PATH  # Use the same DB_PATH as the main bot
+            application.bot_data['controller_id'] = self.config.get('controller_id')
+            application.bot_data['owner_id'] = self.owner_id
+            logger.info("✅ Controller panel handler registered")
+        except Exception as e:
+            logger.error(f"❌ Failed to register controller panel handler: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Duty shift handlers
+        try:
+            duty_handlers = create_duty_shift_handlers()
+            for handler in duty_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Duty shift handlers registered")
+        except Exception as e:
+            logger.error(f"❌ Failed to register duty shift handlers: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Maintenance task handlers
+        try:
+            maintenance_handlers = create_maintenance_handlers()
+            for handler in maintenance_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Maintenance task handlers registered")
+        except Exception as e:
+            logger.error(f"❌ Failed to register maintenance task handlers: {e}")
+            import traceback
+            traceback.print_exc()
+
         # Обработчик inline-кнопок (must be AFTER ConversationHandlers and module registrations)
         application.add_handler(CallbackQueryHandler(self.handle_callback))
         
