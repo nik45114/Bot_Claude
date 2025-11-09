@@ -2904,10 +2904,10 @@ class ClubAssistantBot:
             await self.issue_commands.delete_issue(update, context)
             return
 
-        # Controller panel
-        if data == "controller_panel":
-            from modules.controller_panel import show_controller_panel
-            await show_controller_panel(update, context)
+        # Controller panel and archive
+        if data == "controller_panel" or data.startswith("ctrl_"):
+            from modules.controller_panel import handle_controller_callback
+            await handle_controller_callback(update, context)
             return
 
         # Обработчики кнопок смен
