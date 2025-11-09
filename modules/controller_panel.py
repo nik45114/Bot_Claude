@@ -106,8 +106,8 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("🔄 Обновить", callback_data="controller_panel")],
         [InlineKeyboardButton("📋 Текущие чек-листы", callback_data="ctrl_current_checklists")],
         [InlineKeyboardButton("📂 Архив отчётов", callback_data="ctrl_archive")],
-        [InlineKeyboardButton("👁 Чек-лист Глаза", callback_data="ctrl_duty_checklist")],
-        [InlineKeyboardButton("🔍 Проверка клубов", callback_data="ctrl_club_check")],
+        [InlineKeyboardButton("📝 Чек-лист дежурного", callback_data="ctrl_duty_checklist")],
+        [InlineKeyboardButton("👁 Чек-лист Глаза", callback_data="ctrl_club_check")],
         [InlineKeyboardButton("◀️ Назад в главное меню", callback_data="main_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -213,11 +213,11 @@ async def show_current_checklists(update: Update, context: ContextTypes.DEFAULT_
 
 
 async def show_club_check_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать выбор клуба для проверки"""
+    """Показать выбор клуба для чек-листа глаза"""
     query = update.callback_query
     await query.answer()
 
-    text = "🔍 <b>Проверка клубов</b>\n\n"
+    text = "👁 <b>Чек-лист Глаза</b>\n\n"
     text += "Выберите клуб для проверки:"
 
     keyboard = [
@@ -231,18 +231,20 @@ async def show_club_check_select(update: Update, context: ContextTypes.DEFAULT_T
 
 
 async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, club: str):
-    """Показать проверку клуба (чек-лист дежурного для выбранного клуба)"""
+    """Показать проверку клуба (чек-лист дежурного глаза для выбранного клуба)"""
     query = update.callback_query
     await query.answer()
 
-    db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
+    # Используем knowledge.db для чек-листа дежурного
+    knowledge_db_path = '/opt/club_assistant/knowledge.db'
 
     try:
         # Импортируем DutyShiftManager
         from modules.duty_shift_manager import DutyShiftManager
+        db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
         duty_manager = DutyShiftManager(db_path)
 
-        conn = sqlite3.connect(db_path)
+        conn = sqlite3.connect(knowledge_db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
@@ -251,27 +253,34 @@ async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
 
         # Получаем смену дежурного на сегодня
         cursor.execute("""
-            SELECT id, user_id, username, shift_date, started_at, ended_at
+            SELECT id, user_id, username, date, started_at, ended_at
             FROM duty_shifts
-            WHERE shift_date = ?
+            WHERE date = ?
             ORDER BY id DESC
             LIMIT 1
         """, (today,))
         duty_shift = cursor.fetchone()
 
-        text = f"🔍 <b>Проверка клуба {club}</b>\n\n"
+        # Определяем тип смены (утро/вечер)
+        now = datetime.now(MSK)
+        shift_type = 'evening' if now.hour >= 18 else 'morning'
+
+        text = f"👁 <b>Чек-лист Глаза - {club}</b>\n\n"
         text += f"👤 Дежурный: {duty_person}\n"
         text += f"📅 Дата: {today.strftime('%d.%m.%Y')}\n\n"
 
         if duty_shift:
             # Получаем пункты чек-листа для этого клуба
+            # Фильтруем по клубу (NULL или совпадает) и типу смены (NULL или совпадает)
             cursor.execute("""
-                SELECT dci.id, dci.item_name, dci.category, dcp.checked, dcp.notes
+                SELECT dci.id, dci.item_text, dci.category, dcp.checked, dcp.notes
                 FROM duty_checklist_items dci
                 LEFT JOIN duty_checklist_progress dcp ON dci.id = dcp.item_id AND dcp.shift_id = ?
                 WHERE dci.is_active = 1
+                  AND (dci.club IS NULL OR dci.club = ?)
+                  AND (dci.shift_type IS NULL OR dci.shift_type = ?)
                 ORDER BY dci.category, dci.sort_order
-            """, (duty_shift['id'],))
+            """, (duty_shift['id'], club, shift_type))
             all_items = cursor.fetchall()
 
             # Группируем по категориям
@@ -290,7 +299,7 @@ async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
                         status = "✅"
                     else:
                         status = "⚪"
-                    text += f"  {status} {item['item_name']}"
+                    text += f"  {status} {item['item_text']}"
                     if item['notes']:
                         text += f" - <i>{item['notes']}</i>"
                     text += "\n"
