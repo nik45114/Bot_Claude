@@ -106,7 +106,6 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("🔄 Обновить", callback_data="controller_panel")],
         [InlineKeyboardButton("📋 Текущие чек-листы", callback_data="ctrl_current_checklists")],
         [InlineKeyboardButton("📂 Архив отчётов", callback_data="ctrl_archive")],
-        [InlineKeyboardButton("📝 Чек-лист дежурного", callback_data="ctrl_duty_checklist")],
         [InlineKeyboardButton("👁 Чек-лист Глаза", callback_data="ctrl_club_check")],
         [InlineKeyboardButton("◀️ Назад в главное меню", callback_data="main_menu")]
     ]
@@ -629,12 +628,6 @@ async def handle_controller_callback(update: Update, context: ContextTypes.DEFAU
     if data.startswith("ctrl_club_checklist_"):
         club = data.replace("ctrl_club_checklist_", "")
         await show_current_checklists(update, context, club)
-        return
-
-    # Чек-лист дежурного - используем оригинальную функцию из duty_shift_manager
-    if data == "ctrl_duty_checklist":
-        from modules.duty_shift_manager import show_duty_checklist
-        await show_duty_checklist(update, context)
         return
 
     # Чек-лист Глаза
