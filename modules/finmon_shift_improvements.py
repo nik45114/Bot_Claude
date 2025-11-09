@@ -49,10 +49,10 @@ class FinMonShiftImprovements:
             cursor.execute("""
                 SELECT safe_cash_end, box_cash_end
                 FROM finmon_shifts
-                WHERE shift_time = ?
+                WHERE shift_time = ? AND club = ?
                 ORDER BY shift_date DESC, id DESC
                 LIMIT 1
-            """, (shift_type,))
+            """, (shift_type, club))
 
             row = cursor.fetchone()
             conn.close()
@@ -67,6 +67,43 @@ class FinMonShiftImprovements:
         except Exception as e:
             logger.error(f"❌ Error getting previous shift cash: {e}")
             return None
+
+    def get_previous_shift_balances(self, club: str, shift_type: str) -> tuple[float, float]:
+        """
+        Получить остатки сейфа и бокса за предыдущую смену того же типа в том же клубе
+
+        Args:
+            club: Название клуба
+            shift_type: 'morning' или 'evening'
+
+        Returns:
+            Кортеж (safe_cash_end, box_cash_end) или (0, 0) если предыдущей смены нет
+        """
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT safe_cash_end, box_cash_end
+                FROM finmon_shifts
+                WHERE shift_time = ? AND club = ?
+                ORDER BY shift_date DESC, id DESC
+                LIMIT 1
+            """, (shift_type, club))
+
+            row = cursor.fetchone()
+            conn.close()
+
+            if row:
+                safe_end = row[0] or 0
+                box_end = row[1] or 0
+                return (safe_end, box_end)
+
+            return (0, 0)
+
+        except Exception as e:
+            logger.error(f"❌ Error getting previous shift balances: {e}")
+            return (0, 0)
 
     def save_shift_to_db(self, shift_data: Dict[str, Any]) -> Optional[int]:
         """
