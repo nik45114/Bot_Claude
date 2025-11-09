@@ -209,111 +209,6 @@ async def show_current_checklists(update: Update, context: ContextTypes.DEFAULT_
         await query.edit_message_text(f"❌ Ошибка: {e}", parse_mode='HTML')
 
 
-async def show_duty_checklist_club_select(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать выбор клуба для чек-листа дежурного"""
-    query = update.callback_query
-    await query.answer()
-
-    text = "📝 <b>Чек-лист дежурного</b>\n\n"
-    text += "Выберите клуб:"
-
-    keyboard = [
-        [InlineKeyboardButton("🏔 Север", callback_data="ctrl_duty_club_Север")],
-        [InlineKeyboardButton("🌊 Рио", callback_data="ctrl_duty_club_Рио")],
-        [InlineKeyboardButton("◀️ Назад", callback_data="controller_panel")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
-
-
-async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE, club: str):
-    """Показать чек-лист дежурного для выбранного клуба"""
-    query = update.callback_query
-    await query.answer()
-
-    db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
-
-    try:
-        # Импортируем DutyShiftManager для получения текущего дежурного
-        from modules.duty_shift_manager import DutyShiftManager
-        duty_manager = DutyShiftManager(db_path)
-
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-
-        today = datetime.now(MSK).date()
-        duty_person = duty_manager.get_current_duty_person(today)
-
-        # Получаем смену дежурного на сегодня
-        cursor.execute("""
-            SELECT id, user_id, username, shift_date, started_at, ended_at
-            FROM duty_shifts
-            WHERE shift_date = ?
-            ORDER BY id DESC
-            LIMIT 1
-        """, (today,))
-        duty_shift = cursor.fetchone()
-
-        text = f"📝 <b>Чек-лист дежурного - {club}</b>\n\n"
-        text += f"👤 Дежурный: {duty_person}\n"
-        text += f"📅 Дата: {today.strftime('%d.%m.%Y')}\n\n"
-
-        if duty_shift:
-            # Получаем чек-лист дежурного с информацией о пунктах
-            cursor.execute("""
-                SELECT dcp.checked, dcp.notes, dci.item_name, dci.category
-                FROM duty_checklist_progress dcp
-                JOIN duty_checklist_items dci ON dcp.item_id = dci.id
-                WHERE dcp.shift_id = ?
-                ORDER BY dci.category, dci.sort_order
-            """, (duty_shift['id'],))
-            checklist_items = cursor.fetchall()
-
-            if checklist_items:
-                # Группируем по категориям
-                categories = {}
-                for item in checklist_items:
-                    cat = item['category'] or 'Общее'
-                    if cat not in categories:
-                        categories[cat] = []
-                    categories[cat].append(item)
-
-                # Выводим по категориям
-                for category, items in categories.items():
-                    text += f"<b>{category}:</b>\n"
-                    for item in items:
-                        status = "✅" if item['checked'] else "❌"
-                        text += f"  {status} {item['item_name']}"
-                        if item['notes']:
-                            text += f" - <i>{item['notes']}</i>"
-                        text += "\n"
-                    text += "\n"
-
-                # Считаем прогресс
-                total = len(checklist_items)
-                checked = sum(1 for item in checklist_items if item['checked'])
-                percent = int((checked / total) * 100) if total > 0 else 0
-                text += f"<b>Прогресс:</b> {checked}/{total} ({percent}%)\n"
-            else:
-                text += "<i>Чек-лист не начат</i>\n"
-        else:
-            text += "<i>Смена дежурного не открыта</i>\n"
-
-        conn.close()
-
-        keyboard = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data=f"ctrl_duty_club_{club}")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="ctrl_duty_checklist")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
-
-    except Exception as e:
-        logger.error(f"Error in show_duty_checklist: {e}")
-        await query.edit_message_text(f"❌ Ошибка: {e}", parse_mode='HTML')
 
 
 async def show_archive_years(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -633,14 +528,10 @@ async def handle_controller_callback(update: Update, context: ContextTypes.DEFAU
         await show_current_checklists(update, context, club)
         return
 
-    # Чек-лист дежурного
+    # Чек-лист дежурного - используем оригинальную функцию из duty_shift_manager
     if data == "ctrl_duty_checklist":
-        await show_duty_checklist_club_select(update, context)
-        return
-
-    if data.startswith("ctrl_duty_club_"):
-        club = data.replace("ctrl_duty_club_", "")
-        await show_duty_checklist(update, context, club)
+        from modules.duty_shift_manager import show_duty_checklist
+        await show_duty_checklist(update, context)
         return
 
     # Архив отчётов
