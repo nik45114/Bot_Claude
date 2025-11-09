@@ -42,7 +42,7 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
         # Получаем последние закрытые смены (за сегодня)
         today = datetime.now(MSK).date()
         cursor.execute("""
-            SELECT f.shift_id, f.admin_id, f.club, f.shift_type, f.closed_at,
+            SELECT f.id, f.admin_id, f.club, f.shift_type, f.closed_at,
                    f.total_revenue, f.total_expenses, ad.full_name
             FROM finmon_shifts f
             LEFT JOIN admins ad ON f.admin_id = ad.user_id
