@@ -461,48 +461,30 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
     db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
 
     try:
-        import sqlite3
-        conn = sqlite3.connect(db_path)
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
+        # Используем DutyShiftManager для получения графика
+        duty_manager = DutyShiftManager(db_path)
 
-        # Получаем график на неделю вперед
+        # Получаем график на 14 дней вперед (как в примере)
         today = datetime.now(MSK).date()
-        week_dates = [today + timedelta(days=i) for i in range(7)]
+        schedule_dates = [today + timedelta(days=i) for i in range(14)]
 
-        text = "📅 <b>График дежурств на неделю</b>\n\n"
+        text = "📅 <b>График дежурств</b>\n\n"
+        text += f"🗓 Сегодня: {today.strftime('%d.%m.%y')}\n"
 
-        for day_date in week_dates:
-            # Форматируем дату
-            day_name = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"][day_date.weekday()]
-            date_str = day_date.strftime('%d.%m')
+        # Показываем кто дежурит сегодня
+        today_duty = duty_manager.get_current_duty_person(today)
+        text += f"👤 Дежурит: {today_duty}\n\n"
+        text += "━━━━━━━━━━━━━━━━━━━━\n\n"
+
+        for i, day_date in enumerate(schedule_dates):
+            duty_person = duty_manager.get_current_duty_person(day_date)
+            date_str = day_date.strftime('%d.%m.%y')
 
             # Эмодзи для текущего дня
-            day_emoji = "📍" if day_date == today else "📆"
-
-            text += f"{day_emoji} <b>{day_name} {date_str}</b>\n"
-
-            # Получаем дежурных на этот день
-            cursor.execute("""
-                SELECT d.club, d.shift_type, d.admin_name, d.admin_id
-                FROM duty_schedule d
-                WHERE d.date = ?
-                ORDER BY d.club, d.shift_type
-            """, (day_date.isoformat(),))
-
-            duties = cursor.fetchall()
-
-            if duties:
-                for duty in duties:
-                    admin_name = duty['admin_name'] or f"ID:{duty['admin_id']}" if duty['admin_id'] else "Не назначено"
-                    shift_emoji = "☀️" if duty['shift_type'] == 'morning' else "🌙"
-                    text += f"  {shift_emoji} {duty['club']} - {admin_name}\n"
+            if i == 0:
+                text += f"▶️ {date_str} — {duty_person}\n"
             else:
-                text += "  <i>Не назначено</i>\n"
-
-            text += "\n"
-
-        conn.close()
+                text += f"{date_str} — {duty_person}\n"
 
     except Exception as e:
         logger.error(f"Error in show_controller_schedule: {e}")
