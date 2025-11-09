@@ -64,12 +64,12 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
 
         conn.close()
 
-        # Формируем текст
-        text = f"👁 **Панель большого брата**\n\n"
+        # Формируем текст (без Markdown - используем HTML)
+        text = f"👁 <b>Панель большого брата</b>\n\n"
         text += f"📅 {today.strftime('%d.%m.%Y')}\n\n"
 
         # Открытые смены
-        text += f"🟢 **Открытые смены ({len(active_shifts)}):**\n"
+        text += f"🟢 <b>Открытые смены ({len(active_shifts)}):</b>\n"
         if active_shifts:
             for shift in active_shifts:
                 opened_time = datetime.fromisoformat(shift['opened_at']).astimezone(MSK).strftime('%H:%M')
@@ -77,9 +77,9 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
                 shift_emoji = "☀️" if shift['shift_type'] == 'morning' else "🌙"
                 text += f"  {shift_emoji} {shift['club']} - {admin_name} (с {opened_time})\n"
         else:
-            text += "  _Нет открытых смен_\n"
+            text += "  <i>Нет открытых смен</i>\n"
 
-        text += f"\n📊 **Закрытые смены сегодня ({len(closed_shifts)}):**\n"
+        text += f"\n📊 <b>Закрытые смены сегодня ({len(closed_shifts)}):</b>\n"
         if closed_shifts:
             for shift in closed_shifts[:5]:  # Показываем только 5 последних
                 closed_time = datetime.fromisoformat(shift['closed_at']).astimezone(MSK).strftime('%H:%M')
@@ -88,16 +88,16 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
                 revenue = shift['total_revenue'] or 0
                 text += f"  {shift_emoji} {shift['club']} - {admin_name}: {revenue:,.0f}₽ ({closed_time})\n"
         else:
-            text += "  _Нет закрытых смен_\n"
+            text += "  <i>Нет закрытых смен</i>\n"
 
-        text += f"\n📋 **График дежурств на сегодня:**\n"
+        text += f"\n📋 <b>График дежурств на сегодня:</b>\n"
         if duty_schedule:
             for duty in duty_schedule:
                 admin_name = duty['full_name'] or f"ID:{duty['admin_id']}"
                 shift_emoji = "☀️" if duty['shift_type'] == 'morning' else "🌙"
                 text += f"  {shift_emoji} {duty['club']} - {admin_name}\n"
         else:
-            text += "  _График не заполнен_\n"
+            text += "  <i>График не заполнен</i>\n"
 
     except Exception as e:
         logger.error(f"Error in show_controller_panel: {e}")
@@ -111,12 +111,12 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
 
     if query:
         try:
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Error editing message: {e}")
-            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
     else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
 
 async def handle_controller_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):

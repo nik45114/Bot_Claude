@@ -470,7 +470,7 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
         today = datetime.now(MSK).date()
         week_dates = [today + timedelta(days=i) for i in range(7)]
 
-        text = "📅 **График дежурств на неделю**\n\n"
+        text = "📅 <b>График дежурств на неделю</b>\n\n"
 
         for day_date in week_dates:
             # Форматируем дату
@@ -480,7 +480,7 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
             # Эмодзи для текущего дня
             day_emoji = "📍" if day_date == today else "📆"
 
-            text += f"{day_emoji} **{day_name} {date_str}**\n"
+            text += f"{day_emoji} <b>{day_name} {date_str}</b>\n"
 
             # Получаем дежурных на этот день
             cursor.execute("""
@@ -499,7 +499,7 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
                     shift_emoji = "☀️" if duty['shift_type'] == 'morning' else "🌙"
                     text += f"  {shift_emoji} {duty['club']} - {admin_name}\n"
             else:
-                text += "  _Не назначено_\n"
+                text += "  <i>Не назначено</i>\n"
 
             text += "\n"
 
@@ -507,7 +507,7 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
 
     except Exception as e:
         logger.error(f"Error in show_controller_schedule: {e}")
-        text = f"📅 **График дежурств**\n\n❌ Ошибка загрузки данных: {e}"
+        text = f"📅 <b>График дежурств</b>\n\n❌ Ошибка загрузки данных: {e}"
 
     keyboard = [
         [InlineKeyboardButton("🔄 Обновить", callback_data="ctrl_schedule")],
@@ -517,12 +517,12 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
 
     if query:
         try:
-            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
         except Exception as e:
             logger.error(f"Error editing message: {e}")
-            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+            await query.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
     else:
-        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
 
 async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
