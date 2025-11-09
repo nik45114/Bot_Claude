@@ -452,6 +452,30 @@ async def show_duty_shift_menu(update: Update, context: ContextTypes.DEFAULT_TYP
         await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 
+async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать график дежурств контролёра"""
+    query = update.callback_query
+    if query:
+        await query.answer()
+
+    text = """📅 **График дежурств**
+
+Функционал временно недоступен.
+Модуль находится в разработке.
+
+Здесь будет отображаться график дежурств контролёров."""
+
+    keyboard = [
+        [InlineKeyboardButton("◀️ Назад в главное меню", callback_data="main_menu")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    if query:
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        await update.message.reply_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+
 async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Показать выбор клуба для чек-листа дежурного"""
     query = update.callback_query
@@ -693,7 +717,7 @@ def create_duty_shift_handlers():
     # CallbackQueryHandler для остальных действий
     callback_handler = CallbackQueryHandler(
         handle_duty_callbacks,
-        pattern="^duty_"
+        pattern="^(duty_|ctrl_schedule)"
     )
 
     return [handover_conv, callback_handler]
@@ -709,6 +733,9 @@ async def handle_duty_callbacks(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data == "duty_checklist":
         await show_duty_checklist(update, context)
+
+    elif data == "ctrl_schedule":
+        await show_controller_schedule(update, context)
 
     elif data.startswith("duty_club_"):
         await show_duty_checklist_categories(update, context)
