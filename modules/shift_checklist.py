@@ -633,50 +633,153 @@ async def complete_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE)
     responses = checklist_manager.get_responses(shift_id)
 
     issues = [r for r in responses if r['status'] == 'issue']
+
+    # Разделяем на критичные и некритичные проблемы
+    critical_issues = []
+    non_critical_issues = []
+
+    import sqlite3
+    conn = sqlite3.connect(checklist_manager.db_path)
+    conn.row_factory = sqlite3.Row
+    cursor = conn.cursor()
+
+    for issue in issues:
+        # Проверяем, критична ли проблема
+        cursor.execute("""
+            SELECT is_critical FROM shift_checklist_items
+            WHERE id = ?
+        """, (issue['item_id'],))
+        item_info = cursor.fetchone()
+
+        if item_info and item_info['is_critical']:
+            critical_issues.append(issue)
+        else:
+            non_critical_issues.append(issue)
+
+    conn.close()
+
     ok_count = progress['checked_items'] - progress['issues_count']
 
+    # Если есть КРИТИЧНЫЕ проблемы - блокируем приём смены
+    if critical_issues:
+        text = "⚠️ *Чек-лист НЕ завершён!*\n\n"
+        text += "❌ Обнаружены КРИТИЧНЫЕ проблемы, которые необходимо устранить перед приёмом смены:\n\n"
+
+        for issue in critical_issues:
+            emoji = CATEGORY_EMOJI.get(issue['category'], '📋')
+            text += f"{emoji} {issue['item_name']}\n"
+            if issue['notes']:
+                text += f"  _{issue['notes']}_\n"
+
+        text += "\n❗ Устраните проблемы и пройдите чек-лист заново."
+
+        keyboard = [[InlineKeyboardButton("🔄 Начать заново", callback_data="start_checklist")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        if update.callback_query:
+            await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+
+        return ConversationHandler.END
+
+    # Если критичных нет, но есть некритичные - смена принята, но отправляем уведомление
     text = "🎉 *Чек-лист приема смены завершен!*\n\n"
     text += f"📊 *Итоги проверки:*\n"
     text += f"✅ ОК: {ok_count}\n"
     text += f"⚠️ Проблемы: {progress['issues_count']}\n"
     text += f"📝 Всего проверено: {progress['checked_items']}/{progress['total_items']}\n\n"
 
-    if issues:
-        text += "*Обнаруженные проблемы:*\n"
-        for issue in issues:
+    if non_critical_issues:
+        text += "⚠️ *Обнаружены некритичные замечания:*\n"
+        for issue in non_critical_issues:
             emoji = CATEGORY_EMOJI.get(issue['category'], '📋')
             text += f"{emoji} {issue['item_name']}\n"
             if issue['notes']:
                 text += f"  _{issue['notes']}_\n"
-        text += "\n"
+        text += "\n✅ Смена успешно принята!\n"
+        text += "📢 Контролёр будет уведомлён о замечаниях.\n"
 
-    # Кнопки
-    keyboard = []
-    if issues:
-        # Сохраняем данные для отправки проблем
-        context.user_data['checklist_completed_shift_id'] = shift_id
-        context.user_data['checklist_completed_issues'] = issues
-
-        keyboard.append([InlineKeyboardButton("📢 Сообщить проверяющему", callback_data="checklist_notify_controller")])
-        text += "Вы можете сообщить о проблемах дежурному контролеру."
+        # Автоматически отправляем уведомление контролёру
+        await send_notification_to_controller(context, shift_id, non_critical_issues, checklist_manager.db_path)
     else:
-        text += "Смена успешно принята! Можно приступать к работе."
-
-    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+        text += "✅ Смена успешно принята! Все пункты в порядке, можно приступать к работе."
 
     if update.callback_query:
-        await update.callback_query.edit_message_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await update.callback_query.edit_message_text(text, parse_mode='Markdown')
     else:
-        await update.message.reply_text(text, parse_mode='Markdown', reply_markup=reply_markup)
+        await update.message.reply_text(text, parse_mode='Markdown')
 
-    # Не очищаем user_data сразу, если есть кнопка уведомления
-    if not issues:
-        keys_to_remove = [k for k in context.user_data.keys() if k.startswith('checklist_')]
-        for key in keys_to_remove:
-            del context.user_data[key]
-        return ConversationHandler.END
+    # Очищаем user_data
+    keys_to_remove = [k for k in context.user_data.keys() if k.startswith('checklist_')]
+    for key in keys_to_remove:
+        del context.user_data[key]
 
     return ConversationHandler.END
+
+
+async def send_notification_to_controller(context: ContextTypes.DEFAULT_TYPE, shift_id: int, issues: list, db_path: str):
+    """Отправить автоматическое уведомление контролёру о некритичных проблемах"""
+    try:
+        import sqlite3
+        from datetime import datetime
+
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Получаем информацию о смене
+        cursor.execute("""
+            SELECT a.club, a.shift_type, ad.full_name, ad.user_id
+            FROM active_shifts a
+            LEFT JOIN admins ad ON a.admin_id = ad.user_id
+            WHERE a.id = ?
+        """, (shift_id,))
+        shift_info = cursor.fetchone()
+
+        conn.close()
+
+        if not shift_info:
+            logger.error(f"Shift {shift_id} not found for controller notification")
+            return
+
+        # Получаем ID контролёра из bot_data
+        controller_id = context.bot_data.get('controller_id')
+
+        if not controller_id:
+            logger.warning("Controller ID not configured, skipping notification")
+            return
+
+        # Формируем сообщение
+        admin_name = shift_info['full_name'] or f"ID:{shift_info['user_id']}"
+        shift_emoji = "☀️" if shift_info['shift_type'] == 'morning' else "🌙"
+        now = datetime.now().strftime('%d.%m.%Y %H:%M')
+
+        text = f"⚠️ <b>Некритичные замечания по приёму смены</b>\n\n"
+        text += f"📅 {now}\n"
+        text += f"{shift_emoji} {shift_info['club']} - {shift_info['shift_type']}\n"
+        text += f"👤 Администратор: {admin_name}\n\n"
+        text += f"<b>Замечания:</b>\n"
+
+        for issue in issues:
+            emoji = CATEGORY_EMOJI.get(issue.get('category', ''), '📋')
+            text += f"{emoji} {issue['item_name']}\n"
+            if issue.get('notes'):
+                text += f"  <i>{issue['notes']}</i>\n"
+
+        text += "\n💡 Данные замечания не блокируют работу, но требуют внимания."
+
+        # Отправляем уведомление контролёру
+        await context.bot.send_message(
+            chat_id=controller_id,
+            text=text,
+            parse_mode='HTML'
+        )
+
+        logger.info(f"Sent non-critical issues notification to controller for shift {shift_id}")
+
+    except Exception as e:
+        logger.error(f"Error sending notification to controller: {e}")
 
 
 async def cancel_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
