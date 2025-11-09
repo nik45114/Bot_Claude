@@ -75,7 +75,7 @@ try:
     )
     # Shift checklist and controller panel
     from modules.shift_checklist import create_checklist_conversation_handler, ShiftChecklistManager
-    from modules.controller_panel import create_controller_callback_handler, show_controller_panel
+    # controller_panel импортируется локально в handle_callback при необходимости
     # Duty shift manager
     from modules.duty_shift_manager import create_duty_shift_handlers, show_duty_shift_menu
     # Maintenance tasks
@@ -2904,6 +2904,12 @@ class ClubAssistantBot:
             await self.issue_commands.delete_issue(update, context)
             return
 
+        # Controller panel
+        if data == "controller_panel":
+            from modules.controller_panel import show_controller_panel
+            await show_controller_panel(update, context)
+            return
+
         # Обработчики кнопок смен
         if data == "shift_open":
             # Открыть смену - делегируем в finmon wizard
@@ -4509,19 +4515,12 @@ class ClubAssistantBot:
             import traceback
             traceback.print_exc()
 
-        # Controller panel CallbackQueryHandler
-        try:
-            controller_handler = create_controller_callback_handler()
-            application.add_handler(controller_handler)
-            # Store database path and controller_id in bot_data for controller panel
-            application.bot_data['db_path'] = DB_PATH  # Use the same DB_PATH as the main bot
-            application.bot_data['controller_id'] = self.config.get('controller_id')
-            application.bot_data['owner_id'] = self.owner_id
-            logger.info("✅ Controller panel handler registered")
-        except Exception as e:
-            logger.error(f"❌ Failed to register controller panel handler: {e}")
-            import traceback
-            traceback.print_exc()
+        # Controller panel - обрабатывается в главном handle_callback
+        # Store database path and controller_id in bot_data for controller panel
+        application.bot_data['db_path'] = DB_PATH  # Use the same DB_PATH as the main bot
+        application.bot_data['controller_id'] = self.config.get('controller_id')
+        application.bot_data['owner_id'] = self.owner_id
+        logger.info("✅ Controller panel data stored in bot_data")
 
         # Duty shift handlers
         try:
