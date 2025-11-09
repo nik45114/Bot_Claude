@@ -54,10 +54,9 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Получаем график дежурств на сегодня
         cursor.execute("""
-            SELECT d.admin_id, d.club, d.shift_type, ad.full_name
+            SELECT d.admin_id, d.club, d.shift_type, d.admin_name
             FROM duty_schedule d
-            LEFT JOIN admins ad ON d.admin_id = ad.user_id
-            WHERE d.duty_date = ?
+            WHERE d.date = ?
             ORDER BY d.club, d.shift_type
         """, (today.isoformat(),))
         duty_schedule = cursor.fetchall()
@@ -93,7 +92,7 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
         text += f"\n📋 <b>График дежурств на сегодня:</b>\n"
         if duty_schedule:
             for duty in duty_schedule:
-                admin_name = duty['full_name'] or f"ID:{duty['admin_id']}"
+                admin_name = duty['admin_name'] or f"ID:{duty['admin_id']}" if duty['admin_id'] else "Не назначено"
                 shift_emoji = "☀️" if duty['shift_type'] == 'morning' else "🌙"
                 text += f"  {shift_emoji} {duty['club']} - {admin_name}\n"
         else:
