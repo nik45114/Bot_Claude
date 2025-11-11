@@ -106,7 +106,12 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
         [InlineKeyboardButton("🔄 Обновить", callback_data="controller_panel")],
         [InlineKeyboardButton("📋 Текущие чек-листы", callback_data="ctrl_current_checklists")],
         [InlineKeyboardButton("📂 Архив отчётов", callback_data="ctrl_archive")],
+        [
+            InlineKeyboardButton("🧹 Отзывы уборщицы", callback_data="reviews_all"),
+            InlineKeyboardButton("⭐️ Рейтинги уборки", callback_data="ctrl_cleaning_ratings")
+        ],
         [InlineKeyboardButton("👁 Чек-лист Глаза", callback_data="ctrl_club_check")],
+        [InlineKeyboardButton("🔧 Статистика обслуживания", callback_data="ctrl_maint_stats")],
         [InlineKeyboardButton("◀️ Назад в главное меню", callback_data="main_menu")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -236,8 +241,8 @@ async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
 
     try:
         from modules.duty_shift_manager import DutyShiftManager
-        db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
-        duty_manager = DutyShiftManager(db_path)
+        # Используем knowledge.db для duty shifts
+        duty_manager = DutyShiftManager(knowledge_db_path)
 
         conn = sqlite3.connect(knowledge_db_path)
         conn.row_factory = sqlite3.Row
@@ -246,34 +251,41 @@ async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
         today = datetime.now(MSK).date()
         duty_person = duty_manager.get_current_duty_person(today)
 
+        # Автоматически создаём смену если её нет (или получаем существующую)
+        shift_id = duty_manager.get_or_create_shift(
+            shift_date=today,
+            user_id=query.from_user.id,
+            username=query.from_user.username or query.from_user.full_name
+        )
+
         cursor.execute("""
             SELECT id, user_id, username, shift_date, started_at, ended_at
             FROM duty_shifts
-            WHERE shift_date = ?
-            ORDER BY id DESC
-            LIMIT 1
-        """, (today,))
+            WHERE id = ?
+        """, (shift_id,))
         duty_shift = cursor.fetchone()
-
-        now = datetime.now(MSK)
-        shift_type = 'evening' if now.hour >= 18 else 'morning'
 
         text = f"👁 <b>Чек-лист Глаза - {club}</b>\n\n"
         text += f"👤 Дежурный: {duty_person}\n"
         text += f"📅 Дата: {today.strftime('%d.%m.%Y')}\n\n"
 
-        if duty_shift:
-            cursor.execute("""
-                SELECT dci.id, dci.item_text, dci.category, dcp.checked, dcp.notes
-                FROM duty_checklist_items dci
-                LEFT JOIN duty_checklist_progress dcp ON dci.id = dcp.item_id AND dcp.shift_id = ?
-                WHERE dci.is_active = 1
-                  AND (dci.club IS NULL OR dci.club = ?)
-                  AND (dci.shift_type IS NULL OR dci.shift_type = ?)
-                ORDER BY dci.category, dci.sort_order
-            """, (duty_shift['id'], club, shift_type))
-            all_items = cursor.fetchall()
+        keyboard = []
 
+        # Получаем все пункты чек-листа для клуба
+        cursor.execute("""
+            SELECT dci.id, dci.item_text, dci.category, dcp.checked, dcp.notes
+            FROM duty_checklist_items dci
+            LEFT JOIN duty_checklist_progress dcp
+                ON dci.id = dcp.item_id
+                AND dcp.shift_id = ?
+                AND dcp.club = ?
+            WHERE dci.is_active = 1
+              AND (dci.club IS NULL OR dci.club = ?)
+            ORDER BY dci.category, dci.sort_order
+        """, (duty_shift['id'], club, club))
+        all_items = cursor.fetchall()
+
+        if all_items:
             categories = {}
             for item in all_items:
                 cat = item['category'] or 'Общее'
@@ -289,6 +301,13 @@ async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
                     if item['notes']:
                         text += f" - <i>{item['notes']}</i>"
                     text += "\n"
+
+                    # Добавляем кнопку для каждого пункта
+                    button_text = f"{'✅' if item['checked'] else '⚪'} {item['item_text'][:30]}"
+                    keyboard.append([InlineKeyboardButton(
+                        button_text,
+                        callback_data=f"ctrl_toggle_{duty_shift['id']}_{item['id']}_{club}"
+                    )])
                 text += "\n"
 
             total = len(all_items)
@@ -296,21 +315,319 @@ async def show_club_check(update: Update, context: ContextTypes.DEFAULT_TYPE, cl
             percent = int((checked / total) * 100) if total > 0 else 0
             text += f"<b>Прогресс:</b> {checked}/{total} ({percent}%)\n"
         else:
-            text += "<i>Смена дежурного не открыта</i>\n"
+            text += "<i>⚠️ Нет пунктов чек-листа для этого клуба</i>\n"
 
         conn.close()
 
-        keyboard = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data=f"ctrl_check_{club}")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="ctrl_club_check")]
-        ]
+        keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"ctrl_check_{club}")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="ctrl_club_check")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        except Exception as edit_error:
+            # Если сообщение не изменилось - просто игнорируем ошибку
+            if "message is not modified" not in str(edit_error).lower():
+                raise
 
     except Exception as e:
         logger.error(f"Error in show_club_check: {e}")
-        await query.edit_message_text(f"❌ Ошибка: {e}", parse_mode='HTML')
+        try:
+            await query.edit_message_text(f"❌ Ошибка: {e}", parse_mode='HTML')
+        except:
+            await query.message.reply_text(f"❌ Ошибка: {e}", parse_mode='HTML')
+
+
+async def toggle_club_check_item(update: Update, context: ContextTypes.DEFAULT_TYPE, shift_id: int, item_id: int, club: str):
+    """Переключить статус пункта чек-листа глаза"""
+    query = update.callback_query
+    await query.answer()
+
+    knowledge_db_path = '/opt/club_assistant/knowledge.db'
+
+    try:
+        conn = sqlite3.connect(knowledge_db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Проверяем текущий статус для конкретного клуба
+        cursor.execute("""
+            SELECT checked FROM duty_checklist_progress
+            WHERE shift_id = ? AND item_id = ? AND club = ?
+        """, (shift_id, item_id, club))
+        result = cursor.fetchone()
+
+        if result:
+            # Переключаем статус
+            new_status = 0 if result['checked'] else 1
+            cursor.execute("""
+                UPDATE duty_checklist_progress
+                SET checked = ?
+                WHERE shift_id = ? AND item_id = ? AND club = ?
+            """, (new_status, shift_id, item_id, club))
+        else:
+            # Создаём новую запись с checked=1
+            cursor.execute("""
+                INSERT INTO duty_checklist_progress (shift_id, item_id, club, checked)
+                VALUES (?, ?, ?, 1)
+            """, (shift_id, item_id, club))
+
+        conn.commit()
+        conn.close()
+
+        # Обновляем отображение чек-листа
+        await show_club_check(update, context, club)
+
+    except Exception as e:
+        logger.error(f"Error in toggle_club_check_item: {e}")
+        await query.answer(f"❌ Ошибка: {e}", show_alert=True)
+
+
+async def show_controller_maint_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать статистику обслуживания для контролёра"""
+    query = update.callback_query
+    await query.answer()
+
+    knowledge_db = '/opt/club_assistant/knowledge.db'
+
+    try:
+        conn = sqlite3.connect(knowledge_db)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Получаем статистику по каждому админу (только активные типы задач)
+        cursor.execute("""
+            SELECT
+                mt.admin_id,
+                a.full_name,
+                COUNT(*) as total_tasks,
+                SUM(CASE WHEN mt.status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN mt.status = 'pending' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN mt.status = 'overdue' THEN 1 ELSE 0 END) as overdue
+            FROM maintenance_tasks mt
+            LEFT JOIN admins a ON mt.admin_id = a.user_id
+            LEFT JOIN maintenance_task_types mtt ON mt.task_type_id = mtt.id
+            WHERE mt.assigned_date >= date('now', '-30 days')
+              AND (mtt.is_active = 1 OR mtt.is_active IS NULL)
+            GROUP BY mt.admin_id, a.full_name
+            ORDER BY completed DESC, total_tasks DESC
+        """)
+        admin_stats = cursor.fetchall()
+
+        # Общая статистика (только активные типы задач)
+        cursor.execute("""
+            SELECT
+                COUNT(*) as total_tasks,
+                SUM(CASE WHEN mt.status = 'completed' THEN 1 ELSE 0 END) as completed,
+                SUM(CASE WHEN mt.status = 'pending' THEN 1 ELSE 0 END) as pending,
+                SUM(CASE WHEN mt.status = 'overdue' THEN 1 ELSE 0 END) as overdue
+            FROM maintenance_tasks mt
+            LEFT JOIN maintenance_task_types mtt ON mt.task_type_id = mtt.id
+            WHERE mt.assigned_date >= date('now', '-30 days')
+              AND (mtt.is_active = 1 OR mtt.is_active IS NULL)
+        """)
+        total_stats = cursor.fetchone()
+
+        conn.close()
+
+        text = "🔧 <b>Статистика обслуживания оборудования</b>\n"
+        text += "<i>За последние 30 дней</i>\n\n"
+
+        # Общая статистика
+        if total_stats and total_stats['total_tasks'] > 0:
+            total = total_stats['total_tasks']
+            completed = total_stats['completed'] or 0
+            pending = total_stats['pending'] or 0
+            overdue = total_stats['overdue'] or 0
+            percent = int((completed / total) * 100) if total > 0 else 0
+
+            # Визуальный прогресс-бар
+            progress_bar = "🟢" * (percent // 10) + "⚪" * (10 - percent // 10)
+
+            text += f"<b>📈 Общее выполнение:</b>\n"
+            text += f"{progress_bar}\n"
+            text += f"✅ Выполнено: {completed}/{total} ({percent}%)\n"
+            text += f"📋 В работе: {pending}\n"
+            if overdue > 0:
+                text += f"⚠️ Просрочено: {overdue}\n"
+            text += "\n"
+
+        # Статистика по админам
+        if admin_stats:
+            text += "<b>👥 По администраторам:</b>\n\n"
+            for stat in admin_stats:
+                admin_name = stat['full_name'] or f"ID:{stat['admin_id']}"
+                total = stat['total_tasks']
+                completed = stat['completed'] or 0
+                pending = stat['pending'] or 0
+                overdue = stat['overdue'] or 0
+                percent = int((completed / total) * 100) if total > 0 else 0
+
+                # Индикатор прогресса
+                if percent >= 80:
+                    emoji = "🟢"
+                elif percent >= 50:
+                    emoji = "🟡"
+                elif percent >= 20:
+                    emoji = "🟠"
+                else:
+                    emoji = "🔴"
+
+                text += f"{emoji} <b>{admin_name}</b>: {completed}/{total} ({percent}%)\n"
+                if overdue > 0:
+                    text += f"   ⚠️ Просрочено: {overdue}\n"
+        else:
+            text += "<i>Нет данных за последние 30 дней</i>\n"
+
+        keyboard = []
+
+        # Кнопки для выбора конкретного админа
+        if admin_stats:
+            for stat in admin_stats[:5]:  # Показываем до 5 админов в кнопках
+                admin_name = stat['full_name'] or f"ID:{stat['admin_id']}"
+                keyboard.append([InlineKeyboardButton(
+                    f"👤 {admin_name}",
+                    callback_data=f"ctrl_maint_admin_{stat['admin_id']}"
+                )])
+
+        keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="ctrl_maint_stats")])
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="controller_panel")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        except Exception as edit_error:
+            # Если сообщение не изменилось - игнорируем ошибку
+            if "message is not modified" not in str(edit_error).lower():
+                raise
+
+    except Exception as e:
+        logger.error(f"Error in show_controller_maint_stats: {e}")
+        try:
+            await query.edit_message_text(f"❌ Ошибка загрузки статистики: {e}", parse_mode='HTML')
+        except:
+            await query.answer(f"❌ Ошибка: {e}", show_alert=True)
+
+
+async def show_admin_maint_details(update: Update, context: ContextTypes.DEFAULT_TYPE, admin_id: int):
+    """Показать детальную статистику по задачам конкретного админа"""
+    query = update.callback_query
+    await query.answer()
+
+    knowledge_db = '/opt/club_assistant/knowledge.db'
+
+    try:
+        conn = sqlite3.connect(knowledge_db)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Получаем информацию об админе
+        cursor.execute("SELECT full_name FROM admins WHERE user_id = ?", (admin_id,))
+        admin_info = cursor.fetchone()
+        admin_name = admin_info['full_name'] if admin_info else f"ID:{admin_id}"
+
+        # Получаем задачи админа
+        cursor.execute("""
+            SELECT
+                mt.id,
+                mt.status,
+                mt.assigned_date,
+                mt.due_date,
+                mt.completed_date,
+                mt.club,
+                mtt.task_name,
+                ei.inventory_number,
+                ei.pc_number
+            FROM maintenance_tasks mt
+            LEFT JOIN maintenance_task_types mtt ON mt.task_type_id = mtt.id
+            LEFT JOIN equipment_inventory ei ON mt.equipment_id = ei.id
+            WHERE mt.admin_id = ?
+              AND mt.assigned_date >= date('now', '-30 days')
+            ORDER BY
+                CASE mt.status
+                    WHEN 'overdue' THEN 1
+                    WHEN 'pending' THEN 2
+                    WHEN 'completed' THEN 3
+                END,
+                mt.due_date ASC
+        """, (admin_id,))
+        tasks = cursor.fetchall()
+
+        # Статистика
+        total = len(tasks)
+        completed = sum(1 for t in tasks if t['status'] == 'completed')
+        pending = sum(1 for t in tasks if t['status'] == 'pending')
+        overdue = sum(1 for t in tasks if t['status'] == 'overdue')
+        percent = int((completed / total) * 100) if total > 0 else 0
+
+        conn.close()
+
+        text = f"🔧 <b>Задачи обслуживания</b>\n"
+        text += f"👤 <b>{admin_name}</b>\n\n"
+
+        # Общая статистика
+        progress_bar = "🟢" * (percent // 10) + "⚪" * (10 - percent // 10)
+        text += f"<b>Прогресс:</b>\n{progress_bar}\n"
+        text += f"✅ Выполнено: {completed}/{total} ({percent}%)\n"
+        text += f"📋 В работе: {pending}\n"
+        if overdue > 0:
+            text += f"⚠️ Просрочено: {overdue}\n"
+        text += "\n"
+
+        # Просроченные задачи
+        if overdue > 0:
+            text += "<b>⚠️ Просроченные задачи:</b>\n"
+            overdue_tasks = [t for t in tasks if t['status'] == 'overdue']
+            for task in overdue_tasks[:5]:
+                club_emoji = "🏔" if task['club'] == 'Север' else "🌊"
+                text += f"{club_emoji} {task['task_name']}\n"
+                text += f"   {task['inventory_number']} (ПК №{task['pc_number']})\n"
+                text += f"   Срок: {task['due_date']}\n"
+            text += "\n"
+
+        # Активные задачи
+        if pending > 0:
+            text += "<b>📋 Активные задачи:</b>\n"
+            pending_tasks = [t for t in tasks if t['status'] == 'pending']
+            for task in pending_tasks[:5]:
+                club_emoji = "🏔" if task['club'] == 'Север' else "🌊"
+                text += f"{club_emoji} {task['task_name']}\n"
+                text += f"   {task['inventory_number']} (ПК №{task['pc_number']})\n"
+                text += f"   До: {task['due_date']}\n"
+            if len(pending_tasks) > 5:
+                text += f"   <i>...и ещё {len(pending_tasks) - 5}</i>\n"
+            text += "\n"
+
+        # Последние выполненные
+        if completed > 0:
+            text += "<b>✅ Последние выполненные:</b>\n"
+            completed_tasks = [t for t in tasks if t['status'] == 'completed']
+            for task in completed_tasks[:3]:
+                club_emoji = "🏔" if task['club'] == 'Север' else "🌊"
+                text += f"{club_emoji} {task['task_name']}\n"
+                text += f"   {task['inventory_number']} (ПК №{task['pc_number']})\n"
+                if task['completed_date']:
+                    from datetime import datetime
+                    completed_date = datetime.fromisoformat(task['completed_date'].replace('+03:00', '')).strftime('%d.%m')
+                    text += f"   Выполнено: {completed_date}\n"
+            if len(completed_tasks) > 3:
+                text += f"   <i>...и ещё {len(completed_tasks) - 3}</i>\n"
+
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить", callback_data=f"ctrl_maint_admin_{admin_id}")],
+            [InlineKeyboardButton("◀️ К общей статистике", callback_data="ctrl_maint_stats")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        try:
+            await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+        except Exception as edit_error:
+            if "message is not modified" not in str(edit_error).lower():
+                raise
+
+    except Exception as e:
+        logger.error(f"Error in show_admin_maint_details: {e}")
+        await query.answer(f"❌ Ошибка: {e}", show_alert=True)
 
 
 async def show_archive_years(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -611,6 +928,69 @@ async def show_shift_report(update: Update, context: ContextTypes.DEFAULT_TYPE, 
         await query.edit_message_text(f"❌ Ошибка загрузки отчёта: {e}", parse_mode='HTML')
 
 
+async def show_cleaning_ratings_stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Показать статистику рейтингов уборки для контролёра"""
+    query = update.callback_query
+    await query.answer()
+
+    db_path = context.bot_data.get('db_path', '/opt/club_assistant/club_assistant.db')
+
+    try:
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Последние 15 оценок
+        cursor.execute("""
+            SELECT
+                scr.*,
+                a1.full_name as rater_name,
+                a2.full_name as previous_name
+            FROM shift_cleaning_rating scr
+            LEFT JOIN admins a1 ON scr.rated_by_admin_id = a1.user_id
+            LEFT JOIN admins a2 ON scr.previous_admin_id = a2.user_id
+            WHERE scr.bar_cleaned IS NOT NULL AND scr.hall_cleaned IS NOT NULL
+            ORDER BY scr.rated_at DESC
+            LIMIT 15
+        """)
+
+        recent_ratings = cursor.fetchall()
+
+        conn.close()
+
+        text = "⭐️ <b>Рейтинги уборки админов</b>\n\n"
+        text += "📋 <b>Последние 15 оценок:</b>\n"
+
+        if recent_ratings:
+            for rating in recent_ratings:
+                rater = rating['rater_name'] or f"ID:{rating['rated_by_admin_id']}"
+                previous = rating['previous_name'] or f"ID:{rating['previous_admin_id']}" if rating['previous_admin_id'] else "Н/Д"
+                bar_emoji = "✅" if rating['bar_cleaned'] else "❌"
+                hall_emoji = "✅" if rating['hall_cleaned'] else "❌"
+                date = datetime.fromisoformat(rating['rated_at']).astimezone(MSK).strftime('%d.%m %H:%M')
+
+                text += f"\n{date} - {rating['club'].upper()}\n"
+                text += f"  Оценил: {rater}\n"
+                text += f"  Предыдущий: {previous}\n"
+                text += f"  Бар: {bar_emoji} | Зал: {hall_emoji}\n"
+
+                if rating['notes']:
+                    text += f"  📝 {rating['notes'][:50]}...\n" if len(rating['notes']) > 50 else f"  📝 {rating['notes']}\n"
+        else:
+            text += "<i>Нет оценок</i>\n"
+
+    except Exception as e:
+        logger.error(f"Error in show_cleaning_ratings_stats: {e}")
+        text = f"⭐️ <b>Рейтинги уборки</b>\n\n❌ Ошибка: {e}"
+
+    keyboard = [
+        [InlineKeyboardButton("◀️ Назад", callback_data="controller_panel")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+
 async def handle_controller_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback для панели контролёра"""
     query = update.callback_query
@@ -635,9 +1015,33 @@ async def handle_controller_callback(update: Update, context: ContextTypes.DEFAU
         await show_club_check_select(update, context)
         return
 
+    if data.startswith("ctrl_toggle_"):
+        # Формат: ctrl_toggle_{shift_id}_{item_id}_{club}
+        parts = data.replace("ctrl_toggle_", "").split("_")
+        shift_id = int(parts[0])
+        item_id = int(parts[1])
+        club = "_".join(parts[2:])  # На случай если в названии клуба есть _
+        await toggle_club_check_item(update, context, shift_id, item_id, club)
+        return
+
     if data.startswith("ctrl_check_"):
         club = data.replace("ctrl_check_", "")
         await show_club_check(update, context, club)
+        return
+
+    # Рейтинги уборки
+    if data == "ctrl_cleaning_ratings":
+        await show_cleaning_ratings_stats(update, context)
+        return
+
+    # Статистика обслуживания
+    if data == "ctrl_maint_stats":
+        await show_controller_maint_stats(update, context)
+        return
+
+    if data.startswith("ctrl_maint_admin_"):
+        admin_id = int(data.replace("ctrl_maint_admin_", ""))
+        await show_admin_maint_details(update, context, admin_id)
         return
 
     # Архив отчётов
@@ -677,5 +1081,5 @@ def create_controller_callback_handler():
     """Создать обработчик для callback кнопок контролёра"""
     return CallbackQueryHandler(
         handle_controller_callback,
-        pattern="^(controller_panel|ctrl_archive|ctrl_year_|ctrl_month_|ctrl_day_|ctrl_shift_)"
+        pattern="^(controller_panel|ctrl_current_checklists|ctrl_club_checklist_|ctrl_club_check|ctrl_check_|ctrl_toggle_|ctrl_cleaning_ratings|ctrl_maint_stats|ctrl_maint_admin_|ctrl_archive|ctrl_year_|ctrl_month_|ctrl_day_|ctrl_shift_)"
     )

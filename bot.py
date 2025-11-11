@@ -76,6 +76,12 @@ try:
     # Shift checklist and controller panel
     from modules.shift_checklist import create_checklist_conversation_handler, ShiftChecklistManager
     # controller_panel импортируется локально в handle_callback при необходимости
+    # New shift checklists (cleaning rating, cleaning service reviews, inventory)
+    from modules.shift_cleaning_rating import create_cleaning_rating_handlers
+    from modules.cleaning_service_reviews import create_cleaning_review_handlers
+    from modules.shift_inventory_checklist import create_inventory_handlers
+    # Shift reminders system
+    from modules.shift_reminders import setup_reminder_jobs
     # Duty shift manager
     from modules.duty_shift_manager import create_duty_shift_handlers, show_duty_shift_menu
     # Maintenance tasks
@@ -880,7 +886,14 @@ class ClubAssistantBot:
             "Используйте кнопки выше для навигации ⬆️",
             reply_markup=ReplyKeyboardRemove()
         )
-    
+
+    async def cmd_cancel_general(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Общая команда /cancel для отмены любых действий"""
+        await update.message.reply_text(
+            "❌ Действие отменено. Клавиатура очищена.",
+            reply_markup=ReplyKeyboardRemove()
+        )
+
     async def cmd_help(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = f"""📖 Справка - Club Assistant Bot v{VERSION}
 
@@ -1992,7 +2005,31 @@ class ClubAssistantBot:
 
         # Проверка активной смены для админов
         active_shift = None
-        if self.admin_manager.is_admin(user_id) and not is_controller:
+
+        # Проверяем, является ли пользователь клубным аккаунтом
+        club_accounts = self.config.get('club_accounts', {})
+        is_club_account = user_id in club_accounts.values()
+
+        # Проверяем, есть ли у админа полное ФИО (для доступа к меню Смены)
+        has_full_name = False
+
+        # Владелец - показываем только панель владельца, без кнопок обычного админа
+        if user_id == self.owner_id:
+            # Панель владельца с полным функционалом
+            keyboard.append([InlineKeyboardButton("👑 Панель владельца", callback_data="owner_panel")])
+            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
+            keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
+            keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
+
+        # Обычные админы (НЕ владелец и НЕ контролёр)
+        elif self.admin_manager.is_admin(user_id) and not is_controller:
+            try:
+                admin_info = self.admin_db.get_admin(user_id) if hasattr(self, 'admin_db') and self.admin_db else None
+                if admin_info and admin_info.get('full_name'):
+                    has_full_name = True
+            except Exception as e:
+                logger.error(f"Error checking admin full_name: {e}")
+
             # Проверка активной смены для админов (но не для контролера)
             if hasattr(self, 'shift_manager') and self.shift_manager:
                 try:
@@ -2000,52 +2037,32 @@ class ClubAssistantBot:
                 except Exception as e:
                     logger.error(f"❌ Failed to get active shift for {user_id}: {e}")
 
-            # Кнопки смены
-            if active_shift:
-                # Есть открытая смена
-                keyboard.append([
-                    InlineKeyboardButton("💸 Списать с кассы", callback_data="shift_expense"),
-                    InlineKeyboardButton("💰 Взять зарплату", callback_data="shift_salary")
-                ])
-                keyboard.append([InlineKeyboardButton("🔒 Закрыть смену", callback_data="shift_close")])
-            else:
-                # Нет открытой смены
-                keyboard.append([InlineKeyboardButton("🔓 Открыть смену", callback_data="shift_open")])
+            # Кнопки смены - ТОЛЬКО для клубных аккаунтов
+            if is_club_account:
+                if active_shift:
+                    # Есть открытая смена
+                    keyboard.append([
+                        InlineKeyboardButton("💸 Списать с кассы", callback_data="shift_expense"),
+                        InlineKeyboardButton("💰 Взять зарплату", callback_data="shift_salary")
+                    ])
+                    keyboard.append([InlineKeyboardButton("🔒 Закрыть смену", callback_data="shift_close")])
+                else:
+                    # Нет открытой смены
+                    keyboard.append([InlineKeyboardButton("🔓 Открыть смену", callback_data="shift_open")])
 
-            # Кнопки доступные всем админам
-            keyboard.append([InlineKeyboardButton("📅 Смены", callback_data="shifts_menu")])
+            # Кнопка "Смены" - ТОЛЬКО для админов с полным ФИО
+            if has_full_name:
+                keyboard.append([InlineKeyboardButton("📅 Смены", callback_data="shifts_menu")])
+
+            # Кнопки доступные всем обычным админам
             keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
             keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
             keyboard.append([InlineKeyboardButton("🔧 Задачи обслуживания", callback_data="maintenance_tasks")])
-
-        # Админ панель, управление админами и аналитика только для владельца
-        if user_id == self.owner_id:
-            keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
-            keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
-            keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
-
-            # WebApp кнопка для финансовой аналитики
-            from telegram import WebAppInfo
-            webapp_url = "https://tmbclz.ru/"
-            keyboard.append([InlineKeyboardButton("📊 Аналитика (графики)", web_app=WebAppInfo(url=webapp_url))])
 
         # Панель большого брата (для контролера)
         controller_id = self.config.get('controller_id')
         if controller_id and user_id == controller_id:
             keyboard.append([InlineKeyboardButton("👁 Панель большого брата", callback_data="controller_panel")])
-
-        # График дежурств (для контролера и владельца)
-        if (controller_id and user_id == controller_id) or user_id == self.owner_id:
-            keyboard.append([InlineKeyboardButton("📅 График дежурств", callback_data="ctrl_schedule")])
-
-        # Кнопка чек-листа дежурного (для аккаунтов клубов и админов на смене)
-        club_accounts = self.config.get('club_accounts', {})
-        rio_account = club_accounts.get('rio')
-        sever_account = club_accounts.get('sever')
-
-        # Показываем чек-лист для аккаунтов клубов или для админа с открытой сменой
-        if user_id == rio_account or user_id == sever_account or (self.admin_manager.is_admin(user_id) and active_shift):
-            keyboard.append([InlineKeyboardButton("✅ Чек-лист дежурного", callback_data="duty_checklist")])
 
         return InlineKeyboardMarkup(keyboard)
     
@@ -2673,8 +2690,9 @@ class ClubAssistantBot:
         """Обработчик inline-кнопок"""
         query = update.callback_query
         await query.answer()
-        
+
         data = query.data
+        logger.info(f"🔔 Callback received: {data} from user {query.from_user.id}")
         
         # Главное меню
         if data == "main_menu":
@@ -2816,11 +2834,25 @@ class ClubAssistantBot:
         if data in ("product_add", "product_edit_price", "product_set_nickname", "product_clear_debt", "issue_report"):
             # These are handled through conversation handlers
             return
-        
+
+        # Debt management callbacks (must be before product_clear_ to avoid conflicts)
+        if data.startswith("product_manage_debt_"):
+            logger.info(f"📋 Calling manage_admin_debt for callback: {data}")
+            await self.product_commands.manage_admin_debt(update, context)
+            return
+
+        if data.startswith("product_notify_debt_"):
+            await self.product_commands.notify_admin_debt(update, context)
+            return
+
+        if data.startswith("product_settle_debt_"):
+            await self.product_commands.settle_admin_debt(update, context)
+            return
+
         if data.startswith("product_clear_") and data != "product_clear_settled":
             await self.product_commands.clear_admin_debt(update, context)
             return
-        
+
         # Проблемы клуба
         if data == "issue_menu":
             await self.issue_commands.show_issue_menu(update, context)
@@ -2904,6 +2936,12 @@ class ClubAssistantBot:
             await self.issue_commands.delete_issue(update, context)
             return
 
+        # Owner panel
+        if data == "owner_panel" or data.startswith("owner_"):
+            from modules.owner_panel import handle_owner_callback
+            await handle_owner_callback(update, context)
+            return
+
         # Controller panel and archive
         if data == "controller_panel" or data.startswith("ctrl_"):
             from modules.controller_panel import handle_controller_callback
@@ -2924,21 +2962,9 @@ class ClubAssistantBot:
             # Не нужно обрабатывать здесь, иначе ConversationHandler не сработает
             return
 
-        if data == "shift_expense":
-            # Списать с кассы
-            if hasattr(self, 'shift_wizard') and self.shift_wizard is not None:
-                await self.shift_wizard.start_expense(update, context)
-            else:
-                await query.answer("❌ Модуль смен не загружен", show_alert=True)
-            return
+        # shift_expense обрабатывается в ConversationHandler для expense_handler
 
-        if data == "shift_salary":
-            # Взять зарплату
-            if hasattr(self, 'shift_wizard') and self.shift_wizard is not None:
-                await self.shift_wizard.start_cash_withdrawal(update, context)
-            else:
-                await query.answer("❌ Модуль смен не загружен", show_alert=True)
-            return
+        # shift_salary обрабатывается в ConversationHandler для withdrawal_handler
 
         # Admin monitoring callbacks (owner only)
         if data == "monitor_main":
@@ -4011,6 +4037,7 @@ class ClubAssistantBot:
         # 4. Регистрируем обработчики
         application.add_handler(CommandHandler("start", self.cmd_start))
         application.add_handler(CommandHandler("menu", self.cmd_start))  # Алиас для /start
+        application.add_handler(CommandHandler("cancel", self.cmd_cancel_general))  # Общая отмена
         application.add_handler(CommandHandler("help", self.cmd_help))
         application.add_handler(CommandHandler("stats", self.cmd_stats))
         application.add_handler(CommandHandler("id", self.cmd_id))
@@ -4391,7 +4418,8 @@ class ClubAssistantBot:
             expense_handler = ConversationHandler(
                 entry_points=[
                     CommandHandler("expense", shift_wizard.cmd_expense),
-                    MessageHandler(filters.TEXT & filters.Regex("^💸 Списать с кассы$"), shift_wizard.cmd_expense)
+                    MessageHandler(filters.TEXT & filters.Regex("^💸 Списать с кассы$"), shift_wizard.cmd_expense),
+                    CallbackQueryHandler(shift_wizard.start_expense, pattern="^shift_expense$")
                 ],
                 states={
                     EXPENSE_SELECT_CASH_SOURCE: [
@@ -4520,6 +4548,7 @@ class ClubAssistantBot:
         application.bot_data['db_path'] = DB_PATH  # Use the same DB_PATH as the main bot
         application.bot_data['controller_id'] = self.config.get('controller_id')
         application.bot_data['owner_id'] = self.owner_id
+        application.bot_data['schedule_parser'] = schedule_parser  # Для использования в maintenance_manager
         logger.info("✅ Controller panel data stored in bot_data")
 
         # Duty shift handlers
@@ -4541,6 +4570,49 @@ class ClubAssistantBot:
             logger.info("✅ Maintenance task handlers registered")
         except Exception as e:
             logger.error(f"❌ Failed to register maintenance task handlers: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # New shift checklist handlers (cleaning rating, service reviews, inventory)
+        try:
+            # Cleaning rating handlers
+            cleaning_rating_handlers = create_cleaning_rating_handlers()
+            for handler in cleaning_rating_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Shift cleaning rating handlers registered")
+
+            # Cleaning service review handlers
+            cleaning_review_handlers = create_cleaning_review_handlers()
+            for handler in cleaning_review_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Cleaning service review handlers registered")
+
+            # Inventory checklist handlers
+            inventory_handlers = create_inventory_handlers()
+            for handler in inventory_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Inventory checklist handlers registered")
+
+            # Store shift_manager in bot_data for checklist access
+            if hasattr(self, 'shift_wizard') and self.shift_wizard:
+                application.bot_data['shift_manager'] = self.shift_wizard.shift_manager
+
+        except Exception as e:
+            logger.error(f"❌ Failed to register shift checklist handlers: {e}")
+            import traceback
+            traceback.print_exc()
+
+        # Setup JobQueue for shift reminders
+        try:
+            # Store club accounts in bot_data for reminders
+            application.bot_data['club_accounts'] = self.config.get('club_accounts', {})
+
+            # Setup all reminder jobs
+            setup_reminder_jobs(application)
+            logger.info("✅ Shift reminder jobs scheduled")
+            logger.info("   Jobs: unopened shifts, inventory deadlines, cleaning rating deadlines, system health")
+        except Exception as e:
+            logger.error(f"❌ Failed to setup reminder jobs: {e}")
             import traceback
             traceback.print_exc()
 

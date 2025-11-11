@@ -21,25 +21,40 @@ logger = logging.getLogger(__name__)
 class MaintenanceManager:
     """Менеджер задач обслуживания"""
 
-    def __init__(self, db_path: str = "knowledge.db"):
+    def __init__(self, db_path: str = "knowledge.db", schedule_parser=None):
         self.db_path = db_path
+        self.schedule_parser = schedule_parser
 
     def _get_admin_shift_distribution(self, days_back: int = 60) -> Dict[int, Dict[str, int]]:
         """
         Получить распределение смен по админам и клубам за период
-        Использует таблицу duty_schedule (график смен) для подсчета
+        Использует Google Sheets парсер для чтения итоговых значений из колонок AF-AJ
 
         Returns:
             {admin_id: {'rio': count, 'sever': count, 'total': count}}
         """
         try:
+            # Если есть schedule_parser - используем его для чтения из Google Sheets
+            if self.schedule_parser:
+                logger.info("📊 Using Google Sheets parser for shift distribution")
+                current_date = datetime.now(MSK).date()
+
+                # Получаем итоговые смены за текущий месяц из колонок AF-AJ
+                monthly_totals = self.schedule_parser.parse_monthly_totals(current_date)
+
+                if monthly_totals:
+                    logger.info(f"✅ Got monthly totals for {len(monthly_totals)} admins from Google Sheets")
+                    return monthly_totals
+                else:
+                    logger.warning("⚠️ No monthly totals from Google Sheets, falling back to DB")
+
+            # Fallback: используем таблицу duty_schedule (если парсера нет или нет данных)
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
             since_date = (datetime.now(MSK) - timedelta(days=days_back)).strftime('%Y-%m-%d')
 
             # Получаем смены из графика duty_schedule
-            # Присоединяем таблицу admins чтобы получить admin_id по ФИО
             cursor.execute("""
                 SELECT ds.admin_id, ds.club, COUNT(*) as shift_count
                 FROM duty_schedule ds
@@ -68,6 +83,12 @@ class MaintenanceManager:
                 distribution[admin_id]['total'] += count
 
             conn.close()
+
+            if distribution:
+                logger.info(f"✅ Got shift distribution for {len(distribution)} admins from DB")
+            else:
+                logger.warning("⚠️ No shift data found in DB")
+
             return dict(distribution)
 
         except Exception as e:
@@ -77,6 +98,7 @@ class MaintenanceManager:
     def assign_tasks_proportionally(self, task_type: str = 'all'):
         """
         Автоматически распределить задачи пропорционально сменам
+        Один раз в месяц на единицу оборудования
 
         Args:
             task_type: 'keyboard', 'mouse', 'pc', 'all'
@@ -100,6 +122,8 @@ class MaintenanceManager:
             cursor.execute(task_types_query)
             task_types = cursor.fetchall()
 
+            current_month = datetime.now(MSK).strftime('%Y-%m')
+
             for task_type_id, equipment_type, frequency_days in task_types:
                 # Для каждого клуба
                 for club in ['rio', 'sever']:
@@ -116,14 +140,34 @@ class MaintenanceManager:
                     if not equipment_list:
                         continue
 
-                    # Распределить оборудование по админам пропорционально сменам
-                    admin_shifts_in_club = [
-                        (admin_id, data[club])
-                        for admin_id, data in shift_dist.items()
-                        if data[club] > 0
-                    ]
+                    # Получаем информацию о поле админов
+                    cursor.execute("""
+                        SELECT user_id, gender FROM admins WHERE is_active = 1
+                    """)
+                    admin_genders = {row[0]: row[1] for row in cursor.fetchall()}
+
+                    # Фильтруем админов по полу в зависимости от типа оборудования
+                    # pc (компьютеры) → только мужчины
+                    # keyboard (клавиатуры) → только женщины
+                    # mouse (мыши) → все
+                    admin_shifts_in_club = []
+                    for admin_id, data in shift_dist.items():
+                        if data[club] <= 0:
+                            continue
+
+                        admin_gender = admin_genders.get(admin_id)
+
+                        # Применяем фильтр по полу
+                        if equipment_type == 'pc' and admin_gender != 'male':
+                            continue  # ПК только для мужчин
+                        elif equipment_type == 'keyboard' and admin_gender != 'female':
+                            continue  # Клавиатуры только для женщин
+                        # mouse - для всех, не фильтруем
+
+                        admin_shifts_in_club.append((admin_id, data[club]))
 
                     if not admin_shifts_in_club:
+                        logger.warning(f"⚠️ No admins with suitable gender for {equipment_type} in {club}")
                         continue
 
                     # Сортируем по количеству смен (по убыванию)
@@ -148,29 +192,104 @@ class MaintenanceManager:
 
                             equipment_id, inv_num, pc_num = equipment_list[equipment_index]
 
-                            # Проверить есть ли уже активная задача
+                            # Проверить есть ли уже задача на это оборудование в этом месяце
                             cursor.execute("""
-                                SELECT id FROM maintenance_tasks
-                                WHERE admin_id = ?
-                                AND equipment_id = ?
+                                SELECT id, admin_id, status FROM maintenance_tasks
+                                WHERE equipment_id = ?
                                 AND task_type_id = ?
-                                AND status IN ('pending', 'in_progress')
-                            """, (admin_id, equipment_id, task_type_id))
+                                AND strftime('%Y-%m', assigned_date) = ?
+                            """, (equipment_id, task_type_id, current_month))
 
-                            if not cursor.fetchone():
-                                # Создать задачу
-                                assigned_date = datetime.now(MSK).date()
-                                due_date = assigned_date + timedelta(days=frequency_days)
+                            existing_task = cursor.fetchone()
 
+                            assigned_date = datetime.now(MSK).date()
+                            # Срок выполнения - конец текущего месяца
+                            current_year = assigned_date.year
+                            current_month = assigned_date.month
+                            # Последний день текущего месяца
+                            if current_month == 12:
+                                due_date = date(current_year, 12, 31)
+                            else:
+                                # Первый день следующего месяца минус 1 день
+                                due_date = date(current_year, current_month + 1, 1) - timedelta(days=1)
+
+                            if existing_task:
+                                task_id, old_admin_id, status = existing_task
+
+                                # Если задача уже выполнена - не трогаем
+                                if status == 'completed':
+                                    logger.info(f"✅ Task already completed for {equipment_type} {inv_num}")
+                                    equipment_index += 1
+                                    continue
+
+                                # Переназначаем задачу (обновляем)
+                                cursor.execute("""
+                                    UPDATE maintenance_tasks
+                                    SET admin_id = ?,
+                                        club = ?,
+                                        assigned_date = ?,
+                                        due_date = ?,
+                                        status = 'pending'
+                                    WHERE id = ?
+                                """, (admin_id, club, assigned_date, due_date, task_id))
+
+                                logger.info(f"🔄 Reassigned task {equipment_type} {inv_num} from admin {old_admin_id} to {admin_id}")
+                            else:
+                                # Создать новую задачу
                                 cursor.execute("""
                                     INSERT INTO maintenance_tasks
                                     (admin_id, club, equipment_id, task_type_id, assigned_date, due_date, status)
                                     VALUES (?, ?, ?, ?, ?, ?, 'pending')
                                 """, (admin_id, club, equipment_id, task_type_id, assigned_date, due_date))
 
-                                logger.info(f"✅ Assigned task {equipment_type} {inv_num} to admin {admin_id}")
+                                logger.info(f"✅ Assigned new task {equipment_type} {inv_num} to admin {admin_id}")
 
                             equipment_index += 1
+
+                    # Распределяем оставшееся оборудование (если есть) по кругу между админами
+                    if equipment_index < len(equipment_list):
+                        logger.info(f"🔄 Distributing remaining {len(equipment_list) - equipment_index} items of {equipment_type} in {club}")
+                        admin_idx = 0
+                        while equipment_index < len(equipment_list):
+                            admin_id, shifts = admin_shifts_in_club[admin_idx % len(admin_shifts_in_club)]
+                            equipment_id, inv_num, pc_num = equipment_list[equipment_index]
+
+                            # Проверяем существующую задачу
+                            cursor.execute("""
+                                SELECT id, admin_id, status FROM maintenance_tasks
+                                WHERE equipment_id = ?
+                                AND task_type_id = ?
+                                AND strftime('%Y-%m', assigned_date) = ?
+                            """, (equipment_id, task_type_id, current_month))
+
+                            existing_task = cursor.fetchone()
+                            assigned_date = datetime.now(MSK).date()
+                            current_year = assigned_date.year
+                            current_month_num = assigned_date.month
+                            if current_month_num == 12:
+                                due_date = date(current_year, 12, 31)
+                            else:
+                                due_date = date(current_year, current_month_num + 1, 1) - timedelta(days=1)
+
+                            if existing_task:
+                                task_id, old_admin_id, status = existing_task
+                                if status != 'completed':
+                                    cursor.execute("""
+                                        UPDATE maintenance_tasks
+                                        SET admin_id = ?, club = ?, assigned_date = ?, due_date = ?, status = 'pending'
+                                        WHERE id = ?
+                                    """, (admin_id, club, assigned_date, due_date, task_id))
+                                    logger.info(f"🔄 Reassigned remaining {equipment_type} {inv_num} to admin {admin_id}")
+                            else:
+                                cursor.execute("""
+                                    INSERT INTO maintenance_tasks
+                                    (admin_id, club, equipment_id, task_type_id, assigned_date, due_date, status)
+                                    VALUES (?, ?, ?, ?, ?, ?, 'pending')
+                                """, (admin_id, club, equipment_id, task_type_id, assigned_date, due_date))
+                                logger.info(f"✅ Assigned remaining {equipment_type} {inv_num} to admin {admin_id}")
+
+                            equipment_index += 1
+                            admin_idx += 1
 
             conn.commit()
             conn.close()
@@ -264,6 +383,14 @@ class MaintenanceManager:
                     notes = ?
                 WHERE id = ?
             """, (datetime.now(MSK), photo_file_id, notes, task_id))
+
+            # Добавить фото в таблицу maintenance_photos (если есть)
+            if photo_file_id:
+                cursor.execute("""
+                    INSERT INTO maintenance_photos
+                    (task_id, equipment_id, admin_id, photo_file_id, caption)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (task_id, equipment_id, admin_id, photo_file_id, notes))
 
             # Добавить в историю
             cursor.execute("""
