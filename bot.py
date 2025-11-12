@@ -74,12 +74,14 @@ try:
         cancel_operation
     )
     # Shift checklist and controller panel
-    from modules.shift_checklist import create_checklist_conversation_handler, ShiftChecklistManager
+    # ОТКЛЮЧЕНО: Старый чек-лист (заменен на новые модули)
+    # from modules.shift_checklist import create_checklist_conversation_handler, ShiftChecklistManager
     # controller_panel импортируется локально в handle_callback при необходимости
     # New shift checklists (cleaning rating, cleaning service reviews, inventory)
     from modules.shift_cleaning_rating import create_cleaning_rating_handlers
     from modules.cleaning_service_reviews import create_cleaning_review_handlers
     from modules.shift_inventory_checklist import create_inventory_handlers
+    from modules.shift_data_viewer import create_shift_data_viewer_handlers
     # Shift reminders system
     from modules.shift_reminders import setup_reminder_jobs
     # Duty shift manager
@@ -790,14 +792,15 @@ class ClubAssistantBot:
             logger.error(f"❌ Ошибка при очистке старых проблем: {e}")
 
         # Shift Checklist Manager - чек-листы приема смены
-        logger.info("✅ Initializing ShiftChecklistManager...")
-        try:
-            db_path_for_checklist = os.getenv('DB_PATH', '/opt/club_assistant/club_assistant.db')
-            self.shift_checklist_manager = ShiftChecklistManager(db_path_for_checklist)
-            logger.info("✅ ShiftChecklistManager initialized successfully")
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize ShiftChecklistManager: {e}")
-            self.shift_checklist_manager = None
+        # ОТКЛЮЧЕНО: Старый ShiftChecklistManager (заменен на новые модули)
+        # logger.info("✅ Initializing ShiftChecklistManager...")
+        # try:
+        #     db_path_for_checklist = os.getenv('DB_PATH', '/opt/club_assistant/club_assistant.db')
+        #     self.shift_checklist_manager = ShiftChecklistManager(db_path_for_checklist)
+        #     logger.info("✅ ShiftChecklistManager initialized successfully")
+        # except Exception as e:
+        #     logger.error(f"❌ Failed to initialize ShiftChecklistManager: {e}")
+        self.shift_checklist_manager = None
         
         # Content Generator - AI content generation
         logger.info("🎨 Initializing ContentGenerator...")
@@ -2020,6 +2023,7 @@ class ClubAssistantBot:
             keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
             keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
+            keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
 
         # Обычные админы (НЕ владелец и НЕ контролёр)
         elif self.admin_manager.is_admin(user_id) and not is_controller:
@@ -2037,27 +2041,32 @@ class ClubAssistantBot:
                 except Exception as e:
                     logger.error(f"❌ Failed to get active shift for {user_id}: {e}")
 
-            # Кнопки смены - ТОЛЬКО для клубных аккаунтов
-            if is_club_account:
+            # Кнопки смены - для клубных аккаунтов ИЛИ админов с активной сменой
+            if is_club_account or active_shift:
                 if active_shift:
                     # Есть открытая смена
                     keyboard.append([
                         InlineKeyboardButton("💸 Списать с кассы", callback_data="shift_expense"),
                         InlineKeyboardButton("💰 Взять зарплату", callback_data="shift_salary")
                     ])
+                    keyboard.append([InlineKeyboardButton("📋 Чек-лист дежурного", callback_data="duty_checklist")])
                     keyboard.append([InlineKeyboardButton("🔒 Закрыть смену", callback_data="shift_close")])
-                else:
-                    # Нет открытой смены
+                elif is_club_account:
+                    # Нет открытой смены, но это club_account
                     keyboard.append([InlineKeyboardButton("🔓 Открыть смену", callback_data="shift_open")])
 
             # Кнопка "Смены" - ТОЛЬКО для админов с полным ФИО
             if has_full_name:
                 keyboard.append([InlineKeyboardButton("📅 Смены", callback_data="shifts_menu")])
+                keyboard.append([InlineKeyboardButton("📊 Данные смен", callback_data="shift_data_menu")])
 
             # Кнопки доступные всем обычным админам
             keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])
             keyboard.append([InlineKeyboardButton("⚠️ Проблемы клуба", callback_data="issue_menu")])
-            keyboard.append([InlineKeyboardButton("🔧 Задачи обслуживания", callback_data="maintenance_tasks")])
+
+            # Кнопка "Задачи обслуживания" - ТОЛЬКО для НЕ клубных аккаунтов
+            if not is_club_account:
+                keyboard.append([InlineKeyboardButton("🔧 Задачи обслуживания", callback_data="maintenance_tasks")])
 
         # Панель большого брата (для контролера)
         controller_id = self.config.get('controller_id')
@@ -2173,6 +2182,113 @@ class ClubAssistantBot:
             # Игнорируем ошибку "Message is not modified"
             if "message is not modified" not in str(e).lower():
                 logger.error(f"❌ Error editing shifts menu: {e}")
+
+    async def _show_shift_checklists_menu(self, query, context):
+        """Show checklists menu for opened shift"""
+        user_id = query.from_user.id
+        db_path = context.bot_data.get('db_path')
+
+        # Check active shift
+        try:
+            import sqlite3
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+
+            cursor.execute("""
+                SELECT id, club, shift_type FROM active_shifts
+                WHERE (admin_id = ? OR confirmed_by = ?) AND status = 'open'
+                ORDER BY opened_at DESC LIMIT 1
+            """, (user_id, user_id))
+            active_shift = cursor.fetchone()
+
+            if not active_shift:
+                conn.close()
+                await query.edit_message_text(
+                    "❌ У вас нет открытой смены\n\n"
+                    "Чек-листы доступны только администраторам с открытой сменой.",
+                    parse_mode='HTML'
+                )
+                return
+
+            shift_id = active_shift['id']
+            club = active_shift['club']
+            shift_type = active_shift['shift_type']
+
+            # Проверяем статус заполнения чек-листов
+            # 1. Рейтинг уборки
+            cursor.execute("""
+                SELECT rated_at FROM shift_cleaning_rating
+                WHERE shift_id = ? AND rated_at IS NOT NULL
+            """, (shift_id,))
+            cleaning_rating_completed = cursor.fetchone() is not None
+
+            # 2. Инвентарь
+            cursor.execute("""
+                SELECT submitted_at FROM shift_inventory_checklist
+                WHERE shift_id = ? AND submitted_at IS NOT NULL
+            """, (shift_id,))
+            inventory_completed = cursor.fetchone() is not None
+
+            # 3. Отзыв об уборщице (только для ночных смен)
+            cleaner_review_completed = False
+            if shift_type == 'evening':
+                cursor.execute("""
+                    SELECT id FROM cleaning_service_reviews
+                    WHERE shift_id = ? AND rating IS NOT NULL
+                """, (shift_id,))
+                cleaner_review_completed = cursor.fetchone() is not None
+
+            conn.close()
+
+            # Формируем текст меню
+            text = f"📋 <b>Чек-листы открытия смены</b>\n\n"
+            text += f"🏢 Клуб: <b>{club.upper()}</b>\n"
+            text += f"⏰ Смена: <b>{'☀️ Дневная' if shift_type == 'morning' else '🌙 Ночная'}</b>\n\n"
+            text += "Выберите чек-лист для заполнения:\n\n"
+
+            # Рейтинг уборки
+            if cleaning_rating_completed:
+                text += "✅ <b>Рейтинг уборки</b> - <i>Пройден</i>\n   Нажмите чтобы изменить\n\n"
+            else:
+                text += "🧹 <b>Рейтинг уборки</b>\n   Оценить чистоту клуба после предыдущей смены\n\n"
+
+            # Инвентарь
+            if inventory_completed:
+                text += "✅ <b>Инвентарь</b> - <i>Пройден</i>\n   Нажмите чтобы изменить\n\n"
+            else:
+                text += "📦 <b>Инвентарь</b>\n   Проверить наличие оборудования и запасов\n\n"
+
+            # Отзыв об уборщице (только ночная смена)
+            if shift_type == 'evening':
+                if cleaner_review_completed:
+                    text += "✅ <b>Отзыв об уборщице</b> - <i>Пройден</i>\n   Нажмите чтобы изменить\n"
+                else:
+                    text += "⭐ <b>Отзыв об уборщице</b>\n   Оценить работу клининга (только ночная смена)\n"
+
+            # Формируем кнопки (показываем все, но с разными иконками)
+            keyboard = []
+
+            # Рейтинг уборки
+            rating_btn_text = "✅ Рейтинг уборки (изменить)" if cleaning_rating_completed else "🧹 Рейтинг уборки"
+            keyboard.append([InlineKeyboardButton(rating_btn_text, callback_data="rating_start")])
+
+            # Инвентарь
+            inventory_btn_text = "✅ Инвентарь (изменить)" if inventory_completed else "📦 Инвентарь"
+            keyboard.append([InlineKeyboardButton(inventory_btn_text, callback_data="inventory_start")])
+
+            # Отзыв об уборщице (только ночная смена)
+            if shift_type == 'evening':
+                review_btn_text = "✅ Отзыв об уборщице (изменить)" if cleaner_review_completed else "⭐ Отзыв об уборщице"
+                keyboard.append([InlineKeyboardButton(review_btn_text, callback_data="review_start")])
+
+            keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu")])
+
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode='HTML')
+
+        except Exception as e:
+            logger.error(f"Error showing checklists menu: {e}")
+            await query.edit_message_text(f"❌ Ошибка загрузки меню чек-листов: {e}")
 
     async def _show_swap_shift_selection(self, query, context):
         """Show user's shifts for swap selection"""
@@ -2689,9 +2805,23 @@ class ClubAssistantBot:
     async def handle_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик inline-кнопок"""
         query = update.callback_query
-        await query.answer()
-
         data = query.data
+
+        # ❗ ВАЖНО: Пропускаем callback'и для ConversationHandler'ов
+        # Эти callback'и должны обрабатываться ConversationHandler'ами напрямую
+        conversation_callbacks = [
+            'rating_start', 'rating_bar_', 'rating_hall_', 'rating_cancel',
+            'inventory_start', 'inventory_cancel',
+            'review_start', 'review_rating_', 'review_cancel'
+        ]
+
+        # Проверяем, начинается ли callback с одного из паттернов ConversationHandler
+        for pattern in conversation_callbacks:
+            if data.startswith(pattern):
+                logger.info(f"⏭️ Skipping callback {data} - handled by ConversationHandler")
+                return  # Пропускаем, пусть ConversationHandler обработает
+
+        await query.answer()
         logger.info(f"🔔 Callback received: {data} from user {query.from_user.id}")
         
         # Главное меню
@@ -2960,6 +3090,31 @@ class ClubAssistantBot:
         if data == "shift_close":
             # Закрыть смену - обрабатывается в ConversationHandler
             # Не нужно обрабатывать здесь, иначе ConversationHandler не сработает
+            return
+
+        if data == "duty_checklist":
+            # Меню чек-листов смены
+            await self._show_shift_checklists_menu(query, context)
+            return
+
+        if data == "checklist_cleaning_rating":
+            # Рейтинг уборки - перенаправляем на entry point ConversationHandler
+            query.data = "rating_start"
+            from modules.shift_cleaning_rating import start_cleaning_rating
+            await start_cleaning_rating(update, context)
+            return
+
+        if data == "checklist_inventory":
+            # Чек-лист инвентаря - перенаправляем на entry point ConversationHandler
+            query.data = "inventory_start"
+            from modules.shift_inventory_checklist import start_inventory_check
+            await start_inventory_check(update, context)
+            return
+
+        if data == "checklist_cleaning_service":
+            # Отзыв об уборщице
+            from modules.cleaning_service_reviews import show_cleaning_service_review
+            await show_cleaning_service_review(update, context)
             return
 
         # shift_expense обрабатывается в ConversationHandler для expense_handler
@@ -4170,23 +4325,24 @@ class ClubAssistantBot:
         )
         application.add_handler(issue_edit_handler)
 
-        # ConversationHandler для чек-листа приема смены
-        try:
-            checklist_handler = create_checklist_conversation_handler()
-            application.add_handler(checklist_handler)
-            logger.info("✅ Shift checklist ConversationHandler registered")
-        except Exception as e:
-            logger.error(f"❌ Failed to register checklist handler: {e}")
-            import traceback
-            traceback.print_exc()
+        # ОТКЛЮЧЕНО: Старый чек-лист приема смены - заменен на новые модули
+        # (shift_cleaning_rating, shift_inventory_checklist, cleaning_service_reviews)
+        # try:
+        #     checklist_handler = create_checklist_conversation_handler()
+        #     application.add_handler(checklist_handler)
+        #     logger.info("✅ Shift checklist ConversationHandler registered")
+        # except Exception as e:
+        #     logger.error(f"❌ Failed to register checklist handler: {e}")
+        #     import traceback
+        #     traceback.print_exc()
 
-        # Callback handler для уведомления контролера о проблемах
-        try:
-            from modules.shift_checklist import notify_controller
-            application.add_handler(CallbackQueryHandler(notify_controller, pattern="^checklist_notify_controller$"))
-            logger.info("✅ Checklist notify controller handler registered")
-        except Exception as e:
-            logger.error(f"❌ Failed to register notify controller handler: {e}")
+        # # Callback handler для уведомления контролера о проблемах
+        # try:
+        #     from modules.shift_checklist import notify_controller
+        #     application.add_handler(CallbackQueryHandler(notify_controller, pattern="^checklist_notify_controller$"))
+        #     logger.info("✅ Checklist notify controller handler registered")
+        # except Exception as e:
+        #     logger.error(f"❌ Failed to register notify controller handler: {e}")
 
         # === END CONVERSATION HANDLERS ===
         
@@ -4592,6 +4748,12 @@ class ClubAssistantBot:
             for handler in inventory_handlers:
                 application.add_handler(handler)
             logger.info("✅ Inventory checklist handlers registered")
+
+            # Shift data viewer handlers
+            shift_data_viewer_handlers = create_shift_data_viewer_handlers()
+            for handler in shift_data_viewer_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Shift data viewer handlers registered")
 
             # Store shift_manager in bot_data for checklist access
             if hasattr(self, 'shift_wizard') and self.shift_wizard:

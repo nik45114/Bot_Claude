@@ -9,6 +9,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from typing import Optional, List
 import re
+import sqlite3
 
 from .db import AdminDB, ROLE_PERMISSIONS, PERMISSIONS
 from .formatters import (
@@ -293,7 +294,11 @@ class AdminWizard:
         
         # Edit name
         keyboard.append([InlineKeyboardButton("✏️ Редактировать имя", callback_data=f"adm_edit_name_{user_id}")])
-        
+
+        # Edit gender (owner only)
+        if self.is_owner(update.effective_user.id):
+            keyboard.append([InlineKeyboardButton("⚧ Изменить пол", callback_data=f"adm_gender_{user_id}")])
+
         # Salary settings (owner only)
         if self.is_owner(update.effective_user.id):
             keyboard.append([InlineKeyboardButton("💰 Настроить зарплату", callback_data=f"adm_salary_{user_id}")])
@@ -1161,3 +1166,90 @@ ID: {user_id}
         except Exception as e:
             logger.error(f"Failed to apply salary setting: {e}")
             await query.edit_message_text(f"❌ Ошибка: {e}")
+
+    # ===== Gender Management =====
+
+    async def show_gender_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int):
+        """Show gender selection menu"""
+        query = update.callback_query
+        await query.answer()
+
+        # Проверка прав - только owner
+        if not self.is_owner(update.effective_user.id):
+            await query.answer("❌ Только владелец может изменять пол", show_alert=True)
+            return
+
+        admin = self.db.get_admin(user_id)
+        if not admin:
+            await query.edit_message_text("❌ Админ не найден")
+            return
+
+        gender = admin.get('gender')
+        gender_display = {
+            'male': '♂️ Мужской',
+            'female': '♀️ Женский',
+            None: '⚧ Не указан'
+        }.get(gender, '⚧ Не указан')
+
+        text = f"""⚧ Изменить пол
+━━━━━━━━━━━━━━━━━━━━
+Админ: {format_admin_display_name(admin)}
+Текущий пол: {gender_display}
+
+⚠️ <b>Важно:</b>
+• Компы (продувка ПК) → только мужчины
+• Клавиатуры (чистка) → только женщины
+• Мыши (чистка) → для всех
+
+Выберите пол:"""
+
+        keyboard = [
+            [InlineKeyboardButton(
+                f"♂️ Мужской{' ✓' if gender == 'male' else ''}",
+                callback_data=f"adm_setgender_{user_id}_male"
+            )],
+            [InlineKeyboardButton(
+                f"♀️ Женский{' ✓' if gender == 'female' else ''}",
+                callback_data=f"adm_setgender_{user_id}_female"
+            )],
+            [InlineKeyboardButton("◀️ Назад", callback_data=f"adm_view_{user_id}")]
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    async def set_gender(self, update: Update, context: ContextTypes.DEFAULT_TYPE, user_id: int, gender: str):
+        """Set admin gender"""
+        query = update.callback_query
+
+        # Проверка прав - только owner
+        if not self.is_owner(update.effective_user.id):
+            await query.answer("❌ Только владелец может изменять пол", show_alert=True)
+            return
+
+        admin = self.db.get_admin(user_id)
+        if not admin:
+            await query.answer("❌ Админ не найден", show_alert=True)
+            return
+
+        try:
+            # Обновляем пол в базе
+            conn = sqlite3.connect(self.db.db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "UPDATE admins SET gender = ?, updated_at = CURRENT_TIMESTAMP WHERE user_id = ?",
+                (gender, user_id)
+            )
+            conn.commit()
+            conn.close()
+
+            gender_name = "♂️ мужской" if gender == 'male' else "♀️ женский"
+
+            await query.answer(f"✅ Пол изменён на {gender_name}", show_alert=True)
+
+            # Возвращаемся к карточке админа
+            await self.show_admin_view(update, context, user_id)
+
+        except Exception as e:
+            logger.error(f"Failed to set gender: {e}")
+            await query.answer(f"❌ Ошибка: {e}", show_alert=True)

@@ -679,6 +679,114 @@ class ScheduleParser:
             logger.error(f"❌ Error updating duty assignment: {e}")
             return False
 
+    def parse_monthly_totals(self, target_date: date) -> Dict[int, Dict[str, int]]:
+        """
+        Парсить итоговое количество смен за месяц из колонок AF-AJ
+
+        Args:
+            target_date: Дата месяца для парсинга
+
+        Returns:
+            Dict {admin_id: {'rio': count, 'sever': count, 'total': count}}
+        """
+        result = {}
+
+        try:
+            # Получаем worksheet для этого месяца
+            worksheet = self._get_month_sheet(target_date)
+            if not worksheet:
+                logger.warning(f"⚠️ No sheet found for {target_date}")
+                return result
+
+            # Колонки с итогами: AF=32, AG=33, AH=34, AI=35, AJ=36
+            # Сначала читаем заголовки чтобы понять какая колонка за что отвечает
+            all_values = worksheet.get_all_values()
+            logger.info(f"📊 Parsing monthly totals from {len(all_values)} rows")
+
+            # Читаем заголовки из первой строки (индекс 0)
+            headers = all_values[0] if all_values else []
+
+            # Определяем какие колонки содержат данные о клубах
+            # Ищем упоминания "Рио", "Север" в заголовках AF-AJ
+            rio_col = None
+            sever_col = None
+            total_col = 31  # AF (индекс 31) - обычно общее количество
+
+            for col_idx in range(31, min(36, len(headers))):
+                header = headers[col_idx].lower() if col_idx < len(headers) else ''
+                logger.info(f"  Column {col_idx} (letter {chr(65+col_idx)}): '{headers[col_idx] if col_idx < len(headers) else ''}'")
+
+                if 'рио' in header or 'rio' in header:
+                    rio_col = col_idx
+                    logger.info(f"  ✅ Found Rio column at index {col_idx}")
+                elif 'север' in header or 'sever' in header:
+                    sever_col = col_idx
+                    logger.info(f"  ✅ Found Sever column at index {col_idx}")
+
+            logger.info(f"📋 Detected columns: Rio={rio_col}, Sever={sever_col}, Total={total_col}")
+
+            # Парсим каждую строку (пропускаем заголовок)
+            for row_index, row_values in enumerate(all_values[1:], start=2):
+                # Имя из колонки A (index 0)
+                full_name = row_values[0].strip() if row_values else ''
+                if not full_name or full_name == '.':
+                    continue
+
+                # Получаем user_id по имени
+                user_id = self._map_fullname_to_user_id(full_name)
+                if not user_id:
+                    continue
+
+                # Читаем значения из определённых колонок
+                total_shifts = 0
+                rio_shifts = 0
+                sever_shifts = 0
+
+                try:
+                    # Колонка AF (индекс 31) - общее количество смен
+                    if len(row_values) > 31 and row_values[31].strip():
+                        total_val = row_values[31].strip()
+                        if total_val.isdigit():
+                            total_shifts = int(total_val)
+
+                    # Читаем из определённых колонок если нашли их в заголовках
+                    if rio_col and len(row_values) > rio_col and row_values[rio_col].strip():
+                        rio_val = row_values[rio_col].strip()
+                        if rio_val.isdigit():
+                            rio_shifts = int(rio_val)
+
+                    if sever_col and len(row_values) > sever_col and row_values[sever_col].strip():
+                        sever_val = row_values[sever_col].strip()
+                        if sever_val.isdigit():
+                            sever_shifts = int(sever_val)
+
+                except (ValueError, IndexError) as e:
+                    logger.warning(f"⚠️ Error parsing totals for {full_name}: {e}")
+                    continue
+
+                # Если есть хоть какие-то данные - сохраняем
+                if total_shifts > 0 or rio_shifts > 0 or sever_shifts > 0:
+                    # Если разбивка по клубам не найдена, распределяем поровну
+                    if total_shifts > 0 and rio_shifts == 0 and sever_shifts == 0:
+                        rio_shifts = total_shifts // 2
+                        sever_shifts = total_shifts - rio_shifts
+                    elif rio_shifts > 0 or sever_shifts > 0:
+                        total_shifts = rio_shifts + sever_shifts
+
+                    result[user_id] = {
+                        'rio': rio_shifts,
+                        'sever': sever_shifts,
+                        'total': total_shifts
+                    }
+                    logger.info(f"  ✅ {full_name} (ID:{user_id}): Рио={rio_shifts}, Север={sever_shifts}, Всего={total_shifts}")
+
+            logger.info(f"✅ Parsed monthly totals for {len(result)} admins")
+            return result
+
+        except Exception as e:
+            logger.error(f"❌ Error parsing monthly totals: {e}")
+            return result
+
 
 def create_parser(shift_manager, admin_db=None, spreadsheet_id=None, credentials_path=None) -> ScheduleParser:
     """Factory function to create ScheduleParser"""

@@ -105,6 +105,7 @@ async def show_controller_panel(update: Update, context: ContextTypes.DEFAULT_TY
     keyboard = [
         [InlineKeyboardButton("🔄 Обновить", callback_data="controller_panel")],
         [InlineKeyboardButton("📋 Текущие чек-листы", callback_data="ctrl_current_checklists")],
+        [InlineKeyboardButton("📅 График дежурств", callback_data="ctrl_schedule")],
         [InlineKeyboardButton("📂 Архив отчётов", callback_data="ctrl_archive")],
         [
             InlineKeyboardButton("🧹 Отзывы уборщицы", callback_data="reviews_all"),
@@ -481,15 +482,26 @@ async def show_controller_maint_stats(update: Update, context: ContextTypes.DEFA
 
         keyboard = []
 
-        # Кнопки для выбора конкретного админа
+        # Кнопки для выбора конкретного админа (без ограничения)
         if admin_stats:
-            for stat in admin_stats[:5]:  # Показываем до 5 админов в кнопках
+            for stat in admin_stats:
                 admin_name = stat['full_name'] or f"ID:{stat['admin_id']}"
+                total = stat['total_tasks']
+                completed = stat['completed'] or 0
+                percent = int((completed / total) * 100) if total > 0 else 0
+
+                # Короткое имя для кнопки
+                if len(admin_name) > 20:
+                    short_name = admin_name[:18] + "..."
+                else:
+                    short_name = admin_name
+
                 keyboard.append([InlineKeyboardButton(
-                    f"👤 {admin_name}",
+                    f"👤 {short_name} ({percent}%)",
                     callback_data=f"ctrl_maint_admin_{stat['admin_id']}"
                 )])
 
+        keyboard.append([InlineKeyboardButton("📸 Фото оборудования", callback_data="ctrl_equipment_browser")])
         keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data="ctrl_maint_stats")])
         keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="controller_panel")])
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -526,7 +538,7 @@ async def show_admin_maint_details(update: Update, context: ContextTypes.DEFAULT
         admin_info = cursor.fetchone()
         admin_name = admin_info['full_name'] if admin_info else f"ID:{admin_id}"
 
-        # Получаем задачи админа
+        # Получаем задачи админа с количеством фото
         cursor.execute("""
             SELECT
                 mt.id,
@@ -537,7 +549,8 @@ async def show_admin_maint_details(update: Update, context: ContextTypes.DEFAULT
                 mt.club,
                 mtt.task_name,
                 ei.inventory_number,
-                ei.pc_number
+                ei.pc_number,
+                (SELECT COUNT(*) FROM maintenance_photos mp WHERE mp.task_id = mt.id) as photo_count
             FROM maintenance_tasks mt
             LEFT JOIN maintenance_task_types mtt ON mt.task_type_id = mtt.id
             LEFT JOIN equipment_inventory ei ON mt.equipment_id = ei.id
@@ -604,7 +617,8 @@ async def show_admin_maint_details(update: Update, context: ContextTypes.DEFAULT
             completed_tasks = [t for t in tasks if t['status'] == 'completed']
             for task in completed_tasks[:3]:
                 club_emoji = "🏔" if task['club'] == 'Север' else "🌊"
-                text += f"{club_emoji} {task['task_name']}\n"
+                photo_emoji = f" 📸{task['photo_count']}" if task['photo_count'] > 0 else ""
+                text += f"{club_emoji} {task['task_name']}{photo_emoji}\n"
                 text += f"   {task['inventory_number']} (ПК №{task['pc_number']})\n"
                 if task['completed_date']:
                     from datetime import datetime
@@ -613,10 +627,22 @@ async def show_admin_maint_details(update: Update, context: ContextTypes.DEFAULT
             if len(completed_tasks) > 3:
                 text += f"   <i>...и ещё {len(completed_tasks) - 3}</i>\n"
 
-        keyboard = [
-            [InlineKeyboardButton("🔄 Обновить", callback_data=f"ctrl_maint_admin_{admin_id}")],
-            [InlineKeyboardButton("◀️ К общей статистике", callback_data="ctrl_maint_stats")]
-        ]
+        # Подсчитать общее количество фото админа
+        conn2 = sqlite3.connect(knowledge_db)
+        cursor2 = conn2.cursor()
+        cursor2.execute("""
+            SELECT COUNT(*) FROM maintenance_photos
+            WHERE admin_id = ?
+            AND uploaded_at >= date('now', '-30 days')
+        """, (admin_id,))
+        total_photos = cursor2.fetchone()[0]
+        conn2.close()
+
+        keyboard = []
+        if total_photos > 0:
+            keyboard.append([InlineKeyboardButton(f"📸 Все фото ({total_photos})", callback_data=f"ctrl_photos_{admin_id}")])
+        keyboard.append([InlineKeyboardButton("🔄 Обновить", callback_data=f"ctrl_maint_admin_{admin_id}")])
+        keyboard.append([InlineKeyboardButton("◀️ К общей статистике", callback_data="ctrl_maint_stats")])
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         try:
@@ -901,19 +927,19 @@ async def show_shift_report(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
         if shift['z_report_cash_photo']:
             photos_to_send.append(shift['z_report_cash_photo'])
-            photo_captions.append("💵 Z-отчёт: Наличные")
+            photo_captions.append("💵 Сверка итогов (касса 1)")
 
         if shift['z_report_card_photo']:
             photos_to_send.append(shift['z_report_card_photo'])
-            photo_captions.append("💳 Z-отчёт: Карта")
+            photo_captions.append("💳 Итоговый отчет (касса 1)")
 
         if shift['z_report_qr_photo']:
             photos_to_send.append(shift['z_report_qr_photo'])
-            photo_captions.append("📱 Z-отчёт: QR-код")
+            photo_captions.append("📱 Итоговый отчет QR (касса 1)")
 
         if shift['z_report_card2_photo']:
             photos_to_send.append(shift['z_report_card2_photo'])
-            photo_captions.append("💳 Z-отчёт: Карта 2")
+            photo_captions.append("💳 X-отчет (касса 2)")
 
         # Отправляем фотографии
         for photo_id, caption in zip(photos_to_send, photo_captions):
@@ -1044,6 +1070,36 @@ async def handle_controller_callback(update: Update, context: ContextTypes.DEFAU
         await show_admin_maint_details(update, context, admin_id)
         return
 
+    # Фото оборудования и админов
+    if data == "ctrl_equipment_browser":
+        from modules.maintenance_commands import show_equipment_browser
+        await show_equipment_browser(update, context)
+        return
+
+    if data.startswith("ctrl_photos_"):
+        admin_id = int(data.replace("ctrl_photos_", ""))
+        from modules.maintenance_commands import show_admin_photos
+        await show_admin_photos(update, context, admin_id, page=0)
+        return
+
+    if data.startswith("ctrl_photo_"):
+        # Формат: ctrl_photo_{admin_id}_{page}
+        parts = data.replace("ctrl_photo_", "").split("_")
+        admin_id = int(parts[0])
+        page = int(parts[1])
+        from modules.maintenance_commands import show_admin_photos
+        await show_admin_photos(update, context, admin_id, page)
+        return
+
+    if data.startswith("ctrl_eq_"):
+        # Формат: ctrl_eq_{equipment_id}_{page}
+        parts = data.replace("ctrl_eq_", "").split("_")
+        equipment_id = int(parts[0])
+        page = int(parts[1])
+        from modules.maintenance_commands import show_equipment_photos
+        await show_equipment_photos(update, context, equipment_id, page)
+        return
+
     # Архив отчётов
     if data == "ctrl_archive":
         await show_archive_years(update, context)
@@ -1081,5 +1137,5 @@ def create_controller_callback_handler():
     """Создать обработчик для callback кнопок контролёра"""
     return CallbackQueryHandler(
         handle_controller_callback,
-        pattern="^(controller_panel|ctrl_current_checklists|ctrl_club_checklist_|ctrl_club_check|ctrl_check_|ctrl_toggle_|ctrl_cleaning_ratings|ctrl_maint_stats|ctrl_maint_admin_|ctrl_archive|ctrl_year_|ctrl_month_|ctrl_day_|ctrl_shift_)"
+        pattern="^(controller_panel|ctrl_current_checklists|ctrl_club_checklist_|ctrl_club_check|ctrl_check_|ctrl_toggle_|ctrl_cleaning_ratings|ctrl_maint_stats|ctrl_maint_admin_|ctrl_equipment_browser|ctrl_photos_|ctrl_photo_|ctrl_eq_|ctrl_archive|ctrl_year_|ctrl_month_|ctrl_day_|ctrl_shift_)"
     )

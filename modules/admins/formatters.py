@@ -76,7 +76,16 @@ def format_admin_card(admin: Dict, permissions: Dict[str, bool] = None) -> str:
         lines.append(f"👤 Username: @{admin['username']}")
     
     lines.append(f"🆔 ID: {admin['user_id']}")
-    
+
+    # Gender
+    gender = admin.get('gender')
+    if gender == 'male':
+        lines.append(f"⚧ Пол: ♂️ Мужской")
+    elif gender == 'female':
+        lines.append(f"⚧ Пол: ♀️ Женский")
+    else:
+        lines.append(f"⚧ Пол: не указан")
+
     # Status
     status = "✅ Активен" if admin.get('active', 1) == 1 else "❌ Деактивирован"
     lines.append(f"📊 Статус: {status}")

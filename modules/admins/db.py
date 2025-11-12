@@ -108,14 +108,14 @@ class AdminDB:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT user_id, username, full_name, role, permissions, is_active as active, notes, 
-                       added_by, created_at, updated_at
-                FROM admins 
+                SELECT user_id, username, full_name, role, permissions, is_active as active, notes,
+                       added_by, created_at, updated_at, gender
+                FROM admins
                 WHERE user_id = ?
             ''', (user_id,))
             row = cursor.fetchone()
             conn.close()
-            
+
             if row:
                 return {
                     'user_id': row[0],
@@ -127,7 +127,8 @@ class AdminDB:
                     'notes': row[6],
                     'added_by': row[7],
                     'created_at': row[8],
-                    'updated_at': row[9]
+                    'updated_at': row[9],
+                    'gender': row[10]
                 }
             return None
         except Exception as e:
@@ -143,14 +144,14 @@ class AdminDB:
             conn = self._get_conn()
             cursor = conn.cursor()
             cursor.execute('''
-                SELECT user_id, username, full_name, role, permissions, is_active as active, notes, 
-                       added_by, created_at, updated_at
-                FROM admins 
+                SELECT user_id, username, full_name, role, permissions, is_active as active, notes,
+                       added_by, created_at, updated_at, gender
+                FROM admins
                 WHERE username = ?
             ''', (username,))
             row = cursor.fetchone()
             conn.close()
-            
+
             if row:
                 return {
                     'user_id': row[0],
@@ -162,7 +163,8 @@ class AdminDB:
                     'notes': row[6],
                     'added_by': row[7],
                     'created_at': row[8],
-                    'updated_at': row[9]
+                    'updated_at': row[9],
+                    'gender': row[10]
                 }
             return None
         except Exception as e:

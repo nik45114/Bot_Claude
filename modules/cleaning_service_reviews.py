@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 MSK = timezone(timedelta(hours=3))
 
 # States
-REVIEW_RATING, REVIEW_TEXT, REVIEW_PHOTO = range(3)
+REVIEW_CLEANER_PRESENT, REVIEW_RATING, REVIEW_TEXT, REVIEW_PHOTO = range(4)
 
 
 class CleaningServiceReviewManager:
@@ -34,19 +34,36 @@ class CleaningServiceReviewManager:
             conn = sqlite3.connect(self.db_path)
             cursor = conn.cursor()
 
+            # Проверяем, есть ли уже запись для этой смены (с cleaner_was_present)
             cursor.execute("""
-                INSERT INTO cleaning_service_reviews
-                (shift_id, club, reviewer_admin_id, rating, review_text, photo_file_id)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (shift_id, club, reviewer_admin_id, rating, review_text, photo_file_id))
+                SELECT id FROM cleaning_service_reviews
+                WHERE shift_id = ?
+            """, (shift_id,))
+
+            existing = cursor.fetchone()
+
+            if existing:
+                # Обновляем существующую запись с рейтингом и отзывом
+                cursor.execute("""
+                    UPDATE cleaning_service_reviews
+                    SET rating = ?, review_text = ?, photo_file_id = ?
+                    WHERE shift_id = ?
+                """, (rating, review_text, photo_file_id, shift_id))
+            else:
+                # Создаем новую запись (если cleaner_was_present не была отмечена ранее)
+                cursor.execute("""
+                    INSERT INTO cleaning_service_reviews
+                    (shift_id, club, reviewer_admin_id, rating, review_text, photo_file_id, cleaner_was_present)
+                    VALUES (?, ?, ?, ?, ?, ?, TRUE)
+                """, (shift_id, club, reviewer_admin_id, rating, review_text, photo_file_id))
 
             conn.commit()
             conn.close()
-            logger.info(f"Added cleaning service review for shift {shift_id}")
+            logger.info(f"✅ Added/updated cleaning service review for shift {shift_id}")
             return True
 
         except Exception as e:
-            logger.error(f"Error adding cleaning service review: {e}")
+            logger.error(f"❌ Error adding cleaning service review: {e}")
             return False
 
     def get_reviews(self, club: Optional[str] = None, limit: int = 50) -> List[Dict]:
@@ -134,9 +151,88 @@ async def start_cleaning_review(update: Update, context: ContextTypes.DEFAULT_TY
     context.user_data['review_shift_id'] = active_shift['id']
     context.user_data['review_club'] = active_shift['club']
 
-    text = "🧹 *Оценка работы уборщицы*\n\n"
+    text = "🧹 *Отзыв об уборщице*\n\n"
     text += f"🏢 Клуб: {active_shift['club'].upper()}\n\n"
-    text += "Оцените качество уборки:"
+    text += "Была ли сегодня уборщица?"
+
+    keyboard = [
+        [InlineKeyboardButton("✅ Да, была", callback_data="cleaner_present_yes")],
+        [InlineKeyboardButton("❌ Нет, не была", callback_data="cleaner_present_no")],
+        [InlineKeyboardButton("« Отмена", callback_data="review_cancel")]
+    ]
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+
+    return REVIEW_CLEANER_PRESENT
+
+
+async def review_cleaner_presence_response(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработать ответ о присутствии уборщицы"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "review_cancel":
+        await query.edit_message_text("❌ Отзыв отменен")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    was_present = query.data == "cleaner_present_yes"
+    context.user_data['cleaner_was_present'] = was_present
+
+    shift_id = context.user_data.get('review_shift_id')
+    club = context.user_data.get('review_club')
+    user_id = update.effective_user.id
+
+    # Сохраняем в БД информацию о присутствии уборщицы
+    try:
+        conn = sqlite3.connect(context.bot_data.get('db_path', 'club_assistant.db'))
+        cursor = conn.cursor()
+
+        # Проверяем, есть ли уже запись для этой смены
+        cursor.execute("""
+            SELECT id FROM cleaning_service_reviews
+            WHERE shift_id = ?
+        """, (shift_id,))
+
+        existing = cursor.fetchone()
+
+        if existing:
+            # Обновляем существующую запись
+            cursor.execute("""
+                UPDATE cleaning_service_reviews
+                SET cleaner_was_present = ?
+                WHERE shift_id = ?
+            """, (was_present, shift_id))
+        else:
+            # Создаем новую запись с только полем cleaner_was_present
+            cursor.execute("""
+                INSERT INTO cleaning_service_reviews
+                (shift_id, club, reviewer_admin_id, cleaner_was_present)
+                VALUES (?, ?, ?, ?)
+            """, (shift_id, club, user_id, was_present))
+
+        conn.commit()
+        conn.close()
+        logger.info(f"✅ Saved cleaner presence: {was_present} for shift {shift_id}")
+
+    except Exception as e:
+        logger.error(f"❌ Error saving cleaner presence: {e}")
+        await query.edit_message_text(f"❌ Ошибка сохранения: {e}")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # Если уборщицы НЕ было - завершаем на этом
+    if not was_present:
+        text = "✅ Отмечено: уборщица не была\n\n"
+        text += "Спасибо за информацию!"
+        await query.edit_message_text(text)
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # Если уборщица БЫЛА - продолжаем к рейтингу
+    text = "✅ Отмечено: уборщица была\n\n"
+    text += "⭐️ Теперь оцените качество уборки:"
 
     keyboard = [
         [InlineKeyboardButton("⭐️⭐️⭐️⭐️⭐️ (5)", callback_data="review_rating_5")],
@@ -148,7 +244,7 @@ async def start_cleaning_review(update: Update, context: ContextTypes.DEFAULT_TY
     ]
 
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
+    await query.edit_message_text(text, reply_markup=reply_markup)
 
     return REVIEW_RATING
 
@@ -180,6 +276,12 @@ async def review_text_response(update: Update, context: ContextTypes.DEFAULT_TYP
     if update.message and update.message.text and update.message.text != '/skip':
         review_text = update.message.text
 
+        # Удаляем сообщение админа с отзывом
+        try:
+            await update.message.delete()
+        except:
+            pass
+
     context.user_data['review_text'] = review_text
 
     text = "📸 *Фото*\n\n"
@@ -197,6 +299,12 @@ async def review_photo_response(update: Update, context: ContextTypes.DEFAULT_TY
     if update.message.photo:
         photo_file_id = update.message.photo[-1].file_id
         context.user_data['review_photo'] = photo_file_id
+
+        # Удаляем сообщение админа с фото
+        try:
+            await update.message.delete()
+        except:
+            pass
 
     # Сохраняем отзыв
     return await save_review(update, context)
@@ -302,6 +410,9 @@ def create_cleaning_review_handlers():
             CallbackQueryHandler(start_cleaning_review, pattern="^review_start$")
         ],
         states={
+            REVIEW_CLEANER_PRESENT: [
+                CallbackQueryHandler(review_cleaner_presence_response, pattern="^cleaner_present_|review_cancel$")
+            ],
             REVIEW_RATING: [
                 CallbackQueryHandler(review_rating_response, pattern="^review_rating_|review_cancel$")
             ],

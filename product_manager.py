@@ -847,3 +847,142 @@ class ProductManager:
         
         return text
 
+
+    def get_all_admin_debts(self) -> List[Dict]:
+        """Получить список всех админов с долгами"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                SELECT 
+                    admin_id,
+                    admin_name,
+                    SUM(total_debt) as total_debt
+                FROM admin_products
+                WHERE settled = 0
+                GROUP BY admin_id, admin_name
+                HAVING SUM(total_debt) > 0
+                ORDER BY total_debt DESC
+            ''')
+            
+            debts = []
+            for row in cursor.fetchall():
+                debts.append({
+                    'admin_id': row['admin_id'],
+                    'admin_name': row['admin_name'],
+                    'total_debt': row['total_debt']
+                })
+            
+            conn.close()
+            return debts
+            
+        except Exception as e:
+            logger.error(f"Error getting admin debts: {e}")
+            return []
+    
+    def get_admin_debt_details(self, admin_id: int) -> Optional[Dict]:
+        """Получить детальную информацию о долге конкретного админа"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            # Получаем все неоплаченные товары
+            cursor.execute('''
+                SELECT 
+                    id,
+                    admin_name,
+                    product_name,
+                    quantity,
+                    cost_price,
+                    total_debt,
+                    taken_at,
+                    payment_proof_photo
+                FROM admin_products
+                WHERE admin_id = ? AND settled = 0
+                ORDER BY taken_at DESC
+            ''', (admin_id,))
+            
+            items = []
+            total_debt = 0
+            admin_name = None
+            
+            for row in cursor.fetchall():
+                if not admin_name:
+                    admin_name = row['admin_name']
+                
+                items.append({
+                    'id': row['id'],
+                    'product_name': row['product_name'],
+                    'quantity': row['quantity'],
+                    'cost_price': row['cost_price'],
+                    'total_debt': row['total_debt'],
+                    'taken_at': row['taken_at'],
+                    'payment_proof_photo': row['payment_proof_photo']
+                })
+                total_debt += row['total_debt']
+            
+            conn.close()
+            
+            if not admin_name:
+                return None
+            
+            return {
+                'admin_id': admin_id,
+                'admin_name': admin_name,
+                'total_debt': total_debt,
+                'items': items
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting admin debt details: {e}")
+            return None
+    
+    def settle_admin_debt(self, admin_id: int) -> bool:
+        """Списать весь долг админа"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+                UPDATE admin_products
+                SET settled = 1, paid_at = ?
+                WHERE admin_id = ? AND settled = 0
+            ''', (datetime.now().isoformat(), admin_id))
+            
+            conn.commit()
+            affected = cursor.rowcount
+            conn.close()
+            
+            logger.info(f"✅ Settled debt for admin {admin_id}, {affected} items marked as paid")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error settling admin debt: {e}")
+            return False
+    
+    def submit_payment_proof(self, admin_id: int, photo_file_id: str) -> bool:
+        """Прикрепить доказательство оплаты (фото чека)"""
+        try:
+            conn = sqlite3.connect(self.db_path)
+            cursor = conn.cursor()
+            
+            # Обновляем все неоплаченные записи админа
+            cursor.execute('''
+                UPDATE admin_products
+                SET payment_proof_photo = ?
+                WHERE admin_id = ? AND settled = 0
+            ''', (photo_file_id, admin_id))
+            
+            conn.commit()
+            affected = cursor.rowcount
+            conn.close()
+            
+            logger.info(f"✅ Payment proof submitted for admin {admin_id}, {affected} items updated")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error submitting payment proof: {e}")
+            return False

@@ -262,7 +262,7 @@ class ShiftWizard:
             'card2': 0.0,
             'safe_cash_start': previous_cash or 0.0,
             'safe_cash_end': 0.0,
-            'box_cash_start': 0.0,
+            'box_cash_start': prev_box or 0.0,
             'box_cash_end': 0.0,
             'tovarka': 0.0,
             'gamepads': 0,
@@ -545,19 +545,28 @@ class ShiftWizard:
                 # Save shift_id in context for checklist
                 context.user_data['current_shift_id'] = shift_id
 
-                # Добавляем кнопку чек-листа приема смены
+                # Добавляем кнопки НОВЫХ чек-листов приема смены
                 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
                 keyboard = [
-                    [InlineKeyboardButton("✅ Чек-лист приема смены", callback_data="checklist_start")],
-                    [InlineKeyboardButton("« Главное меню", callback_data="main_menu")]
+                    [InlineKeyboardButton("⭐️ Рейтинг уборки", callback_data="rating_start")],
+                    [InlineKeyboardButton("📦 Чек-лист инвентаря", callback_data="inventory_start")]
                 ]
+
+                # Отзыв об уборщице только для ночной смены
+                if shift_type == 'evening':
+                    keyboard.insert(1, [InlineKeyboardButton("🧹 Отзыв об уборщице", callback_data="review_start")])
+
+                keyboard.append([InlineKeyboardButton("« Главное меню", callback_data="main_menu")])
                 reply_markup = InlineKeyboardMarkup(keyboard)
 
                 await query.edit_message_text(
                     f"✅ Смена открыта!\n\n"
                     f"🏢 {club} | {shift_label}\n"
                     f"🆔 ID смены: {shift_id}\n\n"
-                    f"Рекомендуется пройти чек-лист приема смены для проверки оборудования и состояния клуба.",
+                    f"📋 Обязательные чек-листы:\n"
+                    f"• ⭐️ Рейтинг уборки (30 мин)\n"
+                    f"• 📦 Инвентарь (4 часа)\n"
+                    + (f"• 🧹 Отзыв об уборщице\n" if shift_type == 'evening' else ""),
                     reply_markup=reply_markup
                 )
 
@@ -933,7 +942,7 @@ class ShiftWizard:
             context.user_data['shift_data']['qr'] = 0.0
             msg = "✅ QR: 0 ₽ (без изменений)\n\n"
 
-        msg += "💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
+        msg += "💳 Введите безнал/карту (касса 2):\n\nПример: 1000 (или 0 если нет)"
         keyboard = [
             [InlineKeyboardButton("Без изменений (0)", callback_data="card2_no_change")],
             [InlineKeyboardButton("❌ Касса не работала", callback_data="card2_disabled")],
@@ -949,7 +958,7 @@ class ShiftWizard:
         context.user_data['shift_data']['qr'] = 0.0
         context.user_data['shift_data']['qr_disabled'] = True
 
-        msg = "❌ QR не работал\n\n💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
+        msg = "❌ QR не работал\n\n💳 Введите безнал/карту (касса 2):\n\nПример: 1000 (или 0 если нет)"
         keyboard = [
             [InlineKeyboardButton("Без изменений (0)", callback_data="card2_no_change")],
             [InlineKeyboardButton("❌ Касса не работала", callback_data="card2_disabled")],
@@ -965,7 +974,7 @@ class ShiftWizard:
             context.user_data['shift_data']['qr'] = value
 
             msg = f"✅ QR: {value:,.0f} ₽\n\n"
-            msg += "💳 Введите карту 2:\n\nПример: 1000 (или 0 если нет)"
+            msg += "💳 Введите безнал/карту (касса 2):\n\nПример: 1000 (или 0 если нет)"
 
             keyboard = [
                 [InlineKeyboardButton("Без изменений (0)", callback_data="card2_no_change")],
@@ -996,7 +1005,7 @@ class ShiftWizard:
             msg = "✅ Безнал вторая касса: 0 ₽ (без изменений)\n\n"
 
         # Move to z-report upload
-        msg += "📸 Загрузите ИТОГОВЫЙ ОТЧЕТ\n\n"
+        msg += "📸 Загрузите сверку итогов (касса 1)\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
 
         keyboard = [
@@ -1015,7 +1024,7 @@ class ShiftWizard:
 
         # Move to z-report upload
         msg = "❌ Безнал вторая касса не работала\n\n"
-        msg += "📸 Загрузите ИТОГОВЫЙ ОТЧЕТ\n\n"
+        msg += "📸 Загрузите сверку итогов (касса 1)\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
 
         keyboard = [
@@ -1033,7 +1042,7 @@ class ShiftWizard:
 
             # Move to z-report upload
             msg = f"✅ Безнал вторая касса: {value:,.0f} ₽\n\n"
-            msg += "📸 Загрузите ИТОГОВЫЙ ОТЧЕТ\n\n"
+            msg += "📸 Загрузите сверку итогов (касса 1)\n\n"
             msg += "Отправьте фото чека или нажмите 'Пропустить' если нет чека"
 
             keyboard = [
@@ -1141,7 +1150,7 @@ class ShiftWizard:
         await query.answer()
 
         msg = "⏭️ X-отчет QR пропущен\n\n"
-        msg += "📸 Загрузите отчет для БЕЗНАЛА ВТОРАЯ КАССА\n\n"
+        msg += "📸 Загрузите X-отчет (касса 2)\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить'"
 
         keyboard = [
@@ -1172,7 +1181,7 @@ class ShiftWizard:
         if ocr_result and 'total' in ocr_result:
             msg += f"📊 Распознано: {ocr_result.get('total', 'N/A')} ₽\n\n"
 
-        msg += "📸 Загрузите отчет для БЕЗНАЛА ВТОРАЯ КАССА\n\n"
+        msg += "📸 Загрузите X-отчет (касса 2)\n\n"
         msg += "Отправьте фото чека или нажмите 'Пропустить'"
 
         keyboard = [
@@ -1223,7 +1232,7 @@ class ShiftWizard:
         prev_official = context.user_data.get('prev_official', 0)
         
         msg = f"✅ Выручка введена\n\n"
-        msg += "🔐 Введите остаток в основной кассе:\n\n"
+        msg += "🔐 Введите общее количество наличных (касса 1):\n\n"
         msg += f"Пример: 5000\n"
         msg += f"Прошлый раз было: {prev_official:,.0f} ₽"
         
@@ -1267,20 +1276,26 @@ class ShiftWizard:
         try:
             prev_official = context.user_data.get('prev_official', 0)
             cash_revenue = context.user_data['shift_data'].get('fact_cash', 0)
+            safe_cash_end = context.user_data['shift_data'].get('safe_cash_end', 0)
 
             # Get expenses
             expenses = context.user_data.get('expenses', [])
             total_expenses = sum(exp['amount'] for exp in expenses if exp.get('cash_source') == 'main')
 
-            # Calculate expected cash
-            expected_cash = prev_official + cash_revenue - total_expenses
+            # Expected = what's in the safe (already counted and put there)
+            expected_cash = safe_cash_end
+
+            # What it should be based on calculation
+            calculated_cash = prev_official + cash_revenue - total_expenses
 
             msg = f"💵 Проверим фактические наличные\n\n"
-            msg += f"📊 Должно быть: {expected_cash:,.0f} ₽\n"
+            msg += f"📊 Должно быть: {calculated_cash:,.0f} ₽\n"
             msg += f"(Было {prev_official:,.0f} + выручка {cash_revenue:,.0f}"
             if total_expenses > 0:
                 msg += f" - расходы {total_expenses:,.0f}"
-            msg += f")\n\n💰 Посчитайте и введите фактическую сумму:"
+            msg += f")\n\n"
+            msg += f"🔐 В сейфе (касса 1): {safe_cash_end:,.0f} ₽\n\n"
+            msg += f"💰 Посчитайте и введите фактическую сумму наличных на руках:"
 
             keyboard = [
                 [InlineKeyboardButton("✅ Совпадает", callback_data="actual_cash_matches")],
@@ -1496,13 +1511,16 @@ class ShiftWizard:
             msg += f"  ИТОГО: {total_expenses:,.0f} ₽\n"
         
         msg += "\n🔐 Остатки:\n"
-        msg += f"  • Основная касса (офиц): {new_official:,.0f} ₽\n\n"
+        msg += f"  • Основная касса (офиц): {new_official:,.0f} ₽\n"
+        msg += f"  • Коробка: {new_box:,.0f} ₽\n\n"
 
         msg += "📈 Прошлый раз:\n"
-        msg += f"  • Основная: {prev_official:,.0f} ₽\n\n"
+        msg += f"  • Основная: {prev_official:,.0f} ₽\n"
+        msg += f"  • Коробка: {prev_box:,.0f} ₽\n\n"
 
         msg += "📊 Движение:\n"
         msg += f"  • Основная: {delta_official:+,.0f} ₽\n"
+        msg += f"  • Коробка: {delta_box:+,.0f} ₽\n"
         
         keyboard = [
             [InlineKeyboardButton("✅ Подтвердить", callback_data="shift_confirm")],
@@ -1567,6 +1585,37 @@ class ShiftWizard:
             # Close shift in database
             shift_id = context.user_data.get('active_shift_id')
             if shift_id and self.shift_manager:
+                # ПРОВЕРКА: Для ночной смены требуется отметить присутствие уборщицы
+                if shift_time == 'evening':
+                    try:
+                        import sqlite3
+                        conn = sqlite3.connect(self.shift_manager.db_path)
+                        cursor = conn.cursor()
+
+                        # Проверяем, была ли отмечена уборщица
+                        cursor.execute("""
+                            SELECT cleaner_was_present FROM cleaning_service_reviews
+                            WHERE shift_id = ?
+                        """, (shift_id,))
+
+                        result = cursor.fetchone()
+                        conn.close()
+
+                        # Если cleaner_was_present = NULL, то отметка не была сделана
+                        if not result or result[0] is None:
+                            await query.edit_message_text(
+                                "⚠️ <b>Внимание!</b>\n\n"
+                                "Перед закрытием ночной смены необходимо отметить, была ли уборщица.\n\n"
+                                "Пожалуйста, заполните чек-лист 'Отзыв об уборщице' через меню дежурного.",
+                                parse_mode='HTML'
+                            )
+                            # Не очищаем context.user_data, чтобы можно было вернуться
+                            return ConversationHandler.END
+
+                    except Exception as check_error:
+                        logger.error(f"❌ Error checking cleaner presence: {check_error}")
+                        # Не блокируем закрытие смены из-за ошибки проверки
+
                 self.shift_manager.close_shift(shift_id)
 
             # Save to finmon_shifts table
@@ -1604,8 +1653,33 @@ class ShiftWizard:
                 msg += f"💸 Списано расходов: {total_expenses:,.0f} ₽\n"
             msg += f"💰 Остатки:\n"
             msg += f"  • Основная касса (офиц): {balances['official']:,.0f} ₽\n"
+            msg += f"  • Коробка: {data.get('box_cash_end', 0):,.0f} ₽\n"
 
             await query.edit_message_text(msg)
+
+            # AUTO-TRIGGER /start IN CLUB CHAT AFTER SHIFT CLOSE
+            # Автоматически отправляем /start в чат клуба после закрытия смены
+            try:
+                club_accounts = context.bot_data.get('club_accounts', {})
+                club_lower = club.lower().replace('рио', 'rio').replace('север', 'sever')
+                club_chat_id = club_accounts.get(club_lower)
+
+                if club_chat_id:
+                    reminder_text = "🔓 *Смена закрыта!*\n\n"
+                    reminder_text += "Пожалуйста, откройте новую смену через /start"
+
+                    await context.bot.send_message(
+                        chat_id=club_chat_id,
+                        text=reminder_text,
+                        parse_mode='Markdown'
+                    )
+                    logger.info(f"✅ Sent /start reminder to {club} club chat ({club_chat_id})")
+                else:
+                    logger.warning(f"⚠️ Club chat ID not found for {club}")
+
+            except Exception as auto_start_error:
+                logger.error(f"❌ Failed to send auto /start reminder: {auto_start_error}")
+                # Не прерываем процесс закрытия смены из-за ошибки
 
             # Успешное сохранение смены
             # (Inline кнопки для управления сменами доступны в главном меню /start)
@@ -1646,7 +1720,7 @@ class ShiftWizard:
             'card2': 0.0,
             'safe_cash_start': previous_cash,
             'safe_cash_end': 0.0,
-            'box_cash_start': 0.0,
+            'box_cash_start': prev_box,
             'box_cash_end': 0.0,
             'tovarka': 0.0,
             'gamepads': 0,
@@ -1700,58 +1774,61 @@ class ShiftWizard:
         query = update.callback_query
         if query:
             await query.answer()
-            # Create a fake update with message for cmd_expense
-            fake_update = Update(
-                update_id=update.update_id,
-                message=query.message
-            )
-            fake_update._effective_user = update.effective_user
-            fake_update._effective_chat = update.effective_chat
-            return await self.cmd_expense(fake_update, context)
-        else:
-            return await self.cmd_expense(update, context)
 
-    async def cmd_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Start expense tracking conversation"""
         user_id = update.effective_user.id
-        
+
         # Check if shift manager is available
         if not self.shift_manager:
-            await update.message.reply_text("❌ Модуль управления сменами недоступен")
+            if query:
+                await query.edit_message_text("❌ Модуль управления сменами недоступен")
+            else:
+                await update.message.reply_text("❌ Модуль управления сменами недоступен")
             return ConversationHandler.END
-        
+
         # Check for active shift
         active_shift = self.shift_manager.get_active_shift(user_id)
-        
+
         if not active_shift:
-            await update.message.reply_text(
+            error_msg = (
                 "❌ У вас нет открытой смены\n\n"
                 "Сначала откройте смену через:\n"
                 "🔓 Открыть смену"
             )
+            if query:
+                await query.edit_message_text(error_msg)
+            else:
+                await update.message.reply_text(error_msg)
             return ConversationHandler.END
-        
+
         # Store shift ID for this conversation
         context.user_data['expense_shift_id'] = active_shift['id']
         context.user_data['expense_club'] = active_shift['club']
-        
+
         # Ask to select cash source
         shift_label = "☀️ Утро" if active_shift['shift_type'] == 'morning' else "🌙 Вечер"
-        
+
         msg = f"💸 Списание с кассы\n\n"
         msg += f"🏢 Клуб: {active_shift['club']}\n"
         msg += f"⏰ Смена: {shift_label}\n\n"
         msg += "Выберите откуда списать деньги:"
-        
+
         keyboard = [
             [InlineKeyboardButton("💰 Основная касса", callback_data="expense_main")],
             [InlineKeyboardButton("📦 Коробка", callback_data="expense_box")],
             [InlineKeyboardButton("❌ Отменить", callback_data="expense_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await update.message.reply_text(msg, reply_markup=reply_markup)
+
+        if query:
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(msg, reply_markup=reply_markup)
+
         return EXPENSE_SELECT_CASH_SOURCE
+
+    async def cmd_expense(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Start expense tracking conversation (wrapper for start_expense)"""
+        return await self.start_expense(update, context)
     
     async def expense_select_cash_source(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Handle cash source selection"""
@@ -2228,12 +2305,30 @@ class ShiftWizard:
                     # Clear the list
                     context.bot_data['pending_confirmation_messages'].pop(confirmation_key, None)
 
+                # Добавляем кнопки НОВЫХ чек-листов приема смены
+                keyboard = [
+                    [InlineKeyboardButton("⭐️ Рейтинг уборки", callback_data="rating_start")],
+                    [InlineKeyboardButton("📦 Чек-лист инвентаря", callback_data="inventory_start")]
+                ]
+
+                # Отзыв об уборщице только для ночной смены
+                if shift_type == 'evening':
+                    keyboard.insert(1, [InlineKeyboardButton("🧹 Отзыв об уборщице", callback_data="review_start")])
+
+                keyboard.append([InlineKeyboardButton("« Главное меню", callback_data="main_menu")])
+                reply_markup = InlineKeyboardMarkup(keyboard)
+
                 await query.edit_message_text(
                     f"✅ Смена подтверждена и открыта!\n\n"
                     f"🏢 {club} | {shift_label}\n"
                     f"🆔 ID смены: {shift_id}\n"
                     f"✅ Подтверждено: {query.from_user.full_name or 'Вы'}"
-                    f"{replacement_info}"
+                    f"{replacement_info}\n\n"
+                    f"📋 Обязательные чек-листы:\n"
+                    f"• ⭐️ Рейтинг уборки (30 мин)\n"
+                    f"• 📦 Инвентарь (4 часа)\n"
+                    + (f"• 🧹 Отзыв об уборщице\n" if shift_type == 'evening' else ""),
+                    reply_markup=reply_markup
                 )
 
                 # Update the pending message in club account if exists

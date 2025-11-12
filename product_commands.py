@@ -153,19 +153,36 @@ class ProductCommands:
         if query.data == 'product_all_debts_by_name':
             sort_by = 'name'
         
+        # Получаем список админов с долгами
+        debts = self.product_manager.get_all_admin_debts()
+
         text = self.product_manager.format_all_debts_report(sort_by=sort_by)
-        
+        text += "\n\n💡 <i>Нажмите на админа для управления долгом</i>"
+
         keyboard = [
             [
                 InlineKeyboardButton("📊 По долгу", callback_data="product_all_debts"),
                 InlineKeyboardButton("👤 По имени", callback_data="product_all_debts_by_name")
             ],
-            [InlineKeyboardButton("📋 Детальный отчёт", callback_data="product_detailed_debts")],
-            [InlineKeyboardButton("◀️ Назад", callback_data="product_menu")]
+            [InlineKeyboardButton("📋 Детальный отчёт", callback_data="product_detailed_debts")]
         ]
+
+        # Добавляем кнопки для каждого админа с долгом
+        for admin in debts:
+            if admin['total_debt'] > 0:
+                admin_name = admin.get('admin_name', f"ID:{admin['admin_id']}")
+                if len(admin_name) > 20:
+                    admin_name = admin_name[:18] + "..."
+                keyboard.append([InlineKeyboardButton(
+                    f"👤 {admin_name}: {admin['total_debt']:.0f}₽",
+                    callback_data=f"product_manage_debt_{admin['admin_id']}"
+                )])
+
+        keyboard.append([InlineKeyboardButton("◀️ Назад", callback_data="product_menu")])
+
         reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(text, reply_markup=reply_markup)
+
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
     
     async def start_take_product(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начать запись товара на админа"""
@@ -743,8 +760,158 @@ class ProductCommands:
         reply_markup = InlineKeyboardMarkup(keyboard)
         
         await update.message.reply_text(text, reply_markup=reply_markup)
-        
+
         context.user_data.clear()
         return ConversationHandler.END
+
+    async def manage_admin_debt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показать меню управления долгом конкретного админа"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = query.from_user.id
+        logger.info(f"🔍 manage_admin_debt: user_id={user_id}, owner_id={self.owner_id}, callback_data={query.data}")
+
+        # Только владелец может управлять долгами
+        if user_id != self.owner_id:
+            logger.warning(f"❌ Access denied: user {user_id} is not owner {self.owner_id}")
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return
+
+        # Получаем admin_id из callback_data
+        admin_id = int(query.data.split("_")[-1])
+
+        # Получаем детали долга
+        debt_info = self.product_manager.get_admin_debt_details(admin_id)
+
+        if not debt_info:
+            await query.edit_message_text(
+                "❌ У этого админа нет долгов",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("◀️ Назад", callback_data="product_all_debts")
+                ]])
+            )
+            return
+
+        # Формируем текст с информацией о долге
+        text = f"💰 <b>Долг админа</b>\n\n"
+        text += f"👤 {debt_info['admin_name']} (ID: {debt_info['admin_id']})\n"
+        text += f"💵 <b>Общий долг: {debt_info['total_debt']:.0f} ₽</b>\n\n"
+        text += f"📦 <b>Взятые товары:</b>\n"
+
+        for item in debt_info['items']:
+            text += f"  • {item['product_name']}: {item['quantity']} шт × {item['cost_price']:.0f} ₽ = {item['total']:.0f} ₽\n"
+            text += f"    <i>Взято: {item['taken_at']}</i>\n"
+            if item['payment_proof_photo']:
+                text += f"    ✅ <i>Есть доказательство оплаты</i>\n"
+
+        # Кнопки управления
+        keyboard = [
+            [InlineKeyboardButton("📨 Отправить уведомление о долге", callback_data=f"product_notify_debt_{admin_id}")],
+            [InlineKeyboardButton("✅ Списать долг", callback_data=f"product_settle_debt_{admin_id}")],
+            [InlineKeyboardButton("◀️ Назад", callback_data="product_all_debts")]
+        ]
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
+
+    async def notify_admin_debt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Отправить уведомление админу о долге"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = query.from_user.id
+
+        # Только владелец может отправлять уведомления
+        if user_id != self.owner_id:
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return
+
+        # Получаем admin_id из callback_data
+        admin_id = int(query.data.split("_")[-1])
+
+        # Получаем детали долга
+        debt_info = self.product_manager.get_admin_debt_details(admin_id)
+
+        if not debt_info:
+            await query.answer("❌ У этого админа нет долгов", show_alert=True)
+            return
+
+        # Формируем сообщение для админа
+        text = f"💰 <b>Напоминание о долге</b>\n\n"
+        text += f"У вас есть неоплаченные товары на сумму <b>{debt_info['total_debt']:.0f} ₽</b>\n\n"
+        text += f"📦 <b>Список товаров:</b>\n"
+
+        for item in debt_info['items']:
+            text += f"  • {item['product_name']}: {item['quantity']} шт × {item['cost_price']:.0f} ₽ = {item['total']:.0f} ₽\n"
+            text += f"    <i>Взято: {item['taken_at']}</i>\n"
+
+        text += f"\n💳 Пожалуйста, произведите оплату и пришлите скриншот/чек в ответ на это сообщение."
+
+        try:
+            # Отправляем уведомление админу
+            await context.bot.send_message(
+                chat_id=admin_id,
+                text=text,
+                parse_mode='HTML'
+            )
+
+            # Подтверждение владельцу
+            await query.answer("✅ Уведомление отправлено", show_alert=True)
+
+            # Возвращаем к меню управления долгом
+            await self.manage_admin_debt(update, context)
+
+        except Exception as e:
+            await query.answer(f"❌ Ошибка отправки: {str(e)}", show_alert=True)
+
+    async def settle_admin_debt(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Списать долг админа"""
+        query = update.callback_query
+        await query.answer()
+
+        user_id = query.from_user.id
+
+        # Только владелец может списывать долги
+        if user_id != self.owner_id:
+            await query.edit_message_text("❌ Доступно только владельцу")
+            return
+
+        # Получаем admin_id из callback_data
+        admin_id = int(query.data.split("_")[-1])
+
+        # Получаем детали долга перед списанием
+        debt_info = self.product_manager.get_admin_debt_details(admin_id)
+
+        if not debt_info:
+            await query.answer("❌ У этого админа нет долгов", show_alert=True)
+            return
+
+        # Списываем долг
+        success = self.product_manager.settle_admin_debt(admin_id)
+
+        if success:
+            text = f"✅ <b>Долг списан</b>\n\n"
+            text += f"👤 {debt_info['admin_name']}\n"
+            text += f"💵 Списано: {debt_info['total_debt']:.0f} ₽\n\n"
+            text += f"Все записи о долге отмечены как оплаченные."
+
+            # Уведомляем админа
+            try:
+                await context.bot.send_message(
+                    chat_id=admin_id,
+                    text=f"✅ Ваш долг на сумму {debt_info['total_debt']:.0f} ₽ был списан.",
+                    parse_mode='HTML'
+                )
+            except:
+                pass  # Если не удалось отправить - не критично
+
+        else:
+            text = "❌ Ошибка при списании долга"
+
+        keyboard = [[InlineKeyboardButton("◀️ К списку долгов", callback_data="product_all_debts")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='HTML')
 
 

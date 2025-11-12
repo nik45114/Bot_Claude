@@ -354,13 +354,14 @@ def register_backup_commands(application, config: dict = None):
     # Schedule periodic migration file sending
     if application.job_queue:
         # Send migrations every N days
-        application.job_queue.run_repeating(
-            backup_commands.send_scheduled_migration,
-            interval=backup_interval_days * 24 * 60 * 60,  # Convert days to seconds
-            first=10,  # First run after 10 seconds
-            name='scheduled_migration_send'
-        )
-        logger.info(f"✅ Scheduled migration sending enabled (every {backup_interval_days} days)")
+        # ОТКЛЮЧЕНО: слишком частая отправка при перезапусках
+        # application.job_queue.run_repeating(
+        #     backup_commands.send_scheduled_migration,
+        #     interval=backup_interval_days * 24 * 60 * 60,  # Convert days to seconds
+        #     first=backup_interval_days * 24 * 60 * 60,  # First run after full interval
+        #     name='scheduled_migration_send'
+        # )
+        logger.info(f"ℹ️ Scheduled migration sending disabled (use /migration command manually)")
         
         # Send weekly backup every 7 days
         application.job_queue.run_repeating(

@@ -439,7 +439,6 @@ async def show_duty_shift_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             text += f"\n📝 *Заметки от предыдущего дежурного:*\n{previous_notes}\n"
 
         keyboard = [
-            [InlineKeyboardButton("✅ Чек-лист", callback_data="duty_checklist")],
             [InlineKeyboardButton("📝 Оставить заметки при передаче", callback_data="duty_handover")],
             [InlineKeyboardButton("« Главное меню", callback_data="main_menu")]
         ]
@@ -507,7 +506,7 @@ async def show_controller_schedule(update: Update, context: ContextTypes.DEFAULT
 
 
 async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Показать выбор клуба для чек-листа дежурного"""
+    """Показать чек-лист дежурного для клуба администратора"""
     query = update.callback_query
     await query.answer()
 
@@ -515,6 +514,41 @@ async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE
     username = update.effective_user.username
 
     db_path = context.bot_data.get('db_path')
+
+    # Проверяем есть ли у пользователя открытая активная смена
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        cursor.execute("""
+            SELECT id, club, shift_type FROM active_shifts
+            WHERE admin_id = ? AND status = 'open'
+            ORDER BY opened_at DESC
+            LIMIT 1
+        """, (user_id,))
+        active_shift = cursor.fetchone()
+        conn.close()
+
+        if not active_shift:
+            await query.edit_message_text(
+                "❌ У вас нет открытой смены\n\n"
+                "Чек-лист дежурного доступен только администраторам с открытой сменой.\n"
+                "Сначала откройте смену через кнопку:\n🔓 Открыть смену",
+                parse_mode='Markdown'
+            )
+            return
+
+        # Получаем клуб и тип смены из активной смены
+        club_name = active_shift['club']
+        shift_type = active_shift['shift_type']
+
+    except Exception as e:
+        logger.error(f"Error checking active shift: {e}")
+        await query.edit_message_text("❌ Ошибка проверки активной смены")
+        return
+
     manager = DutyShiftManager(db_path)
 
     # Получить или создать смену дежурного на сегодня
@@ -527,20 +561,24 @@ async def show_duty_checklist(update: Update, context: ContextTypes.DEFAULT_TYPE
 
     # Сохранить shift_id в context
     context.user_data['current_duty_shift_id'] = shift_id
-
-    # Определить тип смены по времени (утро до 18:00, вечер после)
-    now = datetime.now(MSK)
-    shift_type = 'morning' if now.hour < 18 else 'evening'
     context.user_data['duty_shift_type'] = shift_type
+    context.user_data['duty_club'] = club_name
 
-    text = "📋 *Чек-лист дежурного*\n\n"
-    text += "Выберите клуб для проверки:\n"
+    # Получаем категории чек-листа
+    categories = manager.get_checklist_categories(club_name, shift_type)
 
-    keyboard = [
-        [InlineKeyboardButton("🏪 РИО", callback_data="duty_club_rio")],
-        [InlineKeyboardButton("🏢 СЕВЕР", callback_data="duty_club_sever")],
-        [InlineKeyboardButton("« Назад", callback_data="duty_shift_menu")]
-    ]
+    # Сохраняем категории в context
+    context.user_data['duty_categories'] = categories
+
+    # Показываем категории
+    text = f"📋 *Чек-лист дежурного - {club_name}*\n\n"
+    text += "Выберите категорию для проверки:\n"
+
+    keyboard = []
+    for idx, category in enumerate(categories):
+        keyboard.append([InlineKeyboardButton(category, callback_data=f"duty_cat_{idx}")])
+
+    keyboard.append([InlineKeyboardButton("« Назад", callback_data="main_menu")])
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
@@ -558,6 +596,7 @@ async def show_duty_checklist_categories(update: Update, context: ContextTypes.D
     else:
         club_name = 'Север'
 
+    # Сохраняем РУССКОЕ название для использования в методах менеджера
     context.user_data['duty_club'] = club_name
 
     db_path = context.bot_data.get('db_path')
@@ -676,9 +715,43 @@ async def toggle_duty_item(update: Update, context: ContextTypes.DEFAULT_TYPE):
             break
 
     if cat_idx is not None:
-        # Имитируем callback для show_duty_category
+        # Обновляем экран категории
+        # Сохраняем индекс в context и вызываем функцию напрямую
+        original_data = query.data
         query.data = f"duty_cat_{cat_idx}"
-        await show_duty_category(update, context)
+
+        # Получаем клуб и тип смены из context
+        club = context.user_data.get('duty_club')
+        shift_type = context.user_data.get('duty_shift_type')
+
+        # Обновляем прогресс с актуальными данными
+        progress = manager.get_checklist_progress(shift_id, club, shift_type)
+        items = progress['items'].get(category, [])
+
+        text = f"📋 *{category}*\n\n"
+
+        if not items:
+            text += "Нет пунктов в этой категории\n"
+        else:
+            for item in items:
+                status = "✅" if item['checked'] else "⬜"
+                text += f"{status} {item['text']}\n"
+                if item.get('description'):
+                    text += f"   _{item['description']}_\n"
+                if item.get('notes'):
+                    text += f"   💬 {item['notes']}\n"
+                text += "\n"
+
+        # Кнопки для каждого пункта
+        keyboard = []
+        for item in items:
+            btn_text = f"{'✅' if item['checked'] else '⬜'} {item['text']}"
+            keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"duty_item_{item['id']}")])
+
+        keyboard.append([InlineKeyboardButton("« Назад к категориям", callback_data="duty_checklist")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+
+        await query.edit_message_text(text, reply_markup=reply_markup, parse_mode='Markdown')
 
 
 async def start_handover_notes(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -745,9 +818,10 @@ def create_duty_shift_handlers():
     )
 
     # CallbackQueryHandler для остальных действий
+    # ИСКЛЮЧАЕМ duty_checklist - он обрабатывается в bot.py для новых чек-листов
     callback_handler = CallbackQueryHandler(
         handle_duty_callbacks,
-        pattern="^(duty_|ctrl_schedule)"
+        pattern="^(duty_(?!checklist)|ctrl_schedule)"
     )
 
     return [handover_conv, callback_handler]

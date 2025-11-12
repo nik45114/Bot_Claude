@@ -54,6 +54,34 @@ class ShiftManager:
             ''', (admin_id, club, shift_type, shift_date_str, confirmed_by))
 
             shift_id = cursor.lastrowid
+
+            # AUTO-CREATE CLEANING RATING RECORD (Checklist #1)
+            # Создаем запись рейтинга уборки при открытии смены
+            try:
+                # Получаем предыдущего админа из последней закрытой смены
+                cursor.execute('''
+                    SELECT admin_id FROM active_shifts
+                    WHERE club = ? AND status = 'closed' AND shift_type = ?
+                    ORDER BY closed_at DESC
+                    LIMIT 1
+                ''', (club, shift_type))
+
+                previous_admin_row = cursor.fetchone()
+                previous_admin_id = previous_admin_row[0] if previous_admin_row else None
+
+                # Инициализируем запись рейтинга уборки
+                cursor.execute('''
+                    INSERT INTO shift_cleaning_rating
+                    (shift_id, club, rated_by_admin_id, previous_admin_id)
+                    VALUES (?, ?, ?, ?)
+                ''', (shift_id, club, admin_id, previous_admin_id))
+
+                logger.info(f"✅ Created cleaning rating record for shift {shift_id}, previous_admin={previous_admin_id}")
+
+            except Exception as rating_error:
+                logger.warning(f"⚠️ Failed to create cleaning rating record: {rating_error}")
+                # Не прерываем открытие смены из-за ошибки рейтинга
+
             conn.commit()
             conn.close()
 

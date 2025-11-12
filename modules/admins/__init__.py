@@ -308,7 +308,17 @@ def register_admins(application: Application, config: dict, db_path: str, bot_us
             await wizard.handle_salary_setting(update, context)
         elif data.startswith("adm_salary_set_"):
             await wizard.apply_salary_setting(update, context)
-        
+
+        # Gender settings
+        elif data.startswith("adm_gender_"):
+            user_id = int(data.split('_')[2])
+            await wizard.show_gender_selection(update, context, user_id)
+        elif data.startswith("adm_setgender_"):
+            parts = data.split('_')
+            user_id = int(parts[2])
+            gender = parts[3]
+            await wizard.set_gender(update, context, user_id, gender)
+
         # Remove admin
         elif data.startswith("adm_remove_confirm_"):
             user_id = int(data.split('_')[3])
