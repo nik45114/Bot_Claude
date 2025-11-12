@@ -2020,6 +2020,7 @@ class ClubAssistantBot:
         if user_id == self.owner_id:
             # Панель владельца с полным функционалом
             keyboard.append([InlineKeyboardButton("👑 Панель владельца", callback_data="owner_panel")])
+            keyboard.append([InlineKeyboardButton("📊 Данные смен", callback_data="shift_data_menu")])
             keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
             keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
@@ -2058,7 +2059,6 @@ class ClubAssistantBot:
             # Кнопка "Смены" - ТОЛЬКО для админов с полным ФИО
             if has_full_name:
                 keyboard.append([InlineKeyboardButton("📅 Смены", callback_data="shifts_menu")])
-                keyboard.append([InlineKeyboardButton("📊 Данные смен", callback_data="shift_data_menu")])
 
             # Кнопки доступные всем обычным админам
             keyboard.append([InlineKeyboardButton("📦 Управление товарами", callback_data="product_menu")])

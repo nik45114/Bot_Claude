@@ -26,30 +26,48 @@ async def show_shift_data_menu(update: Update, context: ContextTypes.DEFAULT_TYP
 
     user_id = update.effective_user.id
     db_path = context.bot_data.get('db_path', 'club_assistant.db')
+    owner_id = context.bot_data.get('owner_id')
+
+    # Проверяем, является ли пользователь владельцем
+    is_owner = (owner_id and user_id == owner_id)
 
     try:
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
         cursor = conn.cursor()
 
-        # Получаем последние 10 смен пользователя
-        cursor.execute("""
-            SELECT
-                s.id, s.admin_id, s.club, s.shift_type, s.shift_date,
-                s.opened_at, s.closed_at, s.status,
-                a.full_name as admin_name
-            FROM active_shifts s
-            LEFT JOIN admins a ON s.admin_id = a.user_id
-            WHERE s.admin_id = ? OR s.confirmed_by = ?
-            ORDER BY s.opened_at DESC
-            LIMIT 10
-        """, (user_id, user_id))
+        # Владелец видит ВСЕ смены, остальные - только свои
+        if is_owner:
+            # Получаем последние 50 смен ВСЕХ админов
+            cursor.execute("""
+                SELECT
+                    s.id, s.admin_id, s.club, s.shift_type, s.shift_date,
+                    s.opened_at, s.closed_at, s.status,
+                    a.full_name as admin_name
+                FROM active_shifts s
+                LEFT JOIN admins a ON s.admin_id = a.user_id
+                ORDER BY s.opened_at DESC
+                LIMIT 50
+            """)
+        else:
+            # Получаем последние 10 смен пользователя
+            cursor.execute("""
+                SELECT
+                    s.id, s.admin_id, s.club, s.shift_type, s.shift_date,
+                    s.opened_at, s.closed_at, s.status,
+                    a.full_name as admin_name
+                FROM active_shifts s
+                LEFT JOIN admins a ON s.admin_id = a.user_id
+                WHERE s.admin_id = ? OR s.confirmed_by = ?
+                ORDER BY s.opened_at DESC
+                LIMIT 10
+            """, (user_id, user_id))
 
         shifts = cursor.fetchall()
         conn.close()
 
         if not shifts:
-            text = "❌ У вас пока нет смен для просмотра"
+            text = "❌ Пока нет смен для просмотра"
             keyboard = [[InlineKeyboardButton("◀️ Назад", callback_data="main_menu")]]
             reply_markup = InlineKeyboardMarkup(keyboard)
 
@@ -60,6 +78,8 @@ async def show_shift_data_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             return
 
         text = "📊 <b>Просмотр данных смен</b>\n\n"
+        if is_owner:
+            text += "👑 <i>Показаны смены всех администраторов</i>\n\n"
         text += "Выберите смену для просмотра:\n\n"
 
         keyboard = []
@@ -69,8 +89,14 @@ async def show_shift_data_menu(update: Update, context: ContextTypes.DEFAULT_TYP
             shift_type_emoji = "☀️" if shift['shift_type'] == 'morning' else "🌙"
             shift_date = shift['shift_date']
             status_emoji = "🟢" if shift['status'] == 'open' else "⚪️"
+            admin_name = shift['admin_name'] or 'Неизвестно'
 
-            label = f"{status_emoji} {shift_type_emoji} {club} - {shift_date}"
+            # Для владельца показываем также имя админа
+            if is_owner:
+                label = f"{status_emoji} {shift_type_emoji} {club} - {shift_date} ({admin_name})"
+            else:
+                label = f"{status_emoji} {shift_type_emoji} {club} - {shift_date}"
+
             keyboard.append([InlineKeyboardButton(label, callback_data=f"view_shift_{shift_id}")])
 
         keyboard.append([InlineKeyboardButton("◀️ Назад в меню", callback_data="main_menu")])
