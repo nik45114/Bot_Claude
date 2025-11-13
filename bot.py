@@ -82,6 +82,7 @@ try:
     from modules.cleaning_service_reviews import create_cleaning_review_handlers
     from modules.shift_inventory_checklist import create_inventory_handlers
     from modules.shift_data_viewer import create_shift_data_viewer_handlers
+    from modules.finmon_analytics import create_finance_analytics_handlers
     # Shift reminders system
     from modules.shift_reminders import setup_reminder_jobs
     # Duty shift manager
@@ -2020,7 +2021,10 @@ class ClubAssistantBot:
         if user_id == self.owner_id:
             # Панель владельца с полным функционалом
             keyboard.append([InlineKeyboardButton("👑 Панель владельца", callback_data="owner_panel")])
-            keyboard.append([InlineKeyboardButton("📊 Данные смен", callback_data="shift_data_menu")])
+            keyboard.append([
+                InlineKeyboardButton("📊 Данные смен", callback_data="shift_data_menu"),
+                InlineKeyboardButton("💰 Фин. аналитика", callback_data="finance_analytics")
+            ])
             keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
             keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])
@@ -4754,6 +4758,12 @@ class ClubAssistantBot:
             for handler in shift_data_viewer_handlers:
                 application.add_handler(handler)
             logger.info("✅ Shift data viewer handlers registered")
+
+            # Finance analytics handlers
+            finance_analytics_handlers = create_finance_analytics_handlers()
+            for handler in finance_analytics_handlers:
+                application.add_handler(handler)
+            logger.info("✅ Finance analytics handlers registered")
 
             # Store shift_manager in bot_data for checklist access
             if hasattr(self, 'shift_wizard') and self.shift_wizard:
