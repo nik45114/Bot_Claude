@@ -2021,10 +2021,14 @@ class ClubAssistantBot:
         if user_id == self.owner_id:
             # Панель владельца с полным функционалом
             keyboard.append([InlineKeyboardButton("👑 Панель владельца", callback_data="owner_panel")])
+
+            # WebApp кнопки для аналитики
+            from telegram import WebAppInfo
             keyboard.append([
-                InlineKeyboardButton("📊 Данные смен", callback_data="shift_data_menu"),
-                InlineKeyboardButton("💰 Фин. аналитика", callback_data="finance_analytics")
+                InlineKeyboardButton("📊 Финансы (графики)", web_app=WebAppInfo(url="https://tmbclz.ru/")),
+                InlineKeyboardButton("👥 Данные админов", web_app=WebAppInfo(url="https://tmbclz.ru/admins"))
             ])
+
             keyboard.append([InlineKeyboardButton("🔧 Админ-панель", callback_data="admin")])
             keyboard.append([InlineKeyboardButton("🔐 V2Ray VPN", callback_data="v2ray")])
             keyboard.append([InlineKeyboardButton("👥 Управление админами", callback_data="adm_menu")])

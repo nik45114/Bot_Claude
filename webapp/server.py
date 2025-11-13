@@ -38,6 +38,12 @@ def index():
     return render_template('analytics.html')
 
 
+@app.route('/admins')
+def admins():
+    """Страница данных администраторов"""
+    return render_template('admins.html')
+
+
 # ============================================
 # API ENDPOINTS
 # ============================================
@@ -531,6 +537,63 @@ def health():
 
 # ============================================
 # MAIN
+
+@app.route('/api/admins/stats')
+def api_admins_stats():
+    """
+    Статистика по админам за последние 7 дней
+    """
+    try:
+        # Используем club_assistant.db вместо knowledge.db
+        db_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'club_assistant.db')
+
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+
+        # Статистика по админам за последние 7 дней
+        cursor.execute("""
+            SELECT
+                a.full_name as name,
+                a.user_id,
+                COUNT(fs.id) as shifts_count,
+                SUM(fs.total_revenue) as total_revenue,
+                AVG(fs.total_revenue) as avg_revenue,
+                fs.club
+            FROM admins a
+            LEFT JOIN finmon_shifts fs ON a.user_id = fs.admin_id
+            WHERE fs.closed_at >= datetime('now', '-7 days')
+            GROUP BY a.user_id
+            ORDER BY shifts_count DESC, total_revenue DESC
+        """)
+
+        admins = []
+        for row in cursor.fetchall():
+            admins.append({
+                'name': row['name'],
+                'user_id': row['user_id'],
+                'shifts_count': row['shifts_count'] or 0,
+                'total_revenue': row['total_revenue'] or 0,
+                'avg_revenue': row['avg_revenue'] or 0,
+                'club': row['club']
+            })
+
+        conn.close()
+
+        return jsonify({
+            'admins': admins,
+            'period': '7 days',
+            'count': len(admins)
+        })
+
+    except Exception as e:
+        logger.error(f"Error in /api/admins/stats: {e}")
+        return jsonify({
+            'admins': [],
+            'error': str(e)
+        }), 500
+
 # ============================================
 
 if __name__ == '__main__':
